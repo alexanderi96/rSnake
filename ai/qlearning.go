@@ -283,8 +283,12 @@ func (q *QLearning) Update(state State, action Action, nextState State) float64 
 	q.TotalReward += reward
 
 	// Periodically save to share learning progress
-	if q.GamesPlayed%10 == 0 {
-		go q.SaveQTable(GetQTableFilename(q.ID)) // Non-blocking save
+	if q.GamesPlayed%100 == 0 { // Reduced frequency of saves
+		go func() {
+			if err := q.SaveQTable(GetQTableFilename(q.ID)); err != nil {
+				return // Ignore errors during periodic saves
+			}
+		}()
 	}
 
 	return reward
