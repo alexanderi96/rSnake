@@ -2,6 +2,7 @@ package game
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"math"
 	"math/rand"
 	"os"
@@ -17,6 +18,8 @@ const (
 	MaxAgents       = 4         // Maximum number of agents allowed
 	FoodSpawnCycles = 100       // Number of game cycles between food spawns
 	NumAgents       = MaxAgents // Fixed number of agents
+	MaxPopulation   = 12        // Maximum allowed population before termination
+	PopGrowthWindow = 100       // Window of cycles to measure population growth
 )
 
 var foodSpawnCounter = 0 // Counter for food spawn cycles
@@ -28,10 +31,13 @@ type Grid struct {
 }
 
 type GameStats struct {
-	UUID       string       `json:"uuid"`
-	StartTime  time.Time    `json:"start_time"`
-	EndTime    time.Time    `json:"end_time"`
-	AgentStats []AgentStats `json:"agent_stats"`
+	UUID           string       `json:"uuid"`
+	PreviousGameID string       `json:"previous_game_id"`
+	StartTime      time.Time    `json:"start_time"`
+	EndTime        time.Time    `json:"end_time"`
+	GameDuration   float64      `json:"game_duration"`
+	Iterations     int          `json:"iterations"`
+	AgentStats     []AgentStats `json:"agent_stats"`
 }
 
 type AgentStats struct {
@@ -44,6 +50,11 @@ type AgentStats struct {
 
 type Point struct {
 	X, Y int
+}
+
+// Color represents RGB values for snake color
+type Color struct {
+	R, G, B uint8
 }
 
 type Snake struct {
@@ -66,25 +77,31 @@ type Snake struct {
 	ReproduceCycles   int          // Number of cycles to stay still during reproduction
 	ReproduceWith     *Snake       // The other snake involved in reproduction
 	HasReproducedEver bool         // Track if snake has reproduced in its lifetime
+	Color             Color        // Snake body color
 }
 
 type Game struct {
-	UUID       string
-	Grid       Grid
-	Snakes     []*Snake
-	AIMode     bool
-	StartTime  time.Time
-	TotalGames int
-	Stats      GameStats
-	FoodCount  int // Track total amount of food in game
+	UUID              string
+	PreviousGameID    string
+	Grid              Grid
+	Snakes            []*Snake
+	AIMode            bool
+	StartTime         time.Time
+	TotalGames        int
+	Stats             GameStats
+	FoodCount         int   // Track total amount of food in game
+	PopulationHistory []int // Track population over time
+	LastPopCheck      int   // Last cycle population was checked
+	Iterations        int   // Track number of update cycles
 }
 
-func NewGame(width, height int) *Game {
+func NewGame(width, height int, previousGameID string) *Game {
 	gameUUID := uuid.New().String()
 	startTime := time.Now()
 
 	game := &Game{
-		UUID: gameUUID,
+		UUID:           gameUUID,
+		PreviousGameID: previousGameID,
 		Grid: Grid{
 			Width:  width,
 			Height: height,
@@ -93,11 +110,15 @@ func NewGame(width, height int) *Game {
 		StartTime:  startTime,
 		TotalGames: 0,
 		Stats: GameStats{
-			UUID:       gameUUID,
-			StartTime:  startTime,
-			AgentStats: make([]AgentStats, NumAgents),
+			UUID:           gameUUID,
+			PreviousGameID: previousGameID,
+			StartTime:      startTime,
+			AgentStats:     make([]AgentStats, NumAgents),
 		},
-		FoodCount: 0,
+		FoodCount:         0,
+		PopulationHistory: make([]int, 0),
+		LastPopCheck:      0,
+		Iterations:        0,
 	}
 
 	// Initialize snakes in different positions
@@ -129,6 +150,34 @@ func NewGame(width, height int) *Game {
 	return game
 }
 
+func generateRandomColor() Color {
+	return Color{
+		R: uint8(rand.Intn(256)),
+		G: uint8(rand.Intn(256)),
+		B: uint8(rand.Intn(256)),
+	}
+}
+
+func mutateColor(baseColor Color) Color {
+	// Mutate each color component by ±30
+	mutateComponent := func(c uint8) uint8 {
+		delta := uint8(rand.Intn(61) - 30) // Range: -30 to +30
+		if delta > c {
+			return delta - c // Handle underflow
+		}
+		if uint16(c)+uint16(delta) > 255 {
+			return 255 // Handle overflow
+		}
+		return c + delta
+	}
+
+	return Color{
+		R: mutateComponent(baseColor.R),
+		G: mutateComponent(baseColor.G),
+		B: mutateComponent(baseColor.B),
+	}
+}
+
 func NewSnake(startPos [2]int, agent *ai.QLearning, game *Game) *Snake {
 	snake := &Snake{
 		Body:              []Point{{X: startPos[0], Y: startPos[1]}},
@@ -144,6 +193,7 @@ func NewSnake(startPos [2]int, agent *ai.QLearning, game *Game) *Snake {
 		ReproduceCycles:   0,
 		ReproduceWith:     nil,
 		HasReproducedEver: false,
+		Color:             generateRandomColor(), // Random color for new snake (will be overridden if breeding)
 	}
 	snake.Food = snake.SpawnFood()
 	return snake
@@ -291,7 +341,9 @@ func (s *Snake) Update(g *Game) {
 					// Check if position is valid
 					if newX >= 0 && newX < g.Grid.Width && newY >= 0 && newY < g.Grid.Height {
 						newAgent := ai.NewQLearning(nil, 0)
+						// Create new snake with mutated color from parent
 						newSnake := NewSnake([2]int{newX, newY}, newAgent, g)
+						newSnake.Color = mutateColor(s.Color) // Mutate parent's color
 						g.Snakes = append(g.Snakes, newSnake)
 						g.FoodCount++ // Count food for new snake
 						break
@@ -462,9 +514,42 @@ func (g *Game) allAgentsDead() bool {
 	return true
 }
 
+func (g *Game) SaveGameStats() {
+	g.Stats.EndTime = time.Now()
+	g.Stats.GameDuration = g.Stats.EndTime.Sub(g.Stats.StartTime).Seconds()
+	g.Stats.Iterations = g.Iterations
+
+	// Save game stats to JSON file
+	statsPath := filepath.Join("data", "games", g.UUID, "game_stats.json")
+	statsJson, _ := json.Marshal(g.Stats)
+	os.WriteFile(statsPath, statsJson, 0644)
+}
+
 func (g *Game) Update() {
-	// Update food spawn counter
+	// Update food spawn counter and iteration count
 	foodSpawnCounter++
+	g.Iterations++
+
+	// Check population growth
+	currentPop := len(g.Snakes)
+	g.PopulationHistory = append(g.PopulationHistory, currentPop)
+
+	// Keep history within window
+	if len(g.PopulationHistory) > PopGrowthWindow {
+		g.PopulationHistory = g.PopulationHistory[1:]
+	}
+
+	// Check if population exceeds maximum
+	if currentPop > MaxPopulation {
+		// Terminate all snakes
+		for _, snake := range g.Snakes {
+			snake.Dead = true
+			snake.GameOver = true
+			snake.AI.GamesPlayed++
+		}
+		g.Snakes = g.Snakes[:NumAgents] // Reset to initial population
+		return
+	}
 
 	// Update snakes sequentially to prevent mutex contention
 	for _, snake := range g.Snakes {
@@ -486,8 +571,11 @@ func (g *Game) Update() {
 		foodSpawnCounter = 0
 	}
 
-	// When all agents are dead, only reset them without creating new ones
+	// When all agents are dead, save stats and reset them without creating new ones
 	if g.allAgentsDead() {
+		// Save game stats before resetting
+		g.SaveGameStats()
+
 		// Find the best performing agent
 		bestAgent := g.findBestAgent()
 
@@ -499,7 +587,7 @@ func (g *Game) Update() {
 			snake.AI.QTable = bestAgent.QTable.Copy()
 			snake.AI.Mutate(0.1) // 10% mutation rate
 
-			// Reset snake position and state but keep scores, agent, and reproduction status
+			// Reset snake position and state but keep scores, agent, reproduction status, and mutate color
 			oldScores := snake.Scores
 			oldAvgScore := snake.AverageScore
 			oldSessionHigh := snake.SessionHigh
@@ -507,10 +595,17 @@ func (g *Game) Update() {
 			oldAI := snake.AI
 			oldMutex := snake.Mutex
 			oldHasReproducedEver := snake.HasReproducedEver
+			oldColor := snake.Color
 
 			*snake = *NewSnake([2]int{snake.Body[0].X, snake.Body[0].Y}, oldAI, g)
 			snake.Mutex = oldMutex
 			snake.HasReproducedEver = oldHasReproducedEver
+			// Keep same color if breeding or resetting from previous game
+			if snake.HasReproducedEver || oldAllTimeHigh > 0 {
+				snake.Color = mutateColor(oldColor) // Mutate previous color
+			} else {
+				snake.Color = generateRandomColor() // Random color for fresh start
+			}
 
 			// Restore scores
 			snake.Scores = oldScores

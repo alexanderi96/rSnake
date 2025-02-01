@@ -107,11 +107,11 @@ func (r *Renderer) Draw(g *game.Game) {
 
 	// Draw all snakes in the same grid
 	for i, snake := range g.Snakes {
-
 		// Draw snake if not dead
 		snake.Mutex.RLock()
 		isDead := snake.Dead
 		score := snake.Score
+		snakeColor := snake.Color // Get snake's custom color
 		if !isDead {
 			// Copy values while holding lock to minimize lock time
 			body := make([]game.Point, len(snake.Body))
@@ -122,17 +122,16 @@ func (r *Renderer) Draw(g *game.Game) {
 
 			// Draw snake body
 			for j, p := range body {
-				color := r.getSnakeColor(i)
+				color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
 				if j == 0 { // Tail
 					color = rl.White // White for tail
 				} else if j == len(body)-1 { // Head
 					// Make head brighter to stand out
-					baseColor := r.getSnakeColor(i)
 					color = rl.Color{
-						R: uint8(float32(baseColor.R) * 1.3),
-						G: uint8(float32(baseColor.G) * 1.3),
-						B: uint8(float32(baseColor.B) * 1.3),
-						A: baseColor.A,
+						R: uint8(float32(snakeColor.R) * 1.3),
+						G: uint8(float32(snakeColor.G) * 1.3),
+						B: uint8(float32(snakeColor.B) * 1.3),
+						A: 255,
 					}
 					// Draw direction indicator (small triangle in movement direction)
 					headX := r.offsetX + int32(p.X*int(r.cellSize))
@@ -184,7 +183,7 @@ func (r *Renderer) Draw(g *game.Game) {
 		label := fmt.Sprintf("Agent %c: %d", rune('A'+i), score)
 		labelX := r.offsetX + 5
 		labelY := r.offsetY + 5 + (int32(i) * (fontSize + 5)) // Stack labels vertically
-		rl.DrawText(label, labelX, labelY, fontSize, r.getSnakeColor(i))
+		rl.DrawText(label, labelX, labelY, fontSize, rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255})
 	}
 
 	r.drawStatsPanel(g, fontSize, lineHeight)
@@ -206,14 +205,15 @@ func (r *Renderer) drawStatsPanel(g *game.Game, fontSize, lineHeight int32) {
 	// Draw high scores for each agent
 	rl.DrawText("High Scores:", statsX+10, statsY, fontSize, rl.White)
 	statsY += lineHeight
-	for i, snake := range g.Snakes {
+	for _, snake := range g.Snakes {
 		snake.Mutex.RLock()
 		sessionHigh := snake.SessionHigh
 		allTimeHigh := snake.AllTimeHigh
-		color := r.getSnakeColor(i)
+		snakeColor := snake.Color
 		snake.Mutex.RUnlock()
 
-		rl.DrawText(fmt.Sprintf("Agent %c:", rune('A'+i)), statsX+20, statsY, fontSize, color)
+		color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
+		rl.DrawText(fmt.Sprintf("Agent %c:", rune('A')), statsX+20, statsY, fontSize, color)
 		statsY += lineHeight
 		rl.DrawText(fmt.Sprintf("Session: %d", sessionHigh), statsX+30, statsY, fontSize, color)
 		statsY += lineHeight
@@ -230,14 +230,15 @@ func (r *Renderer) drawStatsPanel(g *game.Game, fontSize, lineHeight int32) {
 		currentSnake.Mutex.RLock()
 		avgScore := currentSnake.AverageScore
 		gamesPlayed := currentSnake.AI.GamesPlayed
-		snakeColor := r.getSnakeColor(i)
+		snakeColor := currentSnake.Color
 		currentSnake.Mutex.RUnlock()
 
-		rl.DrawText(fmt.Sprintf("Agent %c", rune('A'+i)), statsX+20, statsY, fontSize, snakeColor)
+		color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
+		rl.DrawText(fmt.Sprintf("Agent %c", rune('A'+i)), statsX+20, statsY, fontSize, color)
 		statsY += lineHeight
-		rl.DrawText(fmt.Sprintf("  Avg: %s", formatFloat(avgScore)), statsX+20, statsY, fontSize, snakeColor)
+		rl.DrawText(fmt.Sprintf("  Avg: %s", formatFloat(avgScore)), statsX+20, statsY, fontSize, color)
 		statsY += lineHeight
-		rl.DrawText(fmt.Sprintf("  Games: %d", gamesPlayed), statsX+20, statsY, fontSize, snakeColor)
+		rl.DrawText(fmt.Sprintf("  Games: %d", gamesPlayed), statsX+20, statsY, fontSize, color)
 		statsY += lineHeight + lineHeight/2
 	}
 
@@ -272,13 +273,15 @@ func (r *Renderer) drawPerformanceGraph(g *game.Game, statsX, statsY, fontSize i
 
 	// Draw scores for each agent
 	graphWidth := r.graphWidth
-	for i, snake := range g.Snakes {
+	for _, snake := range g.Snakes {
 		snake.Mutex.RLock()
 		scores := make([]int, len(snake.Scores))
 		copy(scores, snake.Scores)
 		avgScore := snake.AverageScore
-		color := r.getSnakeColor(i)
+		snakeColor := snake.Color
 		snake.Mutex.RUnlock()
+
+		color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
 
 		if len(scores) > 1 {
 			// Draw points and connect them with lines
@@ -303,10 +306,11 @@ func (r *Renderer) drawPerformanceGraph(g *game.Game, statsX, statsY, fontSize i
 	for i, snake := range g.Snakes {
 		snake.Mutex.RLock()
 		isGameOver := snake.GameOver
-		color := r.getSnakeColor(i)
+		snakeColor := snake.Color
 		snake.Mutex.RUnlock()
 
 		if isGameOver {
+			color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
 			gameOverText := fmt.Sprintf("Agent %c: Game Over! (Restarting...)", rune('A'+i))
 			textWidth := rl.MeasureText(gameOverText, fontSize)
 			rl.DrawText(gameOverText,
@@ -315,22 +319,4 @@ func (r *Renderer) drawPerformanceGraph(g *game.Game, statsX, statsY, fontSize i
 				fontSize, color)
 		}
 	}
-}
-
-func (r *Renderer) getSnakeColor(index int) rl.Color {
-	colors := []rl.Color{
-		rl.Green,   // Bright green
-		rl.Blue,    // Bright blue
-		rl.Purple,  // Purple
-		rl.Orange,  // Orange
-		rl.Pink,    // Pink
-		rl.Yellow,  // Yellow
-		rl.Lime,    // Lime
-		rl.SkyBlue, // Sky blue
-		rl.Violet,  // Violet
-		rl.Gold,    // Gold
-		rl.Magenta, // Magenta
-		rl.Maroon,  // Maroon
-	}
-	return colors[index%len(colors)] // Use modulo to safely handle any number of agents
 }

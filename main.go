@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	speed := flag.Int("speed", 200, "Game speed in milliseconds (lower = faster)")
+	speed := flag.Int("speed", 100, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
 	rand.Seed(time.Now().UnixNano())
@@ -31,7 +31,7 @@ func main() {
 	// Use larger grid since we're displaying all snakes in one grid
 	width := (rl.GetScreenWidth() - 300) / 15  // -300 for stats panel and padding
 	height := (rl.GetScreenHeight() - 40) / 15 // -40 for padding
-	g := game.NewGame(width, height)
+	g := game.NewGame(width, height, "")
 
 	renderer := ui.NewRenderer()
 	lastUpdate := time.Now()
