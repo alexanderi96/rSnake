@@ -117,14 +117,58 @@ func (r *Renderer) Draw(g *game.Game) {
 			body := make([]game.Point, len(snake.Body))
 			copy(body, snake.Body)
 			food := snake.Food
+			direction := snake.Direction
 			snake.Mutex.RUnlock()
 
 			// Draw snake body
-			for _, p := range body {
+			for j, p := range body {
+				color := r.getSnakeColor(i)
+				if j == 0 { // Tail
+					color = rl.White // White for tail
+				} else if j == len(body)-1 { // Head
+					// Make head brighter to stand out
+					baseColor := r.getSnakeColor(i)
+					color = rl.Color{
+						R: uint8(float32(baseColor.R) * 1.3),
+						G: uint8(float32(baseColor.G) * 1.3),
+						B: uint8(float32(baseColor.B) * 1.3),
+						A: baseColor.A,
+					}
+					// Draw direction indicator (small triangle in movement direction)
+					headX := r.offsetX + int32(p.X*int(r.cellSize))
+					headY := r.offsetY + int32(p.Y*int(r.cellSize))
+					halfCell := r.cellSize / 2
+					// Draw triangle based on direction
+					if direction.X > 0 { // Right
+						rl.DrawTriangle(
+							rl.Vector2{X: float32(headX + r.cellSize), Y: float32(headY + halfCell)},
+							rl.Vector2{X: float32(headX + halfCell), Y: float32(headY)},
+							rl.Vector2{X: float32(headX + halfCell), Y: float32(headY + r.cellSize)},
+							rl.Yellow)
+					} else if direction.X < 0 { // Left
+						rl.DrawTriangle(
+							rl.Vector2{X: float32(headX), Y: float32(headY + halfCell)},
+							rl.Vector2{X: float32(headX + halfCell), Y: float32(headY)},
+							rl.Vector2{X: float32(headX + halfCell), Y: float32(headY + r.cellSize)},
+							rl.Yellow)
+					} else if direction.Y > 0 { // Down
+						rl.DrawTriangle(
+							rl.Vector2{X: float32(headX + halfCell), Y: float32(headY + r.cellSize)},
+							rl.Vector2{X: float32(headX), Y: float32(headY + halfCell)},
+							rl.Vector2{X: float32(headX + r.cellSize), Y: float32(headY + halfCell)},
+							rl.Yellow)
+					} else { // Up
+						rl.DrawTriangle(
+							rl.Vector2{X: float32(headX + halfCell), Y: float32(headY)},
+							rl.Vector2{X: float32(headX), Y: float32(headY + halfCell)},
+							rl.Vector2{X: float32(headX + r.cellSize), Y: float32(headY + halfCell)},
+							rl.Yellow)
+					}
+				}
 				rl.DrawRectangle(
 					r.offsetX+int32(p.X*int(r.cellSize)),
 					r.offsetY+int32(p.Y*int(r.cellSize)),
-					r.cellSize, r.cellSize, r.getSnakeColor(i))
+					r.cellSize, r.cellSize, color)
 			}
 
 			// Draw food for this grid

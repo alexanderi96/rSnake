@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
 	"snake-game/ai"
 	"sync"
 	"time"
@@ -14,7 +13,13 @@ import (
 	"github.com/google/uuid"
 )
 
-var NumAgents = runtime.NumCPU() // Number of agents equals number of CPU cores
+const (
+	MaxAgents       = 4         // Maximum number of agents allowed
+	FoodSpawnCycles = 100       // Number of game cycles between food spawns
+	NumAgents       = MaxAgents // Fixed number of agents
+)
+
+var foodSpawnCounter = 0 // Counter for food spawn cycles
 
 // Grid dimensions are now part of Game struct to be dynamic
 type Grid struct {
@@ -42,21 +47,25 @@ type Point struct {
 }
 
 type Snake struct {
-	Body         []Point
-	Direction    Point
-	Score        int
-	AI           *ai.QLearning
-	LastState    ai.State
-	LastAction   ai.Action
-	Dead         bool
-	Food         Point
-	GameOver     bool
-	SessionHigh  int
-	AllTimeHigh  int
-	Scores       []int
-	AverageScore float64
-	Mutex        sync.RWMutex // Protect snake state during updates
-	game         *Game        // Reference to the game for grid dimensions
+	Body              []Point
+	Direction         Point
+	Score             int
+	AI                *ai.QLearning
+	LastState         ai.State
+	LastAction        ai.Action
+	Dead              bool
+	Food              Point
+	GameOver          bool
+	SessionHigh       int
+	AllTimeHigh       int
+	Scores            []int
+	AverageScore      float64
+	Mutex             sync.RWMutex // Protect snake state during updates
+	game              *Game        // Reference to the game for grid dimensions
+	Reproducing       bool         // Whether the snake is currently reproducing
+	ReproduceCycles   int          // Number of cycles to stay still during reproduction
+	ReproduceWith     *Snake       // The other snake involved in reproduction
+	HasReproducedEver bool         // Track if snake has reproduced in its lifetime
 }
 
 type Game struct {
@@ -67,6 +76,7 @@ type Game struct {
 	StartTime  time.Time
 	TotalGames int
 	Stats      GameStats
+	FoodCount  int // Track total amount of food in game
 }
 
 func NewGame(width, height int) *Game {
@@ -87,6 +97,7 @@ func NewGame(width, height int) *Game {
 			StartTime:  startTime,
 			AgentStats: make([]AgentStats, NumAgents),
 		},
+		FoodCount: 0,
 	}
 
 	// Initialize snakes in different positions
@@ -109,6 +120,7 @@ func NewGame(width, height int) *Game {
 	for i := 0; i < NumAgents; i++ {
 		agent := ai.NewQLearning(nil, 0)
 		game.Snakes[i] = NewSnake(startPositions[i], agent, game)
+		game.FoodCount++ // Count initial food for each snake
 	}
 
 	// Create game directory
@@ -119,15 +131,19 @@ func NewGame(width, height int) *Game {
 
 func NewSnake(startPos [2]int, agent *ai.QLearning, game *Game) *Snake {
 	snake := &Snake{
-		Body:         []Point{{X: startPos[0], Y: startPos[1]}},
-		Direction:    Point{X: 1, Y: 0}, // Start moving right
-		AI:           agent,
-		Score:        0,
-		Dead:         false,
-		GameOver:     false,
-		Scores:       make([]int, 0),
-		AverageScore: 0,
-		game:         game,
+		Body:              []Point{{X: startPos[0], Y: startPos[1]}},
+		Direction:         Point{X: 1, Y: 0}, // Start moving right
+		AI:                agent,
+		Score:             0,
+		Dead:              false,
+		GameOver:          false,
+		Scores:            make([]int, 0),
+		AverageScore:      0,
+		game:              game,
+		Reproducing:       false,
+		ReproduceCycles:   0,
+		ReproduceWith:     nil,
+		HasReproducedEver: false,
 	}
 	snake.Food = snake.SpawnFood()
 	return snake
@@ -140,12 +156,29 @@ func (s *Snake) SpawnFood() Point {
 			Y: rand.Intn(s.game.Grid.Height),
 		}
 
-		// Check if food spawned on snake
+		// Check if food spawned on current snake
 		collision := false
 		for _, p := range s.Body {
 			if p == food {
 				collision = true
 				break
+			}
+		}
+
+		// Only check other snakes if they exist
+		if !collision && s.game.Snakes != nil {
+			for _, snake := range s.game.Snakes {
+				if snake != nil && snake != s { // Skip current snake and nil snakes
+					for _, p := range snake.Body {
+						if p == food {
+							collision = true
+							break
+						}
+					}
+					if collision {
+						break
+					}
+				}
 			}
 		}
 
@@ -191,6 +224,26 @@ func (s *Snake) IsDanger(p Point) bool {
 		}
 	}
 
+	// Check collision with other snakes
+	for _, otherSnake := range s.game.Snakes {
+		if otherSnake != nil && otherSnake != s { // Skip self and nil snakes
+			// Check if point collides with other snake's head
+			otherHead := otherSnake.Body[len(otherSnake.Body)-1]
+			if p == otherHead {
+				// If it's another snake's head, return false to encourage reproduction
+				return false
+			}
+
+			// Check if point collides with other snake's body (excluding head)
+			for i := 0; i < len(otherSnake.Body)-1; i++ {
+				if p == otherSnake.Body[i] {
+					// If it's another snake's body, treat it like self collision
+					return true
+				}
+			}
+		}
+	}
+
 	return false
 }
 
@@ -217,6 +270,40 @@ func (s *Snake) Update(g *Game) {
 		return
 	}
 	s.Mutex.RUnlock()
+
+	// Handle reproduction state
+	if s.Reproducing {
+		if s.ReproduceCycles > 0 {
+			s.ReproduceCycles--
+			return // Stay still during reproduction
+		} else {
+			// Reproduction complete, move in opposite directions
+			if s.ReproduceWith != nil {
+				s.Direction = Point{X: 1, Y: 0}                // Move right
+				s.ReproduceWith.Direction = Point{X: -1, Y: 0} // Move left
+
+				// Spawn new agent in random position within radius 2
+				head := s.Body[len(s.Body)-1]
+				for i := 0; i < 10; i++ { // Try up to 10 times to find valid position
+					newX := head.X + rand.Intn(5) - 2 // Random position ±2 from head
+					newY := head.Y + rand.Intn(5) - 2
+
+					// Check if position is valid
+					if newX >= 0 && newX < g.Grid.Width && newY >= 0 && newY < g.Grid.Height {
+						newAgent := ai.NewQLearning(nil, 0)
+						newSnake := NewSnake([2]int{newX, newY}, newAgent, g)
+						g.Snakes = append(g.Snakes, newSnake)
+						g.FoodCount++ // Count food for new snake
+						break
+					}
+				}
+			}
+			// Reset reproduction state
+			s.Reproducing = false
+			s.ReproduceWith = nil
+			return
+		}
+	}
 
 	currentState := s.GetState()
 
@@ -260,33 +347,68 @@ func (s *Snake) Update(g *Game) {
 	}
 
 	s.Mutex.Lock()
-	// Check collisions
-	if s.IsDanger(newHead) {
+	// Check collisions with other snakes
+	for _, otherSnake := range g.Snakes {
+		if otherSnake != nil && otherSnake != s {
+			otherHead := otherSnake.Body[len(otherSnake.Body)-1]
+
+			// Check head-to-head collision (reproduction)
+			if newHead == otherHead {
+				// If either snake has reproduced before, they die
+				if s.HasReproducedEver || otherSnake.HasReproducedEver {
+					s.Dead = true
+					s.GameOver = true
+					s.AI.GamesPlayed++
+					otherSnake.Dead = true
+					otherSnake.GameOver = true
+					otherSnake.AI.GamesPlayed++
+					s.Mutex.Unlock()
+					return
+				}
+
+				// Start reproduction process for first-time reproduction
+				s.Reproducing = true
+				s.ReproduceCycles = 5 // Stay still for 5 cycles
+				s.ReproduceWith = otherSnake
+				s.HasReproducedEver = true
+				otherSnake.Reproducing = true
+				otherSnake.ReproduceCycles = 5
+				otherSnake.ReproduceWith = s
+				otherSnake.HasReproducedEver = true
+				s.Mutex.Unlock()
+				return
+			}
+
+			// Check if we hit other snake's body
+			for _, bodyPart := range otherSnake.Body {
+				if newHead == bodyPart {
+					s.Dead = true
+					s.GameOver = true
+					s.AI.GamesPlayed++
+					s.Mutex.Unlock()
+					return
+				}
+			}
+		}
+	}
+
+	// Check wall and self collisions
+	if newHead.X < 0 || newHead.X >= g.Grid.Width || newHead.Y < 0 || newHead.Y >= g.Grid.Height {
 		s.Dead = true
 		s.GameOver = true
 		s.AI.GamesPlayed++
-
-		// Update scores
-		if len(s.Scores) >= 50 { // maxScores constant
-			s.Scores = s.Scores[1:]
-		}
-		s.Scores = append(s.Scores, s.Score)
-
-		// Calculate average score
-		sum := 0
-		for _, score := range s.Scores {
-			sum += score
-		}
-		s.AverageScore = float64(sum) / float64(len(s.Scores))
-
-		// Save Q-table solo ogni 10 partite
-		if s.AI.GamesPlayed%10 == 0 {
-			filename := ai.GetQTableFilename(g.UUID, s.AI.UUID)
-			s.AI.SaveQTable(filename)
-		}
-
 		s.Mutex.Unlock()
 		return
+	}
+
+	for _, bodyPart := range s.Body {
+		if newHead == bodyPart {
+			s.Dead = true
+			s.GameOver = true
+			s.AI.GamesPlayed++
+			s.Mutex.Unlock()
+			return
+		}
 	}
 
 	// Move snake
@@ -306,6 +428,7 @@ func (s *Snake) Update(g *Game) {
 			filename := filepath.Join("data", "games", g.UUID, "agents", s.AI.UUID+"_highscore.txt")
 			os.WriteFile(filename, data, 0644)
 		}
+		g.FoodCount-- // Decrement food count when eaten
 		s.Food = s.SpawnFood()
 	} else {
 		// Remove tail if no food was eaten
@@ -340,6 +463,9 @@ func (g *Game) allAgentsDead() bool {
 }
 
 func (g *Game) Update() {
+	// Update food spawn counter
+	foodSpawnCounter++
+
 	// Update snakes sequentially to prevent mutex contention
 	for _, snake := range g.Snakes {
 		if snake.GameOver {
@@ -348,63 +474,57 @@ func (g *Game) Update() {
 		snake.Update(g)
 	}
 
-	// Check if all agents are dead
+	// Generate new food only if we have less than half the number of agents worth of food
+	minFood := len(g.Snakes) / 2
+	if foodSpawnCounter >= FoodSpawnCycles && g.FoodCount < minFood {
+		for _, snake := range g.Snakes {
+			if !snake.Dead {
+				snake.Food = snake.SpawnFood()
+				g.FoodCount++
+			}
+		}
+		foodSpawnCounter = 0
+	}
+
+	// When all agents are dead, only reset them without creating new ones
 	if g.allAgentsDead() {
 		// Find the best performing agent
 		bestAgent := g.findBestAgent()
 
-		// Create new agents using the best agent's Q-table
-		for i := range g.Snakes {
-			// Create a new agent with the best agent's Q-table and some mutation
-			newAgent := ai.NewQLearning(bestAgent.QTable, 0.1) // 10% mutation rate
-
-			snake := g.Snakes[i]
+		// Reset existing agents using the best agent's Q-table
+		for _, snake := range g.Snakes {
 			snake.Mutex.Lock()
 
-			// Reset snake but keep scores
+			// Keep the existing agent but update its Q-table with the best agent's
+			snake.AI.QTable = bestAgent.QTable.Copy()
+			snake.AI.Mutate(0.1) // 10% mutation rate
+
+			// Reset snake position and state but keep scores, agent, and reproduction status
 			oldScores := snake.Scores
 			oldAvgScore := snake.AverageScore
 			oldSessionHigh := snake.SessionHigh
 			oldAllTimeHigh := snake.AllTimeHigh
+			oldAI := snake.AI
 			oldMutex := snake.Mutex
+			oldHasReproducedEver := snake.HasReproducedEver
 
-			// Create new snake with the new agent
-			*snake = *NewSnake([2]int{snake.Body[0].X, snake.Body[0].Y}, newAgent, g)
+			*snake = *NewSnake([2]int{snake.Body[0].X, snake.Body[0].Y}, oldAI, g)
 			snake.Mutex = oldMutex
+			snake.HasReproducedEver = oldHasReproducedEver
 
 			// Restore scores
 			snake.Scores = oldScores
 			snake.AverageScore = oldAvgScore
 			snake.SessionHigh = oldSessionHigh
 			snake.AllTimeHigh = oldAllTimeHigh
-			snake.Mutex.Unlock()
 
-			// Save Q-table of the new agent
-			filename := ai.GetQTableFilename(g.UUID, newAgent.UUID)
-			newAgent.SaveQTable(filename)
+			snake.Mutex.Unlock()
 		}
 	} else {
-		// Handle individual dead snakes normally
+		// When an agent dies, let it stay dead until all agents are dead
 		for _, snake := range g.Snakes {
 			if snake.GameOver {
-				snake.Mutex.Lock()
-				// Reset snake but keep scores
-				oldScores := snake.Scores
-				oldAvgScore := snake.AverageScore
-				oldSessionHigh := snake.SessionHigh
-				oldAllTimeHigh := snake.AllTimeHigh
-				oldMutex := snake.Mutex // Keep the mutex
-
-				*snake = *NewSnake([2]int{snake.Body[0].X, snake.Body[0].Y}, snake.AI, g)
-				snake.Mutex = oldMutex // Restore the mutex
-
-				snake.Scores = oldScores
-				snake.AverageScore = oldAvgScore
-				snake.SessionHigh = oldSessionHigh
-				snake.AllTimeHigh = oldAllTimeHigh
-				snake.Mutex.Unlock()
-
-				// Save Q-table less frequently and synchronously
+				// Save Q-table less frequently
 				if snake.AI.GamesPlayed%50 == 0 {
 					filename := ai.GetQTableFilename(g.UUID, snake.AI.UUID)
 					snake.AI.SaveQTable(filename)

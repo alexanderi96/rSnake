@@ -47,6 +47,18 @@ const (
 
 type QTable map[string]map[Action]float64
 
+// Copy creates a deep copy of the QTable
+func (qt QTable) Copy() QTable {
+	newTable := make(QTable)
+	for state, actions := range qt {
+		newTable[state] = make(map[Action]float64)
+		for action, value := range actions {
+			newTable[state][action] = value
+		}
+	}
+	return newTable
+}
+
 type QLearning struct {
 	UUID         string
 	QTable       QTable
@@ -196,6 +208,20 @@ func (q *QLearning) LoadQTable(filename string) error {
 	tableMutex.Lock()
 	defer tableMutex.Unlock()
 	return json.Unmarshal(data, &q.QTable)
+}
+
+// Mutate applies random mutations to the Q-table values
+func (q *QLearning) Mutate(mutationRate float64) {
+	tableMutex.Lock()
+	defer tableMutex.Unlock()
+
+	for state, actions := range q.QTable {
+		for action, value := range actions {
+			// Add a small random mutation
+			mutation := (rand.Float64()*2 - 1) * mutationRate * math.Abs(value)
+			q.QTable[state][action] = value + mutation
+		}
+	}
 }
 
 // mergeQTables combines the current Q-table with another Q-table

@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	speed := flag.Int("speed", 10, "Game speed in milliseconds (lower = faster)")
+	speed := flag.Int("speed", 200, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
 	rand.Seed(time.Now().UnixNano())
