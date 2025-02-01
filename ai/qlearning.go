@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // Global mutex for file access synchronization
@@ -46,7 +48,7 @@ const (
 type QTable map[string]map[Action]float64
 
 type QLearning struct {
-	ID           int
+	UUID         string
 	QTable       QTable
 	LearningRate float64
 	Discount     float64
@@ -55,9 +57,60 @@ type QLearning struct {
 	GamesPlayed  int
 }
 
-func NewQLearning(id int, parentTable QTable, mutationRate float64) *QLearning {
+// Breed creates a new QLearning agent from two parents
+func Breed(parent1, parent2 *QLearning) *QLearning {
+	child := &QLearning{
+		UUID:         uuid.New().String(),
+		QTable:       make(QTable),
+		LearningRate: 0.1,
+		Discount:     0.9,
+		Epsilon:      0.1,
+		TotalReward:  0,
+		GamesPlayed:  0,
+	}
+
+	// Combine Q-tables from parents randomly
+	allStates := make(map[string]bool)
+	for state := range parent1.QTable {
+		allStates[state] = true
+	}
+	for state := range parent2.QTable {
+		allStates[state] = true
+	}
+
+	for state := range allStates {
+		child.QTable[state] = make(map[Action]float64)
+		for action := Up; action <= Left; action++ {
+			// Randomly choose between parents or create a mixed value
+			if rand.Float64() < 0.5 {
+				if val, ok := parent1.QTable[state][action]; ok {
+					child.QTable[state][action] = val
+				} else if val, ok := parent2.QTable[state][action]; ok {
+					child.QTable[state][action] = val
+				}
+			} else {
+				val1, ok1 := parent1.QTable[state][action]
+				val2, ok2 := parent2.QTable[state][action]
+				if ok1 && ok2 {
+					// Create a mixed value with random mutation
+					mix := (val1 + val2) / 2
+					mutation := (rand.Float64()*2 - 1) * 0.1 * math.Abs(mix)
+					child.QTable[state][action] = mix + mutation
+				} else if ok1 {
+					child.QTable[state][action] = val1
+				} else if ok2 {
+					child.QTable[state][action] = val2
+				}
+			}
+		}
+	}
+
+	return child
+}
+
+func NewQLearning(parentTable QTable, mutationRate float64) *QLearning {
 	q := &QLearning{
-		ID:           id,
+		UUID:         uuid.New().String(),
 		QTable:       make(QTable),
 		LearningRate: 0.1,
 		Discount:     0.9,
@@ -71,7 +124,7 @@ func NewQLearning(id int, parentTable QTable, mutationRate float64) *QLearning {
 		q.QTable = q.createMutatedTable(parentTable, mutationRate)
 	} else {
 		// Try to load existing Q-table if no parent is provided
-		filename := GetQTableFilename(id)
+		filename := GetQTableFilename("", q.UUID) // Empty game UUID for initial creation
 		if err := q.LoadQTable(filename); err != nil {
 			// If file doesn't exist, use the new Q-table
 			q.SaveQTable(filename) // Create initial empty file
@@ -98,8 +151,8 @@ func (q *QLearning) createMutatedTable(parentTable QTable, mutationRate float64)
 }
 
 // GetQTableFilename returns the filename for a Q-table based on agent ID
-func GetQTableFilename(id int) string {
-	return "qtable_" + string(rune('A'+id)) + ".json"
+func GetQTableFilename(gameUUID, agentUUID string) string {
+	return filepath.Join("data", "games", gameUUID, "agents", agentUUID+".json")
 }
 
 // SaveQTable saves the Q-table to a file with concurrent access protection
@@ -146,10 +199,15 @@ func (q *QLearning) LoadQTable(filename string) error {
 }
 
 // mergeQTables combines the current Q-table with another Q-table
-// using a weighted average approach
+// keeping only the better values
 func (q *QLearning) mergeQTables(other QTable) {
 	tableMutex.Lock()
 	defer tableMutex.Unlock()
+
+	// Only merge if the current performance is better than previous
+	if q.TotalReward <= 0 {
+		return // Don't save poor performances
+	}
 
 	for state, actions := range other {
 		if _, exists := q.QTable[state]; !exists {
@@ -158,11 +216,9 @@ func (q *QLearning) mergeQTables(other QTable) {
 
 		for action, value := range actions {
 			currentValue, exists := q.QTable[state][action]
-			if !exists {
+			if !exists || value > currentValue {
+				// Keep the better value
 				q.QTable[state][action] = value
-			} else {
-				// Use weighted average for merging
-				q.QTable[state][action] = (currentValue + value) / 2
 			}
 		}
 	}
@@ -236,8 +292,8 @@ func (q *QLearning) Update(state State, action Action, nextState State) float64 
 	if distanceChange < 0 {
 		// Got closer to food
 		reward = 0.5
-	} else if distanceChange > 0 {
-		// Got further from food
+	} else {
+		// Got further from food or stayed same distance
 		reward = -0.3
 	}
 
@@ -246,8 +302,8 @@ func (q *QLearning) Update(state State, action Action, nextState State) float64 
 		// Found food
 		reward = 1.0
 	} else if nextState.DangerDirs[action] {
-		// Moved towards danger
-		reward = -1.0
+		// Check if it's a self-collision (danger in the direction we're moving)
+		reward = -1.5 // More severe penalty for self-collision
 	}
 
 	tableMutex.Lock()
@@ -282,10 +338,10 @@ func (q *QLearning) Update(state State, action Action, nextState State) float64 
 	// Update total reward
 	q.TotalReward += reward
 
-	// Periodically save to share learning progress
-	if q.GamesPlayed%100 == 0 { // Reduced frequency of saves
+	// Only save if we have a good performance
+	if reward > 0 && q.GamesPlayed%50 == 0 { // Save good performances more frequently
 		go func() {
-			if err := q.SaveQTable(GetQTableFilename(q.ID)); err != nil {
+			if err := q.SaveQTable(GetQTableFilename("", q.UUID)); err != nil {
 				return // Ignore errors during periodic saves
 			}
 		}()
