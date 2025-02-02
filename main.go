@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"snake-game/ai"
 	"snake-game/game"
+	"snake-game/game/types"
 	"snake-game/ui"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 )
 
 func main() {
-	speed := flag.Int("speed", 100, "Game speed in milliseconds (lower = faster)")
+	speed := flag.Int("speed", 10, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
 	rand.Seed(time.Now().UnixNano())
@@ -40,13 +41,14 @@ func main() {
 	for !rl.WindowShouldClose() {
 		if rl.IsKeyPressed(rl.KeyQ) {
 			// Save all Q-tables and game stats
-			g.Stats.EndTime = time.Now()
-			statsFile := filepath.Join("data", "games", g.UUID, "stats.json")
-			statsData, _ := json.MarshalIndent(g.Stats, "", "  ")
+			stats := g.GetStats()
+			stats.EndTime = time.Now()
+			statsFile := filepath.Join("data", "games", g.GetUUID(), "stats.json")
+			statsData, _ := json.MarshalIndent(stats, "", "  ")
 			os.WriteFile(statsFile, statsData, 0644)
 
-			for _, snake := range g.Snakes {
-				filename := ai.GetQTableFilename(g.UUID, snake.AI.UUID)
+			for _, snake := range g.GetSnakes() {
+				filename := ai.GetQTableFilename(g.GetUUID(), snake.AI.UUID)
 				snake.AI.SaveQTable(filename)
 			}
 			break
@@ -67,45 +69,42 @@ func main() {
 			g.Update()
 			lastUpdate = time.Now()
 
-			// Check for snake collisions and breeding
-			for i := 0; i < len(g.Snakes); i++ {
-				for j := i + 1; j < len(g.Snakes); j++ {
-					snake1 := g.Snakes[i]
-					snake2 := g.Snakes[j]
+			// Check if all snakes are dead to start a new game
+			if g.GetStateManager().GetPopulationManager().IsAllSnakesDead() {
+				// Save current game stats
+				g.SaveGameStats()
 
-					// Check if snakes are face to face
-					head1 := snake1.Body[len(snake1.Body)-1]
-					head2 := snake2.Body[len(snake2.Body)-1]
+				// Save Q-tables for all snakes
+				for _, snake := range g.GetSnakes() {
+					filename := ai.GetQTableFilename(g.GetUUID(), snake.AI.UUID)
+					snake.AI.SaveQTable(filename)
+				}
 
-					// Check if heads are adjacent
-					if abs(head1.X-head2.X)+abs(head1.Y-head2.Y) == 1 {
-						// Create new agent from parents
-						childAI := ai.Breed(snake1.AI, snake2.AI)
+				// Get best snakes from current game
+				bestSnakes := g.GetStateManager().GetPopulationManager().GetBestSnakes(types.NumAgents)
+				previousGameID := g.GetUUID()
 
-						// Add new snake at a random position
-						startPos := [2]int{
-							rand.Intn(g.Grid.Width),
-							rand.Intn(g.Grid.Height),
-						}
-						newSnake := game.NewSnake(startPos, childAI, g)
-						g.Snakes = append(g.Snakes, newSnake)
+				// Create new game with same dimensions
+				g = game.NewGame(g.Grid.Width, g.Grid.Height, previousGameID)
 
-						// Update game stats
-						g.Stats.AgentStats = append(g.Stats.AgentStats, game.AgentStats{
-							UUID:         childAI.UUID,
-							Score:        0,
-							AverageScore: 0,
-							TotalReward:  0,
-							GamesPlayed:  0,
-						})
+				// Add mutated copies of best snakes to new game
+				for _, bestSnake := range bestSnakes {
+					// Create new agent with mutation of best snake's Q-table
+					newAgent := ai.NewQLearning(bestSnake.AI.GetQTable(), 0.01) // 1% mutation rate
+
+					// Add new snake at a random position
+					startPos := [2]int{
+						rand.Intn(g.Grid.Width),
+						rand.Intn(g.Grid.Height),
 					}
+					g.NewSnake(startPos[0], startPos[1], newAgent)
 				}
 			}
 
-			// Save Q-tables periodically (less frequently and synchronously)
-			for _, snake := range g.Snakes {
+			// Save Q-tables periodically
+			for _, snake := range g.GetSnakes() {
 				if snake.GameOver && snake.AI.GamesPlayed%10 == 0 {
-					filename := ai.GetQTableFilename(g.UUID, snake.AI.UUID)
+					filename := ai.GetQTableFilename(g.GetUUID(), snake.AI.UUID)
 					snake.AI.SaveQTable(filename)
 				}
 			}
@@ -115,14 +114,15 @@ func main() {
 	}
 
 	// Save final game state
-	g.Stats.EndTime = time.Now()
-	statsFile := filepath.Join("data", "games", g.UUID, "stats.json")
-	statsData, _ := json.MarshalIndent(g.Stats, "", "  ")
+	stats := g.GetStats()
+	stats.EndTime = time.Now()
+	statsFile := filepath.Join("data", "games", g.GetUUID(), "stats.json")
+	statsData, _ := json.MarshalIndent(stats, "", "  ")
 	os.WriteFile(statsFile, statsData, 0644)
 
 	// Save Q-tables sequentially when closing window to prevent I/O contention
-	for _, snake := range g.Snakes {
-		filename := ai.GetQTableFilename(g.UUID, snake.AI.UUID)
+	for _, snake := range g.GetSnakes() {
+		filename := ai.GetQTableFilename(g.GetUUID(), snake.AI.UUID)
 		snake.AI.SaveQTable(filename)
 	}
 }

@@ -23,26 +23,27 @@ type State struct {
 	DangerDirs      [4]bool // Danger in each direction (up, right, down, left)
 	LastAction      Action  // Previous action taken
 	LastDistance    int     // Previous distance to food
+	CurrentDir      [2]int  // Current direction of movement (x, y)
 }
 
 // NewState creates a new state with initialized values
-func NewState(foodDir [2]int, foodDist int, dangers [4]bool) State {
+func NewState(foodDir [2]int, foodDist int, dangers [4]bool, currentDir [2]int) State {
 	return State{
 		RelativeFoodDir: foodDir,
 		FoodDistance:    foodDist,
 		DangerDirs:      dangers,
 		LastAction:      -1, // No previous action
 		LastDistance:    foodDist,
+		CurrentDir:      currentDir,
 	}
 }
 
 type Action int
 
 const (
-	Up Action = iota
-	Right
-	Down
-	Left
+	Forward Action = iota
+	ForwardRight
+	ForwardLeft
 )
 
 type QTable map[string]map[Action]float64
@@ -92,7 +93,7 @@ func Breed(parent1, parent2 *QLearning) *QLearning {
 
 	for state := range allStates {
 		child.QTable[state] = make(map[Action]float64)
-		for action := Up; action <= Left; action++ {
+		for action := Forward; action <= ForwardLeft; action++ {
 			// Randomly choose between parents or create a mixed value
 			if rand.Float64() < 0.5 {
 				if val, ok := parent1.QTable[state][action]; ok {
@@ -255,7 +256,8 @@ func (q *QLearning) getStateKey(s State) string {
 		string(rune(boolToInt(s.DangerDirs[0]))) +
 		string(rune(boolToInt(s.DangerDirs[1]))) +
 		string(rune(boolToInt(s.DangerDirs[2]))) +
-		string(rune(boolToInt(s.DangerDirs[3])))
+		string(rune(boolToInt(s.DangerDirs[3]))) +
+		string(rune(s.CurrentDir[0])) + string(rune(s.CurrentDir[1]))
 }
 
 func boolToInt(b bool) int {
@@ -268,7 +270,7 @@ func boolToInt(b bool) int {
 func (q *QLearning) GetAction(state State) Action {
 	// Exploration: random action
 	if rand.Float64() < q.Epsilon {
-		return Action(rand.Intn(4))
+		return Action(rand.Intn(3))
 	}
 
 	// Exploitation: best known action
@@ -286,7 +288,7 @@ func (q *QLearning) getBestAction(state State) Action {
 		// Check again in case another goroutine initialized it
 		if _, exists := q.QTable[stateKey]; !exists {
 			q.QTable[stateKey] = make(map[Action]float64)
-			for action := Up; action <= Left; action++ {
+			for action := Forward; action <= ForwardLeft; action++ {
 				q.QTable[stateKey][action] = 0
 			}
 		}
@@ -294,7 +296,7 @@ func (q *QLearning) getBestAction(state State) Action {
 		tableMutex.RLock()
 	}
 
-	bestAction := Up
+	bestAction := Forward
 	bestValue := math.Inf(-1)
 	for action, value := range q.QTable[stateKey] {
 		if value > bestValue {
@@ -304,6 +306,12 @@ func (q *QLearning) getBestAction(state State) Action {
 	}
 
 	return bestAction
+}
+
+func (q *QLearning) GetQTable() QTable {
+	tableMutex.RLock()
+	defer tableMutex.RUnlock()
+	return q.QTable.Copy()
 }
 
 func (q *QLearning) Update(state State, action Action, nextState State) float64 {
@@ -332,19 +340,21 @@ func (q *QLearning) Update(state State, action Action, nextState State) float64 
 		reward = -1.5 // More severe penalty for self-collision
 	}
 
+	// No need for direction penalty since we only allow forward movements
+
 	tableMutex.Lock()
 	defer tableMutex.Unlock()
 
 	// Initialize Q-values if not exists
 	if _, exists := q.QTable[stateKey]; !exists {
 		q.QTable[stateKey] = make(map[Action]float64)
-		for a := Up; a <= Left; a++ {
+		for a := Forward; a <= ForwardLeft; a++ {
 			q.QTable[stateKey][a] = 0
 		}
 	}
 	if _, exists := q.QTable[nextStateKey]; !exists {
 		q.QTable[nextStateKey] = make(map[Action]float64)
-		for a := Up; a <= Left; a++ {
+		for a := Forward; a <= ForwardLeft; a++ {
 			q.QTable[nextStateKey][a] = 0
 		}
 	}
