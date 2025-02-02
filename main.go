@@ -1,11 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"math/rand"
-	"os"
-	"path/filepath"
 	"snake-game/ai"
 	"snake-game/game"
 	"snake-game/game/types"
@@ -16,7 +13,7 @@ import (
 )
 
 func main() {
-	speed := flag.Int("speed", 10, "Game speed in milliseconds (lower = faster)")
+	speed := flag.Int("speed", 200, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
 	rand.Seed(time.Now().UnixNano())
@@ -41,11 +38,7 @@ func main() {
 	for !rl.WindowShouldClose() {
 		if rl.IsKeyPressed(rl.KeyQ) {
 			// Save all Q-tables and game stats
-			stats := g.GetStats()
-			stats.EndTime = time.Now()
-			statsFile := filepath.Join("data", "games", g.GetUUID(), "stats.json")
-			statsData, _ := json.MarshalIndent(stats, "", "  ")
-			os.WriteFile(statsFile, statsData, 0644)
+			g.SaveGameStats() // Use the proper SaveGameStats method
 
 			for _, snake := range g.GetSnakes() {
 				filename := ai.GetQTableFilename(g.GetUUID(), snake.AI.UUID)
@@ -114,11 +107,7 @@ func main() {
 	}
 
 	// Save final game state
-	stats := g.GetStats()
-	stats.EndTime = time.Now()
-	statsFile := filepath.Join("data", "games", g.GetUUID(), "stats.json")
-	statsData, _ := json.MarshalIndent(stats, "", "  ")
-	os.WriteFile(statsFile, statsData, 0644)
+	g.SaveGameStats() // Use the proper SaveGameStats method
 
 	// Save Q-tables sequentially when closing window to prevent I/O contention
 	for _, snake := range g.GetSnakes() {

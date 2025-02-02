@@ -116,3 +116,30 @@ func (cm *CollisionManager) CheckHeadToHeadCollision(pos types.Point, snakes []*
 func (cm *CollisionManager) IsFoodCollision(pos types.Point, food types.Point) bool {
 	return pos == food
 }
+
+// HandleMovement processes a snake's movement and checks all possible collisions
+func (cm *CollisionManager) HandleMovement(snake *entity.Snake, newHead types.Point, snakes []*entity.Snake) (bool, *entity.Snake, bool) {
+	// Returns: isDead, collidedSnake, isHeadToHead
+	hasCollision, collidedSnake := cm.CheckCollision(newHead, snakes, snake)
+	if hasCollision {
+		if collidedSnake != nil {
+			// Check if it's a head-to-head collision
+			isHeadToHead, _ := cm.CheckHeadToHeadCollision(newHead, snakes, snake)
+			if isHeadToHead {
+				return true, collidedSnake, true
+			}
+		}
+		return true, collidedSnake, false
+	}
+	return false, nil, false
+}
+
+// CheckFoodCollisions checks if a snake has collided with any food
+func (cm *CollisionManager) CheckFoodCollisions(pos types.Point, foodList []types.Point) (bool, types.Point) {
+	for _, food := range foodList {
+		if cm.IsFoodCollision(pos, food) {
+			return true, food
+		}
+	}
+	return false, types.Point{}
+}

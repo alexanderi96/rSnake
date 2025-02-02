@@ -5,6 +5,7 @@ import (
 	"snake-game/game/entity"
 	"snake-game/game/manager"
 	"snake-game/game/types"
+	"time"
 
 	"golang.org/x/exp/rand"
 )
@@ -26,8 +27,8 @@ func (g *Game) GetUUID() string {
 	return g.stateManager.UUID
 }
 
-// GetStats returns the current game stats
-func (g *Game) GetStats() manager.GameStats {
+// GetStats returns the current game stats and game start time
+func (g *Game) GetStats() (manager.GameStats, time.Time) {
 	return g.stateManager.GetStats()
 }
 
@@ -93,9 +94,39 @@ func (g *Game) updateSnake(snake *entity.Snake) {
 		return
 	}
 
-	// Get current state and AI action
+	// Update AI state and get next action
+	g.updateAIState(snake)
+
+	// Calculate new head position
+	newHead := g.calculateNewPosition(snake)
+
+	// Handle movement and collisions
+	isDead, collidedSnake, isHeadToHead := g.collisionMgr.HandleMovement(snake, newHead, g.popManager.GetSnakes())
+	if isDead {
+		if isHeadToHead {
+			// Try reproduction on head-to-head collision
+			if g.popManager.HandleReproduction(snake, collidedSnake) {
+				return
+			}
+		}
+		// Handle death
+		g.handleSnakeDeath(snake)
+		return
+	}
+
+	// Move snake
+	snake.Move(newHead)
+
+	// Handle food collisions
+	if hasFood, food := g.collisionMgr.CheckFoodCollisions(newHead, g.stateManager.GetFoodList()); hasFood {
+		g.handleFoodCollision(snake, food)
+	} else {
+		snake.RemoveTail() // Only remove tail if no food was eaten
+	}
+}
+
+func (g *Game) updateAIState(snake *entity.Snake) {
 	currentState := g.getSnakeState(snake)
-	var action ai.Action
 
 	if snake.LastState != (ai.State{}) {
 		// Update Q-values based on previous state and action
@@ -103,49 +134,57 @@ func (g *Game) updateSnake(snake *entity.Snake) {
 	}
 
 	// Get next action from AI
-	action = snake.AI.GetAction(currentState)
+	action := snake.AI.GetAction(currentState)
 	snake.LastState = currentState
 	snake.LastAction = action
 
 	// Convert AI action to direction
 	newDirection := g.actionToDirection(action, snake.Direction)
 	snake.SetDirection(newDirection)
+}
 
-	// Calculate new head position
+func (g *Game) calculateNewPosition(snake *entity.Snake) types.Point {
 	head := snake.GetHead()
-	newHead := types.Point{
+	return types.Point{
 		X: head.X + snake.Direction.X,
 		Y: head.Y + snake.Direction.Y,
 	}
+}
 
-	// Check for collisions
-	if hasCollision, collidedSnake := g.collisionMgr.CheckCollision(newHead, g.popManager.GetSnakes(), snake); hasCollision {
-		// If it's a head-to-head collision, try reproduction
-		if collidedSnake != nil && newHead == collidedSnake.GetHead() {
-			if g.popManager.HandleReproduction(snake, collidedSnake) {
-				return
-			}
-		}
+func (g *Game) handleSnakeDeath(snake *entity.Snake) {
+	snake.Dead = true
+	snake.GameOver = true
+	snake.AI.GamesPlayed++
 
-		// Any collision that didn't result in reproduction is fatal
-		snake.Dead = true
-		snake.GameOver = true
-		snake.AI.GamesPlayed++
-		return
+	// Update session high score
+	if snake.Score > snake.SessionHigh {
+		snake.SessionHigh = snake.Score
 	}
 
-	// Move snake
-	snake.Move(newHead)
-
-	// Check food collision with any available food
-	for _, food := range g.stateManager.GetFoodList() {
-		if g.collisionMgr.IsFoodCollision(newHead, food) {
-			snake.Score++
-			g.stateManager.RemoveFood(food)
-			return // Don't remove tail when eating food
-		}
+	// Update all-time high score
+	if snake.Score > snake.AllTimeHigh {
+		snake.AllTimeHigh = snake.Score
 	}
-	snake.RemoveTail() // Only remove tail if no food was eaten
+
+	// Update scores history
+	snake.Scores = append(snake.Scores, snake.Score)
+	if len(snake.Scores) > 200 { // Keep only last 200 scores
+		snake.Scores = snake.Scores[1:]
+	}
+
+	// Update average score
+	total := 0
+	for _, score := range snake.Scores {
+		total += score
+	}
+	if len(snake.Scores) > 0 {
+		snake.AverageScore = float64(total) / float64(len(snake.Scores))
+	}
+}
+
+func (g *Game) handleFoodCollision(snake *entity.Snake, food types.Point) {
+	snake.Score++
+	g.stateManager.RemoveFood(food)
 }
 
 func (g *Game) getSnakeState(s *entity.Snake) ai.State {
