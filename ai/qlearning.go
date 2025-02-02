@@ -2,11 +2,13 @@ package ai
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -61,17 +63,36 @@ func (qt QTable) Copy() QTable {
 }
 
 type QLearning struct {
-	UUID         string
-	QTable       QTable
-	LearningRate float64
-	Discount     float64
-	Epsilon      float64
-	TotalReward  float64
-	GamesPlayed  int
+	UUID               string
+	QTable             QTable
+	LearningRate       float64
+	Discount           float64
+	Epsilon            float64
+	TotalReward        float64
+	GamesPlayed        int
+	MutationEfficiency float64
+	LastMutationTime   time.Time
+	Parents            []string
+	Generation         int
+	Fitness            float64
+	MutationHistory    []MutationRecord
+}
+
+type MutationRecord struct {
+	Timestamp time.Time `json:"timestamp"`
+	StateKey  string    `json:"state_key"`
+	Action    Action    `json:"action"`
+	OldValue  float64   `json:"old_value"`
+	NewValue  float64   `json:"new_value"`
+	Reward    float64   `json:"reward"`
+	Effective bool      `json:"effective"`
 }
 
 // Breed creates a new QLearning agent from two parents
 func Breed(parent1, parent2 *QLearning) *QLearning {
+	// Calculate new generation number
+	childGeneration := max(parent1.Generation, parent2.Generation) + 1
+
 	child := &QLearning{
 		UUID:         uuid.New().String(),
 		QTable:       make(QTable),
@@ -80,6 +101,9 @@ func Breed(parent1, parent2 *QLearning) *QLearning {
 		Epsilon:      0.1,
 		TotalReward:  0,
 		GamesPlayed:  0,
+		// Generation:   1, // Initialize first generation
+		Generation: childGeneration,
+		Parents:    []string{parent1.UUID, parent2.UUID},
 	}
 
 	// Combine Q-tables from parents randomly
@@ -150,15 +174,39 @@ func NewQLearning(parentTable QTable, mutationRate float64) *QLearning {
 // createMutatedTable creates a copy of the parent table with slight mutations
 func (q *QLearning) createMutatedTable(parentTable QTable, mutationRate float64) QTable {
 	newTable := make(QTable)
+	totalMutations := 0
+	effectiveMutations := 0
 
 	for state, actions := range parentTable {
 		newTable[state] = make(map[Action]float64)
 		for action, value := range actions {
+			oldValue := value
 			// Add a small random mutation
 			mutation := (rand.Float64()*2 - 1) * mutationRate * math.Abs(value)
-			newTable[state][action] = value + mutation
+			newValue := value + mutation
+			newTable[state][action] = newValue
+
+			totalMutations++
+			// Consider a mutation effective if it changes the value significantly
+			if math.Abs(newValue-oldValue) > 0.1*math.Abs(oldValue) {
+				effectiveMutations++
+				q.MutationHistory = append(q.MutationHistory, MutationRecord{
+					Timestamp: time.Now(),
+					StateKey:  state,
+					Action:    action,
+					OldValue:  oldValue,
+					NewValue:  newValue,
+					Effective: true,
+				})
+			}
 		}
 	}
+
+	// Update mutation efficiency
+	if totalMutations > 0 {
+		q.MutationEfficiency = float64(effectiveMutations) / float64(totalMutations)
+	}
+	q.LastMutationTime = time.Now()
 
 	return newTable
 }
@@ -267,6 +315,13 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (q *QLearning) GetAction(state State) Action {
 	// Exploration: random action
 	if rand.Float64() < q.Epsilon {
@@ -315,41 +370,44 @@ func (q *QLearning) GetQTable() QTable {
 }
 
 func (q *QLearning) Update(state State, action Action, nextState State) float64 {
+	// Adaptive learning rate based on performance
+	if q.TotalReward > 0 {
+		// Decrease learning rate as performance improves
+		q.LearningRate = math.Max(0.01, q.LearningRate*0.999)
+	} else {
+		// Increase learning rate if performance is poor
+		q.LearningRate = math.Min(0.5, q.LearningRate*1.001)
+	}
 	stateKey := q.getStateKey(state)
 	nextStateKey := q.getStateKey(nextState)
 
-	// Calculate reward based on state transition
-	var reward float64
-
-	// Base reward for moving towards/away from food
-	distanceChange := nextState.FoodDistance - state.FoodDistance
-	if distanceChange < 0 {
-		// Got closer to food
-		reward = 0.5
-	} else {
-		// Got further from food or stayed same distance
-		reward = -0.3
-	}
-
-	// Additional rewards/penalties
-	if nextState.FoodDistance == 0 {
-		// Found food
-		reward = 1.0
-	} else if nextState.DangerDirs[action] {
-		// Check if it's a self-collision (danger in the direction we're moving)
-		reward = -1.5 // More severe penalty for self-collision
-	}
+	// Enhanced reward calculation
+	reward := q.calculateReward(state, action, nextState)
 
 	// No need for direction penalty since we only allow forward movements
+
+	// Track mutation effectiveness
+	if len(q.MutationHistory) > 0 {
+		lastMutation := &q.MutationHistory[len(q.MutationHistory)-1]
+		if !lastMutation.Effective && reward > 0 {
+			lastMutation.Effective = true
+			lastMutation.Reward = reward
+		}
+	}
 
 	tableMutex.Lock()
 	defer tableMutex.Unlock()
 
-	// Initialize Q-values if not exists
+	// Initialize Q-values if not exists with smart initialization
 	if _, exists := q.QTable[stateKey]; !exists {
 		q.QTable[stateKey] = make(map[Action]float64)
 		for a := Forward; a <= ForwardLeft; a++ {
-			q.QTable[stateKey][a] = 0
+			// Initialize based on danger directions
+			if nextState.DangerDirs[a] {
+				q.QTable[stateKey][a] = -0.5 // Start with negative value for dangerous actions
+			} else {
+				q.QTable[stateKey][a] = 0.1 // Small positive value for safe actions
+			}
 		}
 	}
 	if _, exists := q.QTable[nextStateKey]; !exists {
@@ -371,17 +429,93 @@ func (q *QLearning) Update(state State, action Action, nextState State) float64 
 	currentQ := q.QTable[stateKey][action]
 	q.QTable[stateKey][action] = currentQ + q.LearningRate*(reward+q.Discount*maxNextQ-currentQ)
 
-	// Update total reward
+	// Update total reward and fitness
 	q.TotalReward += reward
+	q.Fitness = q.calculateFitness()
 
-	// Only save if we have a good performance
-	if reward > 0 && q.GamesPlayed%50 == 0 { // Save good performances more frequently
+	// Periodic save with performance tracking
+	if (reward > 0 && q.GamesPlayed%50 == 0) || q.Fitness > q.previousBestFitness() {
 		go func() {
 			if err := q.SaveQTable(GetQTableFilename("", q.UUID)); err != nil {
-				return // Ignore errors during periodic saves
+				log.Printf("Failed to save Q-table: %v", err)
+				return
 			}
 		}()
 	}
 
 	return reward
+}
+
+func (q *QLearning) calculateReward(state State, action Action, nextState State) float64 {
+	var reward float64
+
+	// Base reward for moving towards/away from food
+	distanceChange := nextState.FoodDistance - state.FoodDistance
+	if distanceChange < 0 {
+		// Got closer to food
+		reward = 0.5 + float64(state.FoodDistance-nextState.FoodDistance)*0.1 // Additional reward based on distance improvement
+	} else {
+		// Got further from food or stayed same distance
+		reward = -0.3 - float64(nextState.FoodDistance-state.FoodDistance)*0.05 // Increased penalty for getting further
+	}
+
+	// Additional rewards/penalties
+	if nextState.FoodDistance == 0 {
+		// Found food
+		reward = 1.0 + float64(q.GamesPlayed)/1000 // Bonus increases with experience
+	} else if nextState.DangerDirs[action] {
+		// Check if it's a self-collision
+		reward = -1.5
+		// Additional penalty if it's a repeated mistake
+		if q.isRepeatedMistake(state, action) {
+			reward *= 1.2
+		}
+	}
+
+	// Bonus for exploring new states
+	if _, exists := q.QTable[q.getStateKey(state)]; !exists {
+		reward += 0.1 // Small bonus for exploration
+	}
+
+	return reward
+}
+
+func (q *QLearning) calculateFitness() float64 {
+	// Combine multiple factors for fitness calculation
+	avgReward := q.TotalReward / float64(q.GamesPlayed+1)
+	survivalRate := 1.0 - float64(len(q.MutationHistory))/float64(q.GamesPlayed+1)
+	learningProgress := q.LearningRate * q.MutationEfficiency
+
+	return avgReward*0.5 + survivalRate*0.3 + learningProgress*0.2
+}
+
+func (q *QLearning) previousBestFitness() float64 {
+	filename := GetQTableFilename("", q.UUID)
+	if data, err := os.ReadFile(filename); err == nil {
+		var prevTable QTable
+		if err := json.Unmarshal(data, &prevTable); err == nil {
+			// Simple heuristic: sum of positive Q-values
+			var sum float64
+			for _, actions := range prevTable {
+				for _, value := range actions {
+					if value > 0 {
+						sum += value
+					}
+				}
+			}
+			return sum
+		}
+	}
+	return 0
+}
+
+func (q *QLearning) isRepeatedMistake(state State, action Action) bool {
+	stateKey := q.getStateKey(state)
+	count := 0
+	for _, record := range q.MutationHistory {
+		if record.StateKey == stateKey && record.Action == action && !record.Effective {
+			count++
+		}
+	}
+	return count >= 3 // Consider it a repeated mistake if it happened 3 or more times
 }
