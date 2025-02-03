@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"math"
 	"snake-game/game/entity"
 	"snake-game/game/types"
 )
@@ -117,10 +118,33 @@ func (cm *CollisionManager) IsFoodCollision(pos types.Point, food types.Point) b
 	return pos == food
 }
 
+// isAdjacent checks if a position is adjacent to any snake's head
+func (cm *CollisionManager) isAdjacent(pos types.Point, snakes []*entity.Snake, currentSnake *entity.Snake) bool {
+	for _, snake := range snakes {
+		if snake == nil || snake == currentSnake || snake.Dead {
+			continue
+		}
+
+		head := snake.GetHead()
+		dx := math.Abs(float64(pos.X - head.X))
+		dy := math.Abs(float64(pos.Y - head.Y))
+		if (dx == 1 && dy == 0) || (dx == 0 && dy == 1) {
+			return true
+		}
+	}
+	return false
+}
+
 // HandleMovement processes a snake's movement and checks all possible collisions
 func (cm *CollisionManager) HandleMovement(snake *entity.Snake, newHead types.Point, snakes []*entity.Snake) (bool, *entity.Snake, bool) {
 	// Returns: isDead, collidedSnake, isHeadToHead
 	hasCollision, collidedSnake := cm.CheckCollision(newHead, snakes, snake)
+
+	// Check if the new position is adjacent to another snake's head
+	if cm.isAdjacent(newHead, snakes, snake) {
+		return false, nil, false // Block movement but don't kill
+	}
+
 	if hasCollision {
 		if collidedSnake != nil {
 			// Check if it's a head-to-head collision
@@ -129,8 +153,9 @@ func (cm *CollisionManager) HandleMovement(snake *entity.Snake, newHead types.Po
 				return true, collidedSnake, true
 			}
 		}
-		return true, collidedSnake, false
+		return true, collidedSnake, false // Kill on any collision
 	}
+
 	return false, nil, false
 }
 

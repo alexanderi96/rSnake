@@ -8,8 +8,6 @@ type Grid struct {
 
 // Game constants
 const (
-	NumAgents       = 4   // Number of initial agents
-	MaxPopulation   = 12  // Maximum allowed population
-	FoodSpawnCycles = 30  // Reduced from 100 to spawn food more frequently
+	FoodSpawnCycles = 30  // Cycles between food spawns
 	MinFoodRatio    = 1.0 // Ensure at least one food per snake
 )

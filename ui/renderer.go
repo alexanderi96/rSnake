@@ -3,31 +3,17 @@ package ui
 import (
 	"fmt"
 	"snake-game/game"
-	"snake-game/game/entity"
 	"snake-game/game/types"
-	"time"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
-const (
-	NumAgents = 4 // Moved from game package
-)
-
-const (
-	maxScores     = 200 // Maximum number of scores to show in graph
-	borderPadding = 10  // Reduced padding around game area
-)
+const borderPadding = 10 // Padding around game area
 
 type Renderer struct {
 	cellSize        int32
 	screenWidth     int32
 	screenHeight    int32
-	graphHeight     int32
-	graphWidth      int32
-	gameWidth       int32
-	gameHeight      int32
-	statsPanel      int32
 	totalGridWidth  int32
 	totalGridHeight int32
 	offsetX         int32
@@ -41,20 +27,8 @@ func NewRenderer() *Renderer {
 }
 
 func (r *Renderer) UpdateDimensions() {
-	// Get window dimensions
 	r.screenWidth = int32(rl.GetScreenWidth())
 	r.screenHeight = int32(rl.GetScreenHeight())
-
-	// Calculate stats panel width as 25% of screen width for better readability
-	r.statsPanel = r.screenWidth / 4
-
-	// Calculate game area dimensions (excluding stats panel)
-	r.gameWidth = r.screenWidth - r.statsPanel
-	r.gameHeight = r.screenHeight * 3 / 4 // Leave bottom quarter for graph
-
-	// Update graph dimensions
-	r.graphWidth = r.gameWidth - 20       // Full width minus padding
-	r.graphHeight = r.screenHeight/4 - 20 // Quarter height minus padding
 }
 
 func min(a, b int32) int32 {
@@ -69,13 +43,14 @@ func (r *Renderer) Draw(g *game.Game) {
 	rl.BeginDrawing()
 	rl.ClearBackground(rl.Black)
 
-	// Calculate dynamic sizes
-	fontSize := min(int32(r.screenHeight/45), r.statsPanel/15)   // Smaller font
-	lineHeight := min(int32(r.screenHeight/35), r.statsPanel/12) // Adjusted line height
+	fontSize := int32(r.screenHeight / 45) // Dynamic font size
 
-	// Calculate available space for single grid after border padding
-	availableWidth := r.gameWidth - (borderPadding * 2)
-	availableHeight := r.gameHeight - (borderPadding * 2)
+	// Calculate graph height
+	graphHeight := int32(150)
+
+	// Calculate available space for grid after border padding and graph
+	availableWidth := r.screenWidth - (borderPadding * 2)
+	availableHeight := r.screenHeight - (borderPadding * 3) - graphHeight // Extra padding for graph separation
 
 	// Calculate cell size based on available space and grid dimensions
 	cellW := availableWidth / int32(g.Grid.Width)
@@ -86,34 +61,19 @@ func (r *Renderer) Draw(g *game.Game) {
 	r.totalGridWidth = r.cellSize * int32(g.Grid.Width)
 	r.totalGridHeight = r.cellSize * int32(g.Grid.Height)
 
-	// Calculate offset to center the single grid
+	// Position grid at the top with padding
 	r.offsetX = borderPadding
-	r.offsetY = (r.gameHeight - r.totalGridHeight) / 2
+	r.offsetY = borderPadding
 
-	// Draw single grid background
-	rl.DrawRectangle(
-		r.offsetX-1,
-		r.offsetY-1,
-		r.totalGridWidth+2,
-		r.totalGridHeight+2,
-		rl.DarkGray)
-
-	// Draw grid lines
-	for x := 0; x < g.Grid.Width; x++ {
-		for y := 0; y < g.Grid.Height; y++ {
-			rl.DrawRectangleLines(
-				r.offsetX+int32(x*int(r.cellSize)),
-				r.offsetY+int32(y*int(r.cellSize)),
-				r.cellSize, r.cellSize, rl.Gray)
-		}
-	}
+	// Draw grid background
+	rl.DrawRectangle(r.offsetX-1, r.offsetY-1, r.totalGridWidth+2, r.totalGridHeight+2, rl.DarkGray)
 
 	// Get snakes once to ensure consistency
 	snakes := g.GetSnakes()
 
-	// Draw all snakes in the same grid
-	for i, snake := range snakes {
-		// Draw snake if not dead
+	// Draw snake
+	if len(snakes) > 0 {
+		snake := snakes[0]
 		snake.Mutex.RLock()
 		isDead := snake.Dead
 		score := snake.Score
@@ -176,11 +136,54 @@ func (r *Renderer) Draw(g *game.Game) {
 			snake.Mutex.RUnlock()
 		}
 
-		// Draw agent label and score
-		label := fmt.Sprintf("Agent %c: %d", rune('A'+i), score)
-		labelX := r.offsetX + 5
-		labelY := r.offsetY - fontSize - 5 - (int32(i) * (fontSize + 5)) // Move labels above grid
-		rl.DrawText(label, labelX, labelY, fontSize, rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255})
+		// Draw score history graph
+		history := g.GetStateManager().GetScoreHistory()
+		if len(history) > 0 {
+			statsWidth := int32(200) // Space reserved for statistics
+			graphWidth := r.totalGridWidth - statsWidth
+			graphX := r.offsetX + statsWidth
+			graphY := r.offsetY + r.totalGridHeight + borderPadding
+
+			// Draw scores and games count
+			scoreLabel := fmt.Sprintf("Score: %d/%d\nGames: %d", score, g.GetStateManager().GetHighScore(), len(g.GetStateManager().GetScoreHistory()))
+			rl.DrawText(scoreLabel, r.offsetX+10, graphY+graphHeight/2-10, fontSize, rl.White)
+
+			// Draw graph background
+			rl.DrawRectangle(graphX-1, graphY-1, graphWidth+2, graphHeight+2, rl.DarkGray)
+			rl.DrawRectangle(graphX, graphY, graphWidth, graphHeight, rl.Black)
+
+			// Find max score for scaling
+			maxScore := 0
+			for _, s := range history {
+				if s > maxScore {
+					maxScore = s
+				}
+			}
+			if maxScore == 0 {
+				maxScore = 1 // Prevent division by zero
+			}
+
+			// Draw graph lines
+			numPoints := len(history)
+			if numPoints > 1 {
+				pointSpacing := float32(graphWidth) / float32(numPoints-1)
+				for i := 0; i < numPoints-1; i++ {
+					x1 := float32(graphX) + pointSpacing*float32(i)
+					y1 := float32(graphY) + float32(graphHeight) - (float32(history[i])/float32(maxScore))*float32(graphHeight)
+					x2 := float32(graphX) + pointSpacing*float32(i+1)
+					y2 := float32(graphY) + float32(graphHeight) - (float32(history[i+1])/float32(maxScore))*float32(graphHeight)
+					rl.DrawLineEx(
+						rl.Vector2{X: x1, Y: y1},
+						rl.Vector2{X: x2, Y: y2},
+						2,
+						rl.Green)
+				}
+			}
+
+			// Draw axis labels
+			rl.DrawText("Games", graphX+graphWidth/2-30, graphY+graphHeight+5, fontSize, rl.White)
+			rl.DrawText("Score", graphX-35, graphY+graphHeight/2-10, fontSize, rl.White)
+		}
 	}
 
 	// Draw shared food
@@ -191,162 +194,14 @@ func (r *Renderer) Draw(g *game.Game) {
 			r.cellSize, r.cellSize, rl.Red)
 	}
 
-	r.drawStatsPanel(g, fontSize, lineHeight)
-	r.drawPerformanceGraph(g, fontSize, snakes)
+	// Draw game over text if snake is dead
+	if len(snakes) > 0 && snakes[0].Dead {
+		gameOverText := "Game Over! (Restarting...)"
+		textWidth := rl.MeasureText(gameOverText, fontSize)
+		rl.DrawText(gameOverText,
+			r.offsetX+(r.totalGridWidth-int32(textWidth))/2,
+			r.offsetY+r.totalGridHeight/2,
+			fontSize, rl.White)
+	}
 	rl.EndDrawing()
-}
-
-func (r *Renderer) drawStatsPanel(g *game.Game, fontSize, lineHeight int32) {
-	statsX := r.gameWidth + 10 // Increased gap from game area
-	statsY := int32(10)
-
-	// Get snakes once to ensure consistency
-	snakes := g.GetSnakes()
-
-	// Draw stats background
-	rl.DrawRectangle(statsX-5, 0, r.statsPanel+5, r.screenHeight, rl.DarkGray)
-
-	// Draw training time and total games
-	stats, _ := g.GetStats()
-	sessionDuration := time.Since(stats.SessionStartTime)
-	sessionHours := int(sessionDuration.Hours())
-	sessionMinutes := int(sessionDuration.Minutes()) % 60
-	sessionSeconds := int(sessionDuration.Seconds()) % 60
-
-	gameDuration := time.Since(stats.GameStartTime)
-	gameHours := int(gameDuration.Hours())
-	gameMinutes := int(gameDuration.Minutes()) % 60
-	gameSeconds := int(gameDuration.Seconds()) % 60
-
-	rl.DrawText("Training Stats:", statsX, statsY, fontSize, rl.White)
-	statsY += lineHeight
-	rl.DrawText(fmt.Sprintf("Session Time: %02d:%02d:%02d", sessionHours, sessionMinutes, sessionSeconds), statsX+5, statsY, fontSize, rl.White)
-	statsY += lineHeight
-	rl.DrawText(fmt.Sprintf("Current Game: %02d:%02d:%02d", gameHours, gameMinutes, gameSeconds), statsX+5, statsY, fontSize, rl.White)
-	statsY += lineHeight
-	rl.DrawText(fmt.Sprintf("Total Rounds: %d", stats.RoundsPlayed), statsX+5, statsY, fontSize, rl.White)
-	statsY += lineHeight
-	rl.DrawText(fmt.Sprintf("Current Round: %d", stats.CurrentRound), statsX+5, statsY, fontSize, rl.White)
-	statsY += lineHeight * 2
-
-	// Find global best score and agent
-	globalBestScore := 0
-	globalBestAgent := 0
-	for i, snake := range snakes {
-		snake.Mutex.RLock()
-		if snake.AllTimeHigh > globalBestScore {
-			globalBestScore = snake.AllTimeHigh
-			globalBestAgent = i
-		}
-		snake.Mutex.RUnlock()
-	}
-
-	// Draw global best score
-	rl.DrawText("Global Best:", statsX, statsY, fontSize, rl.White)
-	statsY += lineHeight
-	rl.DrawText(fmt.Sprintf("Agent %c: %d", rune('A'+globalBestAgent), globalBestScore),
-		statsX+5, statsY, fontSize, rl.White)
-	statsY += lineHeight * 2
-
-	// Draw detailed stats for each agent
-	rl.DrawText("Agent Stats:", statsX, statsY, fontSize, rl.White)
-	statsY += lineHeight
-	for i, snake := range snakes {
-		snake.Mutex.RLock()
-		sessionHigh := snake.SessionHigh
-		allTimeHigh := snake.AllTimeHigh
-		avgScore := snake.AverageScore
-		gamesPlayed := snake.AI.GamesPlayed
-		snakeColor := snake.Color
-		snake.Mutex.RUnlock()
-
-		color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
-		rl.DrawText(fmt.Sprintf("Agent %c:", rune('A'+i)), statsX+5, statsY, fontSize, color)
-		statsY += lineHeight
-		rl.DrawText(fmt.Sprintf("Session High: %d", sessionHigh), statsX+10, statsY, fontSize, color)
-		statsY += lineHeight
-		rl.DrawText(fmt.Sprintf("All-Time High: %d", allTimeHigh), statsX+10, statsY, fontSize, color)
-		statsY += lineHeight
-		rl.DrawText(fmt.Sprintf("Avg Score: %.2f", avgScore), statsX+10, statsY, fontSize, color)
-		statsY += lineHeight
-		rl.DrawText(fmt.Sprintf("Games: %d", gamesPlayed), statsX+10, statsY, fontSize, color)
-		statsY += lineHeight * 2
-	}
-}
-
-func (r *Renderer) drawPerformanceGraph(g *game.Game, fontSize int32, snakes []*entity.Snake) {
-	graphX := int32(10)
-	graphY := r.gameHeight + 10
-
-	// Draw graph border with thicker lines
-	for i := int32(0); i < 2; i++ {
-		rl.DrawRectangleLines(graphX-i, graphY-i, r.graphWidth+i*2, r.graphHeight+i*2, rl.White)
-	}
-
-	rl.DrawText("Performance History", graphX, graphY-fontSize-5, fontSize, rl.White)
-
-	// Find max score for scaling
-	maxScore := 1
-	for _, snake := range snakes {
-		snake.Mutex.RLock()
-		for _, score := range snake.Scores {
-			if score > maxScore {
-				maxScore = score
-			}
-		}
-		snake.Mutex.RUnlock()
-	}
-
-	// Draw scores for each agent
-	for _, snake := range snakes {
-		snake.Mutex.RLock()
-		scores := make([]int, len(snake.Scores))
-		copy(scores, snake.Scores)
-		avgScore := snake.AverageScore
-		snakeColor := snake.Color
-		snake.Mutex.RUnlock()
-
-		color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
-
-		if len(scores) > 1 {
-			// Draw points and connect them with thicker lines
-			for j := 1; j < len(scores); j++ {
-				x1 := graphX + int32(float32(r.graphWidth)*float32(j-1)/float32(maxScores))
-				y1 := graphY + r.graphHeight - int32(float32(r.graphHeight)*float32(scores[j-1])/float32(maxScore))
-				x2 := graphX + int32(float32(r.graphWidth)*float32(j)/float32(maxScores))
-				y2 := graphY + r.graphHeight - int32(float32(r.graphHeight)*float32(scores[j])/float32(maxScore))
-
-				// Draw thicker lines by drawing multiple offset lines
-				for offset := int32(-1); offset <= 1; offset++ {
-					rl.DrawLine(x1, y1+offset, x2, y2+offset, color)
-				}
-			}
-
-			// Draw average score line (thicker dashed)
-			avgY := graphY + r.graphHeight - int32(float32(r.graphHeight)*float32(avgScore)/float32(maxScore))
-			for x := graphX; x < graphX+int32(r.graphWidth); x += 7 {
-				for offset := int32(-1); offset <= 1; offset++ {
-					rl.DrawLine(x, avgY+offset, x+3, avgY+offset, color)
-				}
-			}
-		}
-	}
-
-	// Draw game over text for each dead snake
-	for i, snake := range snakes {
-		snake.Mutex.RLock()
-		isGameOver := snake.GameOver
-		snakeColor := snake.Color
-		snake.Mutex.RUnlock()
-
-		if isGameOver {
-			color := rl.Color{R: snakeColor.R, G: snakeColor.G, B: snakeColor.B, A: 255}
-			gameOverText := fmt.Sprintf("Agent %c: Game Over! (Restarting...)", rune('A'+i))
-			textWidth := rl.MeasureText(gameOverText, fontSize)
-			rl.DrawText(gameOverText,
-				r.offsetX+(r.totalGridWidth-int32(textWidth))/2,
-				r.offsetY+r.totalGridHeight/2+(int32(i)*fontSize),
-				fontSize, color)
-		}
-	}
 }

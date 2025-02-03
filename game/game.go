@@ -5,7 +5,6 @@ import (
 	"snake-game/game/entity"
 	"snake-game/game/manager"
 	"snake-game/game/types"
-	"time"
 
 	"golang.org/x/exp/rand"
 )
@@ -22,22 +21,12 @@ func (g *Game) GetSnakes() []*entity.Snake {
 	return g.popManager.GetSnakes()
 }
 
-// GetUUID returns the game's UUID
-func (g *Game) GetUUID() string {
-	return g.stateManager.UUID
-}
-
-// GetStats returns the current game stats and game start time
-func (g *Game) GetStats() (manager.GameStats, time.Time) {
-	return g.stateManager.GetStats()
-}
-
 // GetStateManager returns the game's state manager
 func (g *Game) GetStateManager() *manager.StateManager {
 	return g.stateManager
 }
 
-func NewGame(width, height int, previousGameID string) *Game {
+func NewGame(width, height int) *Game {
 	grid := types.Grid{
 		Width:  width,
 		Height: height,
@@ -45,7 +34,7 @@ func NewGame(width, height int, previousGameID string) *Game {
 
 	collisionMgr := manager.NewCollisionManager(grid)
 	popManager := manager.NewPopulationManager(grid)
-	stateManager := manager.NewStateManager(grid, previousGameID, collisionMgr, popManager)
+	stateManager := manager.NewStateManager(grid, collisionMgr, popManager)
 
 	game := &Game{
 		Grid:         grid,
@@ -64,22 +53,13 @@ func (g *Game) Update() {
 	// Update population manager (handles aging and internal state)
 	g.popManager.Update()
 
-	// Update population history
-	g.popManager.UpdatePopulationHistory()
-
-	// Get current snakes
+	// Get current snake
 	snakes := g.popManager.GetSnakes()
-
-	// Update each snake
-	for _, snake := range snakes {
-		if snake == nil || snake.Dead {
-			continue
-		}
-
-		g.updateSnake(snake)
+	if len(snakes) > 0 && !snakes[0].Dead {
+		g.updateSnake(snakes[0])
 	}
 
-	// Remove dead snakes
+	// Remove dead snake and create new one if needed
 	g.popManager.RemoveDeadSnakes()
 
 	// Update game state
@@ -101,14 +81,8 @@ func (g *Game) updateSnake(snake *entity.Snake) {
 	newHead := g.calculateNewPosition(snake)
 
 	// Handle movement and collisions
-	isDead, collidedSnake, isHeadToHead := g.collisionMgr.HandleMovement(snake, newHead, g.popManager.GetSnakes())
+	isDead, _, _ := g.collisionMgr.HandleMovement(snake, newHead, g.popManager.GetSnakes())
 	if isDead {
-		if isHeadToHead {
-			// Try reproduction on head-to-head collision
-			if g.popManager.HandleReproduction(snake, collidedSnake) {
-				return
-			}
-		}
 		// Handle death
 		g.handleSnakeDeath(snake)
 		return
@@ -154,32 +128,10 @@ func (g *Game) calculateNewPosition(snake *entity.Snake) types.Point {
 func (g *Game) handleSnakeDeath(snake *entity.Snake) {
 	snake.Dead = true
 	snake.GameOver = true
-	snake.AI.GamesPlayed++
 
-	// Update session high score
-	if snake.Score > snake.SessionHigh {
-		snake.SessionHigh = snake.Score
-	}
-
-	// Update all-time high score
-	if snake.Score > snake.AllTimeHigh {
-		snake.AllTimeHigh = snake.Score
-	}
-
-	// Update scores history
-	snake.Scores = append(snake.Scores, snake.Score)
-	if len(snake.Scores) > 200 { // Keep only last 200 scores
-		snake.Scores = snake.Scores[1:]
-	}
-
-	// Update average score
-	total := 0
-	for _, score := range snake.Scores {
-		total += score
-	}
-	if len(snake.Scores) > 0 {
-		snake.AverageScore = float64(total) / float64(len(snake.Scores))
-	}
+	// Update high score and add to history
+	g.stateManager.UpdateScore(snake.Score)
+	g.stateManager.AddToHistory(snake.Score)
 }
 
 func (g *Game) handleFoodCollision(snake *entity.Snake, food types.Point) {
@@ -234,12 +186,10 @@ func (g *Game) checkDanger(pos types.Point, snake *entity.Snake) bool {
 
 func (g *Game) actionToDirection(action ai.Action, currentDir types.Point) types.Point {
 	switch action {
-	case ai.Forward:
-		return currentDir
-	case ai.ForwardRight:
+	case ai.Right:
 		// Rotate current direction 90 degrees clockwise
 		return types.Point{X: -currentDir.Y, Y: currentDir.X}
-	case ai.ForwardLeft:
+	case ai.Left:
 		// Rotate current direction 90 degrees counter-clockwise
 		return types.Point{X: currentDir.Y, Y: -currentDir.X}
 	}
@@ -277,8 +227,4 @@ func (g *Game) NewSnake(x, y int, agent *ai.QLearning) *entity.Snake {
 	initialFood := g.stateManager.GenerateFood(g.popManager.GetSnakes())
 	g.stateManager.AddFood(initialFood)
 	return snake
-}
-
-func (g *Game) SaveGameStats() {
-	g.stateManager.SaveGameStats()
 }

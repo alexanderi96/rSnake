@@ -11,37 +11,27 @@ type Color struct {
 }
 
 type Snake struct {
-	Body              []types.Point
-	Direction         types.Point
-	Score             int
-	AI                *ai.QLearning
-	LastState         ai.State
-	LastAction        ai.Action
-	Dead              bool
-	GameOver          bool
-	SessionHigh       int
-	AllTimeHigh       int
-	Scores            []int
-	AverageScore      float64
-	Mutex             sync.RWMutex
-	HasReproducedEver bool
-	Color             Color
-	Age               int
+	Body       []types.Point
+	Direction  types.Point
+	Score      int
+	AI         *ai.QLearning
+	LastState  ai.State
+	LastAction ai.Action
+	Dead       bool
+	GameOver   bool
+	Mutex      sync.RWMutex
+	Color      Color
 }
 
 func NewSnake(startPos types.Point, agent *ai.QLearning, color Color) *Snake {
 	return &Snake{
-		Body:              []types.Point{startPos},
-		Direction:         types.Point{X: 1, Y: 0}, // Start moving right
-		AI:                agent,
-		Score:             0,
-		Dead:              false,
-		GameOver:          false,
-		Scores:            make([]int, 0),
-		AverageScore:      0,
-		HasReproducedEver: false,
-		Color:             color,
-		Age:               0,
+		Body:      []types.Point{startPos},
+		Direction: types.Point{X: 1, Y: 0}, // Start moving right
+		AI:        agent,
+		Score:     0,
+		Dead:      false,
+		GameOver:  false,
+		Color:     color,
 	}
 }
 
@@ -60,10 +50,34 @@ func (s *Snake) GetHead() types.Point {
 }
 
 func (s *Snake) SetDirection(dir types.Point) {
-	// Prevent 180-degree turns
-	if (s.Direction.X != 0 && dir.X == -s.Direction.X) ||
-		(s.Direction.Y != 0 && dir.Y == -s.Direction.Y) {
-		return
+	// Only allow left, right, or straight movement relative to current direction
+	currentDir := s.Direction
+
+	// Calculate relative direction (left, right, or straight)
+	// For straight movement, dir will equal currentDir
+	// For left turn: rotate 90° counter-clockwise
+	// For right turn: rotate 90° clockwise
+	leftTurn := types.Point{X: -currentDir.Y, Y: currentDir.X}
+	rightTurn := types.Point{X: currentDir.Y, Y: -currentDir.X}
+
+	// Get the action from the AI
+	var action ai.Action
+	if dir == leftTurn {
+		action = ai.Left
+	} else if dir == rightTurn {
+		action = ai.Right
+	} else {
+		action = ai.Straight
 	}
-	s.Direction = dir
+
+	// Apply the action
+	switch action {
+	case ai.Left:
+		s.Direction = leftTurn
+	case ai.Right:
+		s.Direction = rightTurn
+	case ai.Straight:
+		// Keep current direction
+		s.Direction = currentDir
+	}
 }
