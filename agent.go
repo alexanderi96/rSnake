@@ -6,28 +6,37 @@ import (
 	"snake-game/qlearning"
 )
 
+var sharedQTableManager *qlearning.QTableManager
+
+func init() {
+	sharedQTableManager = qlearning.NewQTableManager()
+}
+
 type SnakeAgent struct {
 	agent    *qlearning.Agent
 	game     *Game
+	snakeIdx int
 	maxScore int
 }
 
-func NewSnakeAgent(game *Game) *SnakeAgent {
-	agent := qlearning.NewAgent(0.3, 0.95, 0.1) // Higher learning rate and discount for better future planning
+func NewSnakeAgent(game *Game, snakeIdx int) *SnakeAgent {
+	agent := qlearning.NewAgent(sharedQTableManager, 0.3, 0.95) // Higher learning rate and discount for better future planning
 	return &SnakeAgent{
 		agent:    agent,
 		game:     game,
+		snakeIdx: snakeIdx,
 		maxScore: 0,
 	}
 }
 
 // getState returns the current state as a string
 func (sa *SnakeAgent) getState() string {
+	snake := sa.game.GetSnake(sa.snakeIdx)
 	// Get danger information
-	ahead, right, left := sa.game.GetDangers()
+	ahead, right, left := sa.game.GetDangers(sa.snakeIdx)
 
 	// Get food direction relative to current direction
-	foodUp, foodRight, foodDown, foodLeft := sa.game.GetFoodDirection()
+	foodUp, foodRight, foodDown, foodLeft := sa.game.GetFoodDirection(sa.snakeIdx)
 
 	// Calculate food direction relative to snake's orientation
 	var foodDir int
@@ -46,14 +55,15 @@ func (sa *SnakeAgent) getState() string {
 
 	// Convert state to string representation
 	// Format: foodDir_danger-ahead_danger-right_danger-left_foodDist
-	foodDist := sa.getManhattanDistance(sa.game.GetSnake().GetHead(), sa.game.food)
+	foodDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
 	state := fmt.Sprintf("%d_%v_%v_%v_%d", foodDir, ahead, right, left, foodDist)
 	return state
 }
 
 // Update performs one step of the agent's decision making
 func (sa *SnakeAgent) Update() {
-	if sa.game.GetSnake().Dead {
+	snake := sa.game.GetSnake(sa.snakeIdx)
+	if snake.Dead {
 		return
 	}
 
@@ -74,11 +84,11 @@ func (sa *SnakeAgent) Update() {
 	}
 
 	// Store current score to calculate reward
-	oldScore := sa.game.GetSnake().Score
-	oldLength := len(sa.game.GetSnake().Body)
+	oldScore := snake.Score
+	oldLength := len(snake.Body)
 
 	// Apply action
-	sa.game.GetSnake().SetDirection(newDir)
+	snake.SetDirection(newDir)
 	sa.game.Update()
 
 	// Calculate reward
@@ -89,14 +99,14 @@ func (sa *SnakeAgent) Update() {
 	sa.agent.Update(currentState, action, reward, newState, 4)
 
 	// Update max score
-	if sa.game.GetSnake().Score > sa.maxScore {
-		sa.maxScore = sa.game.GetSnake().Score
+	if snake.Score > sa.maxScore {
+		sa.maxScore = snake.Score
 	}
 }
 
 // calculateReward determines the reward for the last action
 func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
-	snake := sa.game.GetSnake()
+	snake := sa.game.GetSnake(sa.snakeIdx)
 
 	if snake.Dead {
 		switch snake.LastCollisionType {
@@ -115,7 +125,7 @@ func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	}
 
 	// Calculate if we're getting closer to or further from food
-	oldDist := sa.getManhattanDistance(sa.game.GetSnake().GetPreviousHead(), sa.game.food)
+	oldDist := sa.getManhattanDistance(sa.game.GetSnake(sa.snakeIdx).GetPreviousHead(), sa.game.food)
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
 
 	if newDist < oldDist {
@@ -155,24 +165,7 @@ func abs(x int) int {
 	return x
 }
 
-// Reset prepares the agent for a new game while keeping learned knowledge
-func (sa *SnakeAgent) Reset() {
-	// Save QTable
-	err := sa.agent.SaveQTable("qtable.json")
-	if err != nil {
-		fmt.Printf("Error saving QTable: %v\n", err)
-	}
-
-	// Create new game with same dimensions
-	width := sa.game.Grid.Width
-	height := sa.game.Grid.Height
-	sa.game = NewGame(width, height)
-
-	// Increment episode counter for epsilon decay
-	sa.agent.IncrementEpisode()
-}
-
 // SaveQTable saves the current QTable to file
 func (sa *SnakeAgent) SaveQTable() error {
-	return sa.agent.SaveQTable("qtable.json")
+	return sharedQTableManager.SaveQTable()
 }
