@@ -2,63 +2,72 @@ package main
 
 import (
 	"flag"
-	"snake-game/game"
-	"snake-game/ui"
 	"time"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
 func main() {
-	speed := flag.Int("speed", 1, "Game speed in milliseconds (lower = faster)")
+	speed := flag.Int("speed", 100, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
-	// rand.Seed(time.Now().UnixNano())
-
-	rl.InitWindow(900, 800, "Snake AI - Q-Learning")
-	rl.SetWindowMinSize(600, 600) // Set minimum window size
+	rl.InitWindow(900, 800, "Snake Game")
+	rl.SetWindowMinSize(600, 600)
 	rl.SetWindowState(rl.FlagWindowResizable)
 	defer rl.CloseWindow()
 
 	rl.SetTargetFPS(60)
 
 	// Calculate initial grid dimensions
-	width := (rl.GetScreenWidth() - 20) / 20    // -20 for padding
-	height := (rl.GetScreenHeight() - 190) / 20 // -190 for padding and graph space
-	g := game.NewGame(width, height)
+	width := (rl.GetScreenWidth() - 20) / 20
+	height := (rl.GetScreenHeight() - 190) / 20
+	g := NewGame(width, height)
 
-	renderer := ui.NewRenderer()
-	lastUpdate := time.Now()
-	updateInterval := time.Duration(*speed) * time.Millisecond
+	renderer := NewRenderer()
+	ticker := time.NewTicker(time.Duration(*speed) * time.Millisecond)
+	defer ticker.Stop()
 
+	// Main game loop
 	for !rl.WindowShouldClose() {
-		if rl.IsKeyPressed(rl.KeyQ) {
+		// Handle input
+		snake := g.GetSnake()
+		if !snake.Dead {
+			if rl.IsKeyPressed(rl.KeyUp) || rl.IsKeyPressed(rl.KeyW) {
+				snake.SetDirection(Point{X: 0, Y: -1})
+			}
+			if rl.IsKeyPressed(rl.KeyDown) || rl.IsKeyPressed(rl.KeyS) {
+				snake.SetDirection(Point{X: 0, Y: 1})
+			}
+			if rl.IsKeyPressed(rl.KeyLeft) || rl.IsKeyPressed(rl.KeyA) {
+				snake.SetDirection(Point{X: -1, Y: 0})
+			}
+			if rl.IsKeyPressed(rl.KeyRight) || rl.IsKeyPressed(rl.KeyD) {
+				snake.SetDirection(Point{X: 1, Y: 0})
+			}
+		}
+
+		// Handle quit
+		if rl.IsKeyPressed(rl.KeyQ) || rl.IsKeyPressed(rl.KeyEscape) {
 			break
 		}
 
 		// Handle window resize
 		if rl.IsWindowResized() {
 			renderer.UpdateDimensions()
-			// Update grid dimensions on resize
-			width := (rl.GetScreenWidth() - 20) / 20    // -20 for padding
-			height := (rl.GetScreenHeight() - 190) / 20 // -190 for padding and graph space
+			width := (rl.GetScreenWidth() - 20) / 20
+			height := (rl.GetScreenHeight() - 190) / 20
 			g.Grid.Width = width
 			g.Grid.Height = height
 		}
 
 		// Update game state at fixed interval
-		if time.Since(lastUpdate) >= updateInterval {
+		select {
+		case <-ticker.C:
 			g.Update()
-			lastUpdate = time.Now()
+		default:
 		}
 
+		// Render
 		renderer.Draw(g)
 	}
-}
-
-func abs(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
 }

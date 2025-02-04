@@ -1,12 +1,13 @@
 module snake-game
 
-go 1.23.4
-
-require github.com/gen2brain/raylib-go/raylib v0.0.0-20250109172833-6dbba4f81a9b
+go 1.21
 
 require (
-	github.com/ebitengine/purego v0.8.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
-	golang.org/x/exp v0.0.0-20250128182459-e0ece0dbea4c // indirect
-	golang.org/x/sys v0.29.0 // indirect
+	github.com/gen2brain/raylib-go/raylib v0.0.0-20240125111008-83d871a38f28
+	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a
+)
+
+require (
+	github.com/ebitengine/purego v0.6.0-alpha.1.0.20231122024802-192c5e846faa // indirect
+	golang.org/x/sys v0.14.0 // indirect
 )
