@@ -133,7 +133,7 @@ func (r *Renderer) Draw(g *Game) {
 		snake.Mutex.RUnlock()
 	}
 
-	// Draw score
+	// Draw score and teleport status
 	scoreLabel := fmt.Sprintf("Score: %d", score)
 	rl.DrawText(scoreLabel, r.offsetX+10, r.offsetY+r.totalGridHeight+borderPadding, fontSize, rl.White)
 
@@ -144,15 +144,6 @@ func (r *Renderer) Draw(g *Game) {
 		r.offsetY+int32(food.Y*int(r.cellSize)),
 		r.cellSize, r.cellSize, rl.Red)
 
-	// Draw game over text if snake is dead
-	if isDead {
-		gameOverText := "Game Over!"
-		textWidth := rl.MeasureText(gameOverText, fontSize)
-		rl.DrawText(gameOverText,
-			r.offsetX+(r.totalGridWidth-int32(textWidth))/2,
-			r.offsetY+r.totalGridHeight/2,
-			fontSize, rl.White)
-	}
 	// Draw statistics graph
 	r.drawStatsGraph()
 
@@ -173,11 +164,16 @@ func (r *Renderer) drawStatsGraph() {
 		return
 	}
 
-	// Find max score for scaling
+	// Find max values for scaling
 	maxScore := stats.Games[0].Score
+	maxDuration := stats.Games[0].EndTime.Sub(stats.Games[0].StartTime).Seconds()
 	for _, game := range stats.Games {
 		if game.Score > maxScore {
 			maxScore = game.Score
+		}
+		duration := game.EndTime.Sub(game.StartTime).Seconds()
+		if duration > maxDuration {
+			maxDuration = duration
 		}
 	}
 
@@ -186,20 +182,39 @@ func (r *Renderer) drawStatsGraph() {
 	if numPoints > 1 {
 		pointSpacing := float32(graphWidth) / float32(numPoints-1)
 		scaleY := float32(graphHeight-40) / float32(maxScore) // Leave more padding for labels
+		durationScaleY := float32(graphHeight-40) / float32(maxDuration)
 
-		// Draw score line (white)
+		// Draw score line (green)
 		for i := 0; i < numPoints; i++ {
 			x := float32(borderPadding) + float32(i)*pointSpacing
 			y := float32(graphY+graphHeight-20) - float32(stats.Games[i].Score)*scaleY
 
 			// Draw point
-			rl.DrawCircle(int32(x), int32(y), 3, rl.White)
+			rl.DrawCircle(int32(x), int32(y), 3, rl.Green)
 
 			// Draw line to next point
 			if i < numPoints-1 {
 				nextX := float32(borderPadding) + float32(i+1)*pointSpacing
 				nextY := float32(graphY+graphHeight-20) - float32(stats.Games[i+1].Score)*scaleY
-				rl.DrawLine(int32(x), int32(y), int32(nextX), int32(nextY), rl.White)
+				rl.DrawLine(int32(x), int32(y), int32(nextX), int32(nextY), rl.Green)
+			}
+		}
+
+		// Draw duration line (purple)
+		for i := 0; i < numPoints; i++ {
+			x := float32(borderPadding) + float32(i)*pointSpacing
+			duration := float32(stats.Games[i].EndTime.Sub(stats.Games[i].StartTime).Seconds())
+			y := float32(graphY+graphHeight-20) - duration*durationScaleY
+
+			// Draw point
+			rl.DrawCircle(int32(x), int32(y), 3, rl.Purple)
+
+			// Draw line to next point
+			if i < numPoints-1 {
+				nextX := float32(borderPadding) + float32(i+1)*pointSpacing
+				nextDuration := float32(stats.Games[i+1].EndTime.Sub(stats.Games[i+1].StartTime).Seconds())
+				nextY := float32(graphY+graphHeight-20) - nextDuration*durationScaleY
+				rl.DrawLine(int32(x), int32(y), int32(nextX), int32(nextY), rl.Purple)
 			}
 		}
 
@@ -217,22 +232,42 @@ func (r *Renderer) drawStatsGraph() {
 		rl.DrawText(fmt.Sprintf("Avg Score: %.1f", avgScore),
 			borderPadding+200,
 			labelY,
-			fontSize, rl.White)
+			fontSize, rl.Green)
 
 		maxScore := r.stats.GetMaxScore()
 		rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
 			r.screenWidth-200,
 			labelY,
-			fontSize, rl.White)
+			fontSize, rl.Green)
+
+		// Draw duration labels
+		avgDuration := 0.0
+		for _, game := range stats.Games {
+			avgDuration += game.EndTime.Sub(game.StartTime).Seconds()
+		}
+		avgDuration /= float64(len(stats.Games))
+
+		rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", avgDuration),
+			borderPadding+400,
+			labelY,
+			fontSize, rl.Purple)
 
 		// Draw Y-axis labels
 		rl.DrawText("0",
 			borderPadding-20,
 			graphY+graphHeight-20,
 			fontSize, rl.Gray)
+
+		// Score scale (green)
 		rl.DrawText(fmt.Sprintf("%d", maxScore),
 			borderPadding-25,
 			graphY,
-			fontSize, rl.Gray)
+			fontSize, rl.Green)
+
+		// Duration scale (purple)
+		rl.DrawText(fmt.Sprintf("%.1fs", maxDuration),
+			borderPadding+graphWidth-40,
+			graphY,
+			fontSize, rl.Purple)
 	}
 }

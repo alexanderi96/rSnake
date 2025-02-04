@@ -14,12 +14,6 @@ type SnakeAgent struct {
 
 func NewSnakeAgent(game *Game) *SnakeAgent {
 	agent := qlearning.NewAgent(0.1, 0.9, 0.1) // learning rate, discount, epsilon
-	// Load QTable if exists
-	err := agent.LoadQTable("qtable.json")
-	if err != nil {
-		fmt.Printf("Error loading QTable: %v\n", err)
-	}
-
 	return &SnakeAgent{
 		agent:    agent,
 		game:     game,
@@ -104,11 +98,16 @@ func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	snake := sa.game.GetSnake()
 
 	if snake.Dead {
-		return -50.0 // Significant penalty for dying
+		switch snake.LastCollisionType {
+		case WallCollision:
+			return -30.0 // Penalty for hitting wall
+		case SelfCollision:
+			return -100.0 // Severe penalty for hitting self
+		}
 	}
 
 	if snake.Score > oldScore {
-		return 30.0 // Major reward for eating food
+		return 50.0 // Reward for eating food
 	}
 
 	// Calculate if we're getting closer to or further from food
@@ -116,10 +115,10 @@ func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
 
 	if newDist < oldDist {
-		return -1.0 // Small reward for moving closer to food
+		return 10.0 // Small reward for moving closer to food
 	}
 
-	return -5.0 // Penalty for moving away from food or not making progress
+	return -5.0 // Penalty for moving away from food
 }
 
 // getManhattanDistance calculates the Manhattan distance between two points

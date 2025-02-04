@@ -30,13 +30,13 @@ func NewGameStats() *GameStats {
 	return stats
 }
 
-func (s *GameStats) AddGame(score int) {
+func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
 	game := GameRecord{
-		StartTime: time.Now(),
-		EndTime:   time.Now(),
+		StartTime: startTime,
+		EndTime:   endTime,
 		Score:     score,
 	}
 	s.Games = append(s.Games, game)

@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	speed := flag.Int("speed", 10, "Game speed in milliseconds (lower = faster)")
+	speed := flag.Int("speed", 1, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
 	rl.InitWindow(900, 800, "Snake Game")
@@ -28,14 +28,22 @@ func main() {
 	ticker := time.NewTicker(time.Duration(*speed) * time.Millisecond)
 	defer ticker.Stop()
 
+	var gameStartTime time.Time
+
 	// Main game loop
 	for !rl.WindowShouldClose() {
 		snake := game.GetSnake()
 
+		// Start timing when snake is alive
+		if !snake.Dead && gameStartTime.IsZero() {
+			gameStartTime = time.Now()
+		}
+
 		// Check if snake is dead and needs to be reset
 		if snake.Dead {
 			// Save stats before reset
-			renderer.stats.AddGame(snake.Score)
+			renderer.stats.AddGame(snake.Score, gameStartTime, time.Now())
+			gameStartTime = time.Time{} // Reset start time
 			// Reset agent with new game
 			agent.Reset()
 			game = agent.game // Update our game reference

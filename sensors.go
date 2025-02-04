@@ -19,7 +19,7 @@ func (g *Game) GetDangers() (ahead, right, left bool) {
 		X: (head.X + dir.X + g.Grid.Width) % g.Grid.Width,
 		Y: (head.Y + dir.Y + g.Grid.Height) % g.Grid.Height,
 	}
-	ahead = g.checkCollision(aheadPos)
+	ahead = g.checkCollision(aheadPos) != NoCollision
 
 	// Calculate right position based on current direction
 	rightDir := Point{X: -dir.Y, Y: dir.X} // Rotate 90° clockwise
@@ -27,7 +27,7 @@ func (g *Game) GetDangers() (ahead, right, left bool) {
 		X: (head.X + rightDir.X + g.Grid.Width) % g.Grid.Width,
 		Y: (head.Y + rightDir.Y + g.Grid.Height) % g.Grid.Height,
 	}
-	right = g.checkCollision(rightPos)
+	right = g.checkCollision(rightPos) != NoCollision
 
 	// Calculate left position based on current direction
 	leftDir := Point{X: dir.Y, Y: -dir.X} // Rotate 90° counterclockwise
@@ -35,7 +35,7 @@ func (g *Game) GetDangers() (ahead, right, left bool) {
 		X: (head.X + leftDir.X + g.Grid.Width) % g.Grid.Width,
 		Y: (head.Y + leftDir.Y + g.Grid.Height) % g.Grid.Height,
 	}
-	left = g.checkCollision(leftPos)
+	left = g.checkCollision(leftPos) != NoCollision
 
 	return ahead, right, left
 }

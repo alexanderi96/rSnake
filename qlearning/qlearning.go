@@ -25,7 +25,7 @@ type Agent struct {
 
 // NewAgent creates a new Q-learning agent
 func NewAgent(learningRate, discount, epsilon float64) *Agent {
-	return &Agent{
+	agent := &Agent{
 		QTable:          make(QTable),
 		LearningRate:    learningRate,
 		Discount:        discount,
@@ -35,6 +35,19 @@ func NewAgent(learningRate, discount, epsilon float64) *Agent {
 		EpsilonDecay:    0.995, // Decay rate per episode
 		TrainingEpisode: 0,
 	}
+
+	// Try to load existing state
+	if err := agent.LoadQTable("qtable.json"); err == nil {
+		// Successfully loaded existing state, keep the loaded epsilon and episode
+		// but update the learning parameters
+		agent.LearningRate = learningRate
+		agent.Discount = discount
+		agent.InitialEpsilon = 0.9
+		agent.MinEpsilon = 0.1
+		agent.EpsilonDecay = 0.995
+	}
+
+	return agent
 }
 
 // GetAction selects an action using epsilon-greedy policy
@@ -114,9 +127,22 @@ func (a *Agent) getMaxQValue(state string) float64 {
 	return maxQ
 }
 
-// SaveQTable saves the Q-table to a file
+// AgentState represents the complete state of the agent to be saved
+type AgentState struct {
+	QTable          QTable  `json:"qtable"`
+	Epsilon         float64 `json:"epsilon"`
+	TrainingEpisode int     `json:"training_episode"`
+}
+
+// SaveQTable saves the agent's state to a file
 func (a *Agent) SaveQTable(filename string) error {
-	data, err := json.MarshalIndent(a.QTable, "", "  ")
+	state := AgentState{
+		QTable:          a.QTable,
+		Epsilon:         a.Epsilon,
+		TrainingEpisode: a.TrainingEpisode,
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("error marshaling QTable: %v", err)
 	}
@@ -129,22 +155,28 @@ func (a *Agent) SaveQTable(filename string) error {
 	return nil
 }
 
-// LoadQTable loads the Q-table from a file
+// LoadQTable loads the agent's state from a file
 func (a *Agent) LoadQTable(filename string) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// If file doesn't exist, start with empty QTable
+			// If file doesn't exist, start with empty state
 			a.QTable = make(QTable)
 			return nil
 		}
 		return fmt.Errorf("error reading QTable file: %v", err)
 	}
 
-	err = json.Unmarshal(data, &a.QTable)
+	var state AgentState
+	err = json.Unmarshal(data, &state)
 	if err != nil {
 		return fmt.Errorf("error unmarshaling QTable: %v", err)
 	}
+
+	// Update agent state
+	a.QTable = state.QTable
+	a.Epsilon = state.Epsilon
+	a.TrainingEpisode = state.TrainingEpisode
 
 	return nil
 }

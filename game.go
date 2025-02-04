@@ -20,15 +20,25 @@ type Color struct {
 }
 
 type Snake struct {
-	Body         []Point
-	Direction    Point
-	Score        int
-	Dead         bool
-	GameOver     bool
-	Mutex        sync.RWMutex
-	Color        Color
-	previousHead Point
+	Body              []Point
+	Direction         Point
+	Score             int
+	Dead              bool
+	GameOver          bool
+	Mutex             sync.RWMutex
+	Color             Color
+	previousHead      Point
+	LastCollisionType CollisionType
 }
+
+// CollisionType represents the type of collision
+type CollisionType int
+
+const (
+	NoCollision CollisionType = iota
+	WallCollision
+	SelfCollision
+)
 
 type Game struct {
 	Grid  Grid
@@ -38,13 +48,14 @@ type Game struct {
 
 func NewSnake(startPos Point, color Color) *Snake {
 	return &Snake{
-		Body:         []Point{startPos},
-		Direction:    Point{X: 1, Y: 0}, // Start moving right
-		Score:        0,
-		Dead:         false,
-		GameOver:     false,
-		Color:        color,
-		previousHead: startPos,
+		Body:              []Point{startPos},
+		Direction:         Point{X: 1, Y: 0}, // Start moving right
+		Score:             0,
+		Dead:              false,
+		GameOver:          false,
+		Color:             color,
+		previousHead:      startPos,
+		LastCollisionType: NoCollision,
 	}
 }
 
@@ -122,9 +133,11 @@ func (g *Game) Update() {
 	newHead := g.calculateNewPosition()
 
 	// Check for collisions
-	if g.checkCollision(newHead) {
+	collisionType := g.checkCollision(newHead)
+	if collisionType != NoCollision {
 		g.snake.Dead = true
 		g.snake.GameOver = true
+		g.snake.LastCollisionType = collisionType
 		return
 	}
 
@@ -142,20 +155,24 @@ func (g *Game) Update() {
 
 func (g *Game) calculateNewPosition() Point {
 	head := g.snake.GetHead()
-	return Point{
-		X: (head.X + g.snake.Direction.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + g.snake.Direction.Y + g.Grid.Height) % g.Grid.Height,
-	}
+	newX := head.X + g.snake.Direction.X
+	newY := head.Y + g.snake.Direction.Y
+
+	return Point{X: newX, Y: newY}
 }
 
-func (g *Game) checkCollision(pos Point) bool {
+func (g *Game) checkCollision(pos Point) CollisionType {
+	if pos.X < 0 || pos.X >= g.Grid.Width || pos.Y < 0 || pos.Y >= g.Grid.Height {
+		return WallCollision
+	}
+
 	// Check self collision
 	for _, part := range g.snake.Body[:len(g.snake.Body)-1] {
 		if pos == part {
-			return true
+			return SelfCollision
 		}
 	}
-	return false
+	return NoCollision
 }
 
 func (g *Game) generateFood() Point {
