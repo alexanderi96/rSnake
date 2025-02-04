@@ -16,10 +16,13 @@ type Renderer struct {
 	totalGridHeight int32
 	offsetX         int32
 	offsetY         int32
+	stats           *GameStats
 }
 
 func NewRenderer() *Renderer {
-	r := &Renderer{}
+	r := &Renderer{
+		stats: NewGameStats(),
+	}
 	r.UpdateDimensions()
 	return r
 }
@@ -150,5 +153,86 @@ func (r *Renderer) Draw(g *Game) {
 			r.offsetY+r.totalGridHeight/2,
 			fontSize, rl.White)
 	}
+	// Draw statistics graph
+	r.drawStatsGraph()
+
 	rl.EndDrawing()
+}
+
+func (r *Renderer) drawStatsGraph() {
+	graphHeight := int32(150)
+	graphWidth := r.screenWidth - (borderPadding * 2)
+	graphY := r.screenHeight - graphHeight - borderPadding
+
+	// Draw graph background
+	rl.DrawRectangle(borderPadding, graphY, graphWidth, graphHeight, rl.DarkGray)
+
+	// Get stats data
+	stats := r.stats.GetStats()
+	if len(stats.Games) == 0 {
+		return
+	}
+
+	// Find max score for scaling
+	maxScore := stats.Games[0].Score
+	for _, game := range stats.Games {
+		if game.Score > maxScore {
+			maxScore = game.Score
+		}
+	}
+
+	// Draw graph lines
+	numPoints := len(stats.Games)
+	if numPoints > 1 {
+		pointSpacing := float32(graphWidth) / float32(numPoints-1)
+		scaleY := float32(graphHeight-40) / float32(maxScore) // Leave more padding for labels
+
+		// Draw score line (white)
+		for i := 0; i < numPoints; i++ {
+			x := float32(borderPadding) + float32(i)*pointSpacing
+			y := float32(graphY+graphHeight-20) - float32(stats.Games[i].Score)*scaleY
+
+			// Draw point
+			rl.DrawCircle(int32(x), int32(y), 3, rl.White)
+
+			// Draw line to next point
+			if i < numPoints-1 {
+				nextX := float32(borderPadding) + float32(i+1)*pointSpacing
+				nextY := float32(graphY+graphHeight-20) - float32(stats.Games[i+1].Score)*scaleY
+				rl.DrawLine(int32(x), int32(y), int32(nextX), int32(nextY), rl.White)
+			}
+		}
+
+		// Draw labels
+		fontSize := int32(15)
+		labelY := r.screenHeight - borderPadding - fontSize
+
+		// Draw game count and scores
+		rl.DrawText(fmt.Sprintf("Games: %d", r.stats.GetGamesPlayed()),
+			borderPadding,
+			labelY,
+			fontSize, rl.White)
+
+		avgScore := r.stats.GetAverageScore()
+		rl.DrawText(fmt.Sprintf("Avg Score: %.1f", avgScore),
+			borderPadding+200,
+			labelY,
+			fontSize, rl.White)
+
+		maxScore := r.stats.GetMaxScore()
+		rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
+			r.screenWidth-200,
+			labelY,
+			fontSize, rl.White)
+
+		// Draw Y-axis labels
+		rl.DrawText("0",
+			borderPadding-20,
+			graphY+graphHeight-20,
+			fontSize, rl.Gray)
+		rl.DrawText(fmt.Sprintf("%d", maxScore),
+			borderPadding-25,
+			graphY,
+			fontSize, rl.Gray)
+	}
 }

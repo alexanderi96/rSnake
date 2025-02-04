@@ -20,13 +20,14 @@ type Color struct {
 }
 
 type Snake struct {
-	Body      []Point
-	Direction Point
-	Score     int
-	Dead      bool
-	GameOver  bool
-	Mutex     sync.RWMutex
-	Color     Color
+	Body         []Point
+	Direction    Point
+	Score        int
+	Dead         bool
+	GameOver     bool
+	Mutex        sync.RWMutex
+	Color        Color
+	previousHead Point
 }
 
 type Game struct {
@@ -37,12 +38,13 @@ type Game struct {
 
 func NewSnake(startPos Point, color Color) *Snake {
 	return &Snake{
-		Body:      []Point{startPos},
-		Direction: Point{X: 1, Y: 0}, // Start moving right
-		Score:     0,
-		Dead:      false,
-		GameOver:  false,
-		Color:     color,
+		Body:         []Point{startPos},
+		Direction:    Point{X: 1, Y: 0}, // Start moving right
+		Score:        0,
+		Dead:         false,
+		GameOver:     false,
+		Color:        color,
+		previousHead: startPos,
 	}
 }
 
@@ -73,6 +75,7 @@ func NewGame(width, height int) *Game {
 }
 
 func (s *Snake) Move(newHead Point) {
+	s.previousHead = s.GetHead()
 	s.Body = append(s.Body, newHead)
 }
 
@@ -84,6 +87,10 @@ func (s *Snake) RemoveTail() {
 
 func (s *Snake) GetHead() Point {
 	return s.Body[len(s.Body)-1]
+}
+
+func (s *Snake) GetPreviousHead() Point {
+	return s.previousHead
 }
 
 func (s *Snake) SetDirection(dir Point) {
