@@ -13,7 +13,7 @@ type SnakeAgent struct {
 }
 
 func NewSnakeAgent(game *Game) *SnakeAgent {
-	agent := qlearning.NewAgent(0.1, 0.9, 0.1) // learning rate, discount, epsilon
+	agent := qlearning.NewAgent(0.3, 0.95, 0.1) // Higher learning rate and discount for better future planning
 	return &SnakeAgent{
 		agent:    agent,
 		game:     game,
@@ -44,9 +44,10 @@ func (sa *SnakeAgent) getState() string {
 		foodDir = 4 // Should never happen
 	}
 
-	// Convert state to string representation (more compact)
-	// Format: foodDir_danger-ahead_danger-right_danger-left
-	state := fmt.Sprintf("%d_%v_%v_%v", foodDir, ahead, right, left)
+	// Convert state to string representation
+	// Format: foodDir_danger-ahead_danger-right_danger-left_foodDist
+	foodDist := sa.getManhattanDistance(sa.game.GetSnake().GetHead(), sa.game.food)
+	state := fmt.Sprintf("%d_%v_%v_%v_%d", foodDir, ahead, right, left, foodDist)
 	return state
 }
 
@@ -100,14 +101,17 @@ func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	if snake.Dead {
 		switch snake.LastCollisionType {
 		case WallCollision:
-			return -30.0 // Penalty for hitting wall
+			return -150.0 // Same high penalty for wall collision as self collision
 		case SelfCollision:
-			return -100.0 // Severe penalty for hitting self
+			return -150.0 // High penalty for hitting self
 		}
 	}
 
 	if snake.Score > oldScore {
-		return 50.0 // Reward for eating food
+		// Reward for eating food increases with snake length
+		baseReward := 200.0                           // Doubled base reward for eating food
+		lengthBonus := float64(len(snake.Body)) * 5.0 // Increased length bonus
+		return baseReward + lengthBonus
 	}
 
 	// Calculate if we're getting closer to or further from food
@@ -115,10 +119,16 @@ func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
 
 	if newDist < oldDist {
-		return 10.0 // Small reward for moving closer to food
+		// Reward for moving closer to food increases with snake length
+		baseReward := 15.0
+		lengthBonus := float64(len(snake.Body)) * 0.5
+		return baseReward + lengthBonus
+	} else {
+		// Penalty for moving away from food increases with snake length
+		basePenalty := -20.0
+		lengthPenalty := float64(len(snake.Body)) * -1.0
+		return basePenalty + lengthPenalty
 	}
-
-	return -5.0 // Penalty for moving away from food
 }
 
 // getManhattanDistance calculates the Manhattan distance between two points
