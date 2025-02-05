@@ -49,7 +49,7 @@ type Game struct {
 func NewSnake(startPos Point, color Color) *Snake {
 	return &Snake{
 		Body:              []Point{startPos},
-		Direction:         RIGHT.ToPoint(), // Start moving right using Direction type
+		Direction:         Direction(rand.Intn(4) + 1).ToPoint(), // Start moving right using Direction type
 		Score:             0,
 		Dead:              false,
 		GameOver:          false,
