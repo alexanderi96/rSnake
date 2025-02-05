@@ -21,104 +21,97 @@ func NewSnakeAgent(game *Game) *SnakeAgent {
 	}
 }
 
-// getState returns the current state as a string
 func (sa *SnakeAgent) getState() string {
-	// Get danger information
-	ahead, right, left := sa.game.GetDangers()
-
-	// Get food direction relative to current direction
+	// Ottieni la direzione del cibo
 	foodUp, foodRight, foodDown, foodLeft := sa.game.GetFoodDirection()
-
-	// Calculate food direction relative to snake's orientation
-	var foodDir int
+	var foodDir Direction
 	switch {
 	case foodUp:
-		foodDir = 0 // Food is above
+		foodDir = UP
 	case foodRight:
-		foodDir = 1 // Food is to the right
+		foodDir = RIGHT
 	case foodDown:
-		foodDir = 2 // Food is below
+		foodDir = DOWN
 	case foodLeft:
-		foodDir = 3 // Food is to the left
+		foodDir = LEFT
 	default:
-		foodDir = 4 // Should never happen
+		foodDir = NONE
 	}
 
-	// Convert state to string representation (more compact)
-	// Format: foodDir_danger-ahead_danger-right_danger-left
-	state := fmt.Sprintf("%d_%v_%v_%v", foodDir, ahead, right, left)
+	// Ottieni la direzione corrente dello snake
+	snakeDir := sa.game.GetCurrentDirection()
+
+	// snakeLength := len(sa.game.GetSnake().Body)
+
+	dangerUp, dangerDown, dangerLeft, dangerRight := sa.game.GetDangers()
+
+	state := fmt.Sprintf("%d:%d:%v:%v:%v:%v", foodDir, snakeDir, dangerUp, dangerDown, dangerLeft, dangerRight)
 	return state
 }
 
-// Update performs one step of the agent's decision making
 func (sa *SnakeAgent) Update() {
 	if sa.game.GetSnake().Dead {
 		return
 	}
 
 	currentState := sa.getState()
-	action := sa.agent.GetAction(currentState, 4) // 4 possible actions (UP, RIGHT, DOWN, LEFT)
+	// Qui indichiamo 3 possibili azioni relative: 0 (sinistra), 1 (dritto), 2 (destra)
+	action := sa.agent.GetAction(currentState, 3)
 
-	// Convert action to direction
-	var newDir Point
-	switch action {
-	case UP:
-		newDir = Point{X: 0, Y: -1}
-	case RIGHT:
-		newDir = Point{X: 1, Y: 0}
-	case DOWN:
-		newDir = Point{X: 0, Y: 1}
-	case LEFT:
-		newDir = Point{X: -1, Y: 0}
-	}
+	// Ottieni la direzione corrente dello snake (in forma relativa, usando ad esempio GetCurrentDirection)
+	currentDir := sa.game.GetCurrentDirection()
 
-	// Store current score to calculate reward
+	// Mappa l'azione relativa nella nuova direzione assoluta
+	newRelativeDirection := sa.mapRelativeAction(currentDir, action)
+	newDir := newRelativeDirection.ToPoint()
+
+	// Salva stato attuale per il reward
 	oldScore := sa.game.GetSnake().Score
 	oldLength := len(sa.game.GetSnake().Body)
 
-	// Apply action
+	// Applica la nuova direzione (SetDirection già previene inversioni a 180°)
 	sa.game.GetSnake().SetDirection(newDir)
 	sa.game.Update()
 
-	// Calculate reward
+	// Calcola il reward
 	reward := sa.calculateReward(oldScore, oldLength)
 
-	// Update Q-values
+	// Aggiorna la Q-table
 	newState := sa.getState()
-	sa.agent.Update(currentState, action, reward, newState, 4)
+	sa.agent.Update(currentState, action, reward, newState, 3)
 
-	// Update max score
 	if sa.game.GetSnake().Score > sa.maxScore {
 		sa.maxScore = sa.game.GetSnake().Score
 	}
 }
 
-// calculateReward determines the reward for the last action
 func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	snake := sa.game.GetSnake()
-
-	if snake.Dead {
-		switch snake.LastCollisionType {
-		case WallCollision:
-			return -30.0 // Penalty for hitting wall
-		case SelfCollision:
-			return -100.0 // Severe penalty for hitting self
-		}
-	}
-
-	if snake.Score > oldScore {
-		return 50.0 // Reward for eating food
-	}
-
-	// Calculate if we're getting closer to or further from food
+	// Calcola la distanza di Manhattan dalla testa al cibo prima e dopo il movimento
 	oldDist := sa.getManhattanDistance(sa.game.GetSnake().GetPreviousHead(), sa.game.food)
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
 
-	if newDist < oldDist {
-		return 10.0 // Small reward for moving closer to food
+	// Caso in cui lo snake muore
+	if snake.Dead {
+		return -100.0
 	}
 
-	return -5.0 // Penalty for moving away from food
+	// Caso in cui lo snake ha mangiato il cibo (score incrementato)
+	if snake.Score > oldScore {
+		return 100.0
+	}
+
+	// Calcola uno scaling basato sulla lunghezza dello snake:
+	// Ad esempio, se lo snake è lungo, scale aumenta (qui usiamo snakeLength/10, modificabile)
+	snakeLength := len(snake.Body)
+	scale := 1.0 + float64(snakeLength)/10.0
+
+	// Calcola il reward in base alla variazione di distanza
+	// Se il movimento avvicina il cibo, (oldDist - newDist) > 0, quindi reward positivo.
+	// Se il movimento allontana il cibo, (oldDist - newDist) < 0, reward negativo.
+	reward := float64(oldDist-newDist) * scale
+
+	return reward
 }
 
 // getManhattanDistance calculates the Manhattan distance between two points
@@ -165,4 +158,53 @@ func (sa *SnakeAgent) Reset() {
 // SaveQTable saves the current QTable to file
 func (sa *SnakeAgent) SaveQTable() error {
 	return sa.agent.SaveQTable("qtable.json")
+}
+
+// mapRelativeAction converte un'azione relativa in una direzione assoluta,
+// in base alla direzione corrente dello snake.
+func (sa *SnakeAgent) mapRelativeAction(current Direction, action int) Direction {
+	// Assumiamo le seguenti azioni relative:
+	// 0 = gira a sinistra, 1 = vai dritto, 2 = gira a destra.
+	// Se per caso l'agente restituisce un valore fuori range, lo consideriamo come "vai dritto".
+	if action < 0 || action > 2 {
+		action = 1
+	}
+
+	// Utilizziamo la funzione GetCurrentDirection per ottenere la direzione corrente
+	switch current {
+	case UP:
+		if action == 0 {
+			return LEFT
+		} else if action == 1 {
+			return UP
+		} else { // action == 2
+			return RIGHT
+		}
+	case RIGHT:
+		if action == 0 {
+			return UP // girando a sinistra da RIGHT diventa UP
+		} else if action == 1 {
+			return RIGHT
+		} else { // action == 2
+			return DOWN
+		}
+	case DOWN:
+		if action == 0 {
+			return RIGHT
+		} else if action == 1 {
+			return DOWN
+		} else { // action == 2
+			return LEFT
+		}
+	case LEFT:
+		if action == 0 {
+			return DOWN
+		} else if action == 1 {
+			return LEFT
+		} else { // action == 2
+			return UP // girando a destra da LEFT diventa UP
+		}
+	default:
+		return current
+	}
 }

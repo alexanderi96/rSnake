@@ -157,11 +157,15 @@ func (a *Agent) SaveQTable(filename string) error {
 
 // LoadQTable loads the agent's state from a file
 func (a *Agent) LoadQTable(filename string) error {
+	// Always ensure QTable is initialized
+	if a.QTable == nil {
+		a.QTable = make(QTable)
+	}
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// If file doesn't exist, start with empty state
-			a.QTable = make(QTable)
+			// If file doesn't exist, we already have an empty QTable
 			return nil
 		}
 		return fmt.Errorf("error reading QTable file: %v", err)
@@ -174,9 +178,11 @@ func (a *Agent) LoadQTable(filename string) error {
 	}
 
 	// Update agent state
-	a.QTable = state.QTable
-	a.Epsilon = state.Epsilon
-	a.TrainingEpisode = state.TrainingEpisode
+	if state.QTable != nil {
+		a.QTable = state.QTable
+		a.Epsilon = state.Epsilon
+		a.TrainingEpisode = state.TrainingEpisode
+	}
 
 	return nil
 }

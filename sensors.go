@@ -1,43 +1,65 @@
 package main
 
-// Direction constants
+// Direction represents a cardinal direction
+type Direction int
+
 const (
-	UP    = 0
-	RIGHT = 1
-	DOWN  = 2
-	LEFT  = 3
+	NONE  Direction = iota //0
+	UP                     // 1
+	RIGHT                  // 2
+	DOWN                   // 3
+	LEFT                   // 4
 )
 
-// GetDangers returns whether there are dangers (wall or body) ahead, right, and left
-func (g *Game) GetDangers() (ahead, right, left bool) {
+// ToPoint converts a Direction to its corresponding movement vector
+func (d Direction) ToPoint() Point {
+	switch d {
+	case UP:
+		return Point{X: 0, Y: -1} // Move up (decrease Y)
+	case RIGHT:
+		return Point{X: 1, Y: 0} // Move right (increase X)
+	case DOWN:
+		return Point{X: 0, Y: 1} // Move down (increase Y)
+	case LEFT:
+		return Point{X: -1, Y: 0} // Move left (decrease X)
+	default:
+		return Point{X: 0, Y: 0}
+	}
+}
+
+func (g *Game) GetDangers() (dangerUp, dangerDown, dangerLeft, dangerRight bool) {
 	snake := g.snake
 	head := snake.GetHead()
-	dir := snake.Direction
 
-	// Check position ahead
-	aheadPos := Point{
-		X: (head.X + dir.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + dir.Y + g.Grid.Height) % g.Grid.Height,
+	// Danger Up: controllo sulla cella sopra la testa (Y - 1)
+	upPos := Point{
+		X: head.X,
+		Y: (head.Y - 1 + g.Grid.Height) % g.Grid.Height,
 	}
-	ahead = g.checkCollision(aheadPos) != NoCollision
+	dangerUp = g.checkCollision(upPos) != NoCollision
 
-	// Calculate right position based on current direction
-	rightDir := Point{X: -dir.Y, Y: dir.X} // Rotate 90° clockwise
-	rightPos := Point{
-		X: (head.X + rightDir.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + rightDir.Y + g.Grid.Height) % g.Grid.Height,
+	// Danger Down: controllo sulla cella sotto la testa (Y + 1)
+	downPos := Point{
+		X: head.X,
+		Y: (head.Y + 1) % g.Grid.Height,
 	}
-	right = g.checkCollision(rightPos) != NoCollision
+	dangerDown = g.checkCollision(downPos) != NoCollision
 
-	// Calculate left position based on current direction
-	leftDir := Point{X: dir.Y, Y: -dir.X} // Rotate 90° counterclockwise
+	// Danger Left: controllo sulla cella a sinistra della testa (X - 1)
 	leftPos := Point{
-		X: (head.X + leftDir.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + leftDir.Y + g.Grid.Height) % g.Grid.Height,
+		X: (head.X - 1 + g.Grid.Width) % g.Grid.Width,
+		Y: head.Y,
 	}
-	left = g.checkCollision(leftPos) != NoCollision
+	dangerLeft = g.checkCollision(leftPos) != NoCollision
 
-	return ahead, right, left
+	// Danger Right: controllo sulla cella a destra della testa (X + 1)
+	rightPos := Point{
+		X: (head.X + 1) % g.Grid.Width,
+		Y: head.Y,
+	}
+	dangerRight = g.checkCollision(rightPos) != NoCollision
+
+	return dangerUp, dangerDown, dangerLeft, dangerRight
 }
 
 // GetFoodDirection returns the relative direction of food from the snake's head
@@ -69,8 +91,8 @@ func (g *Game) GetFoodDirection() (up, right, down, left bool) {
 	return up, right, down, left
 }
 
-// GetCurrentDirection returns the current direction of the snake as an integer (0-3)
-func (g *Game) GetCurrentDirection() int {
+// GetCurrentDirection returns the current direction of the snake
+func (g *Game) GetCurrentDirection() Direction {
 	dir := g.snake.Direction
 	switch {
 	case dir.Y < 0:
