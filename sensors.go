@@ -97,9 +97,8 @@ func (g *Game) GetDangers() (dangerAhead, dangerLeft, dangerRight bool) {
 	return dangerAhead, dangerLeft, dangerRight
 }
 
-// GetFoodDirection restituisce le flag booleane per le direzioni assolute in cui si trova il cibo,
-// rispetto alla testa dello snake.
-func (g *Game) GetFoodDirection() (up, right, down, left bool) {
+// GetFoodDirection restituisce la direzione assoluta principale in cui si trova il cibo rispetto alla testa dello snake.
+func (g *Game) GetFoodDirection() Direction {
 	head := g.snake.GetHead()
 	food := g.food
 
@@ -118,12 +117,27 @@ func (g *Game) GetFoodDirection() (up, right, down, left bool) {
 		dy += g.Grid.Height
 	}
 
-	up = dy < 0
-	down = dy > 0
-	right = dx > 0
-	left = dx < 0
+	// Restituisce la direzione predominante (se il cibo è in diagonale, sceglie l'asse con la distanza maggiore)
+	if abs(dx) > abs(dy) {
+		if dx > 0 {
+			return RIGHT
+		}
+		return LEFT
+	} else {
+		if dy > 0 {
+			return DOWN
+		}
+		return UP
+	}
+}
 
-	return up, right, down, left
+// GetRelativeFoodDirection restituisce la direzione relativa del cibo rispetto allo snake.
+func (g *Game) GetRelativeFoodDirection() Direction {
+	absoluteFoodDir := g.GetFoodDirection()
+	snakeDir := g.GetCurrentDirection()
+
+	// Converte la direzione assoluta del cibo in relativa rispetto alla direzione dello snake
+	return Direction((absoluteFoodDir - snakeDir + 4) % 4)
 }
 
 // GetCurrentDirection restituisce la direzione assoluta corrente dello snake,

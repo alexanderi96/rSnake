@@ -25,43 +25,42 @@ func NewSnakeAgent(game *Game) *SnakeAgent {
 }
 
 // getState costruisce lo stato secondo il formato:
-// state := fmt.Sprintf("%d:%d:%v:%v:%v", foodDir, snakeDir, relDangerUp, relDangerLeft, relDangerRight)
+// state := fmt.Sprintf("%d:%v:%v:%v", foodDir, dangerAhead, dangerLeft, dangerRight)
 // dove:
-//   - foodDir è la direzione del cibo relativa all'orientamento dello snake:
+//   - foodDir è la direzione del cibo relativa allo snake:
 //     0: cibo davanti, 1: cibo a destra, 2: cibo dietro, 3: cibo a sinistra
-//   - snakeDir è la direzione assoluta dello snake (0: UP, 1: RIGHT, 2: DOWN, 3: LEFT)
-//   - relDangerUp, relDangerLeft, relDangerRight indicano se c'è pericolo rispettivamente davanti, a sinistra e a destra.
+//   - dangerAhead, dangerLeft, dangerRight indicano se c'è pericolo nelle direzioni relative.
 func (sa *SnakeAgent) getState() string {
 	// Ottieni la direzione assoluta del cibo.
-	foodUp, foodRight, foodDown, foodLeft := sa.game.GetFoodDirection()
-	absoluteFoodDir := -1
-	switch {
-	case foodUp:
-		absoluteFoodDir = 0 // cibo in alto (UP)
-	case foodRight:
-		absoluteFoodDir = 1 // cibo a destra
-	case foodDown:
-		absoluteFoodDir = 2 // cibo in basso (DOWN)
-	case foodLeft:
-		absoluteFoodDir = 3 // cibo a sinistra
-	default:
-		absoluteFoodDir = 0 // default (non dovrebbe verificarsi)
-	}
+	// foodUp, foodRight, foodDown, foodLeft := sa.game.GetFoodDirection()
+	// absoluteFoodDir := -1
+	// switch {
+	// case foodUp:
+	// 	absoluteFoodDir = 0 // cibo in alto (UP)
+	// case foodRight:
+	// 	absoluteFoodDir = 1 // cibo a destra
+	// case foodDown:
+	// 	absoluteFoodDir = 2 // cibo in basso (DOWN)
+	// case foodLeft:
+	// 	absoluteFoodDir = 3 // cibo a sinistra
+	// default:
+	// 	absoluteFoodDir = 0 // default (non dovrebbe verificarsi)
+	// }
 
 	// Ottieni la direzione attuale dello snake in forma cardinale.
-	currentDir := sa.game.GetCurrentDirection()
-	snakeDir := int(currentDir)
+	// currentDir := sa.game.GetCurrentDirection()
+	// snakeDir := int(currentDir)
 
 	// Calcola la direzione del cibo relativa allo snake.
-	// Se lo snake è rivolto verso destra (1) e il cibo è in alto (0),
-	// allora la direzione relativa sarà: (0 - 1 + 4) % 4 = 3 (cioè, a sinistra).
-	foodDir := (absoluteFoodDir - snakeDir + 4) % 4
+	// La formula standard: (absoluteFoodDir - snakeDir + 4) % 4
+	foodDir := sa.game.GetRelativeFoodDirection()
 
 	// Ottieni i pericoli relativi alla direzione corrente.
 	// GetDangers restituisce (dangerAhead, dangerLeft, dangerRight)
-	relDangerUp, relDangerLeft, relDangerRight := sa.game.GetDangers()
+	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
 
-	state := fmt.Sprintf("%d:%d:%v:%v:%v", foodDir, snakeDir, relDangerUp, relDangerLeft, relDangerRight)
+	// Stato finale: una stringa che contiene la posizione del cibo (relativa) e i flag per il pericolo.
+	state := fmt.Sprintf("%d:%v:%v:%v", foodDir, dangerAhead, dangerLeft, dangerRight)
 	return state
 }
 
