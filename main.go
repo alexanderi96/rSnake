@@ -3,12 +3,26 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
+	"os"
+	"runtime/pprof"
 	"time"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
+var shouldBeProfiled = true
+
 func main() {
+	if shouldBeProfiled {
+		f, err := os.Create("cpu.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
 	speed := flag.Int("speed", 1, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
