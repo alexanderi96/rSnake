@@ -11,8 +11,8 @@ import (
 // In qlearning.go
 const (
 	InitialEpsilon = 0.9
-	MinEpsilon     = 0.01   // Più esplorazione a lungo termine
-	EpsilonDecay   = 0.9997 // Decay più graduale
+	MinEpsilon     = 0.01  // Più esplorazione a lungo termine
+	EpsilonDecay   = 0.999 // Decay più graduale
 
 	DataDir    = "./data"
 	QtableFile = DataDir + "/qtable.json"

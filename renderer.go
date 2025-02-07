@@ -133,9 +133,56 @@ func (r *Renderer) Draw(g *Game) {
 		snake.Mutex.RUnlock()
 	}
 
-	// Draw score and teleport status
+	stats := r.stats.GetStats()
+	if len(stats.Games) == 0 {
+		return
+	}
+
+	// Draw score
+	yOffset := r.offsetY + r.totalGridHeight + borderPadding
+	xOffset := r.offsetX + 10
+	baseLabelOffset := r.totalGridWidth / 8
 	scoreLabel := fmt.Sprintf("Score: %d", score)
-	rl.DrawText(scoreLabel, r.offsetX+10, r.offsetY+r.totalGridHeight+borderPadding, fontSize, rl.White)
+	rl.DrawText(scoreLabel, xOffset, yOffset, fontSize, rl.White)
+
+	xOffset += baseLabelOffset
+	// Draw game count and scores
+	rl.DrawText(fmt.Sprintf("Games: %d", r.stats.GetGamesPlayed()),
+		xOffset,
+		yOffset,
+		fontSize, rl.White)
+
+	xOffset += baseLabelOffset
+
+	avgScore := r.stats.GetAverageScore()
+	rl.DrawText(fmt.Sprintf("Avg Score: %.1f", avgScore),
+		xOffset,
+		yOffset,
+		fontSize, rl.Green)
+
+	xOffset += baseLabelOffset
+
+	maxScore := r.stats.GetMaxScore()
+	rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
+		xOffset,
+		yOffset,
+		fontSize, rl.Green)
+
+	xOffset += baseLabelOffset
+
+	// Draw duration labels
+	avgDuration := 0.0
+	for _, game := range stats.Games {
+		avgDuration += game.EndTime.Sub(game.StartTime).Seconds()
+	}
+	avgDuration /= float64(len(stats.Games))
+
+	xOffset += baseLabelOffset
+
+	rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", avgDuration),
+		xOffset,
+		yOffset,
+		fontSize, rl.Purple)
 
 	// Draw food
 	food := g.GetFood()
@@ -187,7 +234,7 @@ func (r *Renderer) drawStatsGraph() {
 		// Draw score line (green)
 		for i := 0; i < numPoints; i++ {
 			x := float32(borderPadding) + float32(i)*pointSpacing
-			y := float32(graphY+graphHeight-20) - float32(stats.Games[i].Score)*scaleY
+			y := float32(graphY+graphHeight) - float32(stats.Games[i].Score)*scaleY
 
 			// Draw point
 			rl.DrawCircle(int32(x), int32(y), 3, rl.Green)
@@ -195,7 +242,7 @@ func (r *Renderer) drawStatsGraph() {
 			// Draw line to next point
 			if i < numPoints-1 {
 				nextX := float32(borderPadding) + float32(i+1)*pointSpacing
-				nextY := float32(graphY+graphHeight-20) - float32(stats.Games[i+1].Score)*scaleY
+				nextY := float32(graphY+graphHeight) - float32(stats.Games[i+1].Score)*scaleY
 				rl.DrawLine(int32(x), int32(y), int32(nextX), int32(nextY), rl.Green)
 			}
 		}
@@ -204,7 +251,7 @@ func (r *Renderer) drawStatsGraph() {
 		for i := 0; i < numPoints; i++ {
 			x := float32(borderPadding) + float32(i)*pointSpacing
 			duration := float32(stats.Games[i].EndTime.Sub(stats.Games[i].StartTime).Seconds())
-			y := float32(graphY+graphHeight-20) - duration*durationScaleY
+			y := float32(graphY+graphHeight) - duration*durationScaleY
 
 			// Draw point
 			rl.DrawCircle(int32(x), int32(y), 3, rl.Purple)
@@ -213,61 +260,10 @@ func (r *Renderer) drawStatsGraph() {
 			if i < numPoints-1 {
 				nextX := float32(borderPadding) + float32(i+1)*pointSpacing
 				nextDuration := float32(stats.Games[i+1].EndTime.Sub(stats.Games[i+1].StartTime).Seconds())
-				nextY := float32(graphY+graphHeight-20) - nextDuration*durationScaleY
+				nextY := float32(graphY+graphHeight) - nextDuration*durationScaleY
 				rl.DrawLine(int32(x), int32(y), int32(nextX), int32(nextY), rl.Purple)
 			}
 		}
 
-		// Draw labels
-		fontSize := int32(15)
-		labelY := r.screenHeight - borderPadding - fontSize
-
-		// Draw game count and scores
-		rl.DrawText(fmt.Sprintf("Games: %d", r.stats.GetGamesPlayed()),
-			borderPadding,
-			labelY,
-			fontSize, rl.White)
-
-		avgScore := r.stats.GetAverageScore()
-		rl.DrawText(fmt.Sprintf("Avg Score: %.1f", avgScore),
-			borderPadding+200,
-			labelY,
-			fontSize, rl.Green)
-
-		maxScore := r.stats.GetMaxScore()
-		rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
-			r.screenWidth-200,
-			labelY,
-			fontSize, rl.Green)
-
-		// Draw duration labels
-		avgDuration := 0.0
-		for _, game := range stats.Games {
-			avgDuration += game.EndTime.Sub(game.StartTime).Seconds()
-		}
-		avgDuration /= float64(len(stats.Games))
-
-		rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", avgDuration),
-			borderPadding+400,
-			labelY,
-			fontSize, rl.Purple)
-
-		// Draw Y-axis labels
-		rl.DrawText("0",
-			borderPadding-20,
-			graphY+graphHeight-20,
-			fontSize, rl.Gray)
-
-		// Score scale (green)
-		rl.DrawText(fmt.Sprintf("%d", maxScore),
-			borderPadding-25,
-			graphY,
-			fontSize, rl.Green)
-
-		// Duration scale (purple)
-		rl.DrawText(fmt.Sprintf("%.1fs", maxDuration),
-			borderPadding+graphWidth-40,
-			graphY,
-			fontSize, rl.Purple)
 	}
 }

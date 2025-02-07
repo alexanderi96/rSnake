@@ -15,7 +15,7 @@ type SnakeAgent struct {
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
-	agent := qlearning.NewAgent(0.5, 0.95, 0.2)
+	agent := qlearning.NewAgent(0.3, 0.1, 0.99)
 	return &SnakeAgent{
 		agent:    agent,
 		game:     game,
@@ -116,28 +116,27 @@ func (sa *SnakeAgent) Update() {
 		sa.maxScore = sa.game.GetSnake().Score
 	}
 }
-
 func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	snake := sa.game.GetSnake()
 	if snake.Dead {
-		return -1000.0 // Penalità fissa alta
+		return -1000.0
 	}
 
-	// Reward per aver mangiato
+	// Aumenta significativamente il reward per il cibo
 	if snake.Score > oldScore {
-		return 500.0 + 50.0*float64(snake.Score)
+		return 1000.0 + 100.0*float64(snake.Score)
 	}
 
-	// Reward per avvicinamento al cibo
+	// Aumenta la penalità per movimenti inefficienti
 	oldDist := sa.getManhattanDistance(snake.GetPreviousHead(), sa.game.food)
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
-	distReward := 20.0 * float64(oldDist-newDist)
+	distReward := 30.0 * float64(oldDist-newDist)
 
-	// Penalità stagnazione
+	// Penalità più aggressive per la stagnazione
 	stepsWithoutFood := sa.game.Steps - oldLength*10
-	stagnationPenalty := -0.1 * float64(stepsWithoutFood)
-	if stepsWithoutFood > 50 {
-		stagnationPenalty -= 10.0 // Penalità aggiuntiva dopo 50 passi senza cibo
+	stagnationPenalty := -1.0 * float64(stepsWithoutFood) // Aumentata di 10x
+	if stepsWithoutFood > 30 {                            // Ridotto da 50 a 30
+		stagnationPenalty -= 20.0 // Aumentata da 10 a 20
 	}
 
 	return distReward + stagnationPenalty
