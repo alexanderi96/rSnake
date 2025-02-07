@@ -100,48 +100,11 @@ func (s *GameStats) saveToFile() error {
 		return err
 	}
 
-	return os.WriteFile("data/game_stats.json", jsonData, 0644)
-}
-
-func (s *GameStats) backupStats() error {
-	// Create backup directory if it doesn't exist
-	if err := os.MkdirAll("data/backup", 0755); err != nil {
-		return err
-	}
-
-	// Read current stats
-	data, err := os.ReadFile("data/game_stats.json")
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No stats to backup
-		}
-		return err
-	}
-
-	// Create backup filename with timestamp
-	timestamp := time.Now().Format("20060102_150405")
-	backupPath := "data/backup/game_stats_" + timestamp + ".json"
-
-	// Write backup file
-	return os.WriteFile(backupPath, data, 0644)
-}
-
-func (s *GameStats) Reset() error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	// Backup current stats
-	if err := s.backupStats(); err != nil {
-		return err
-	}
-
-	// Reset stats
-	s.Games = make([]GameRecord, 0)
-	return s.saveToFile()
+	return os.WriteFile("game_stats.json", jsonData, 0644)
 }
 
 func (s *GameStats) loadFromFile() error {
-	data, err := os.ReadFile("data/game_stats.json")
+	data, err := os.ReadFile("game_stats.json")
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.Games = make([]GameRecord, 0)

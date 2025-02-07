@@ -6,77 +6,14 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"sync"
 )
 
-// QTableManager handles the shared Q-table across multiple agents
-type QTableManager struct {
-	table map[string][]float64
-	mu    sync.RWMutex
-}
-
-// NewQTableManager creates a new QTableManager
-func NewQTableManager() *QTableManager {
-	manager := &QTableManager{
-		table: make(map[string][]float64),
-	}
-
-	// Try to load existing state
-	if data, err := os.ReadFile("qtable.json"); err == nil {
-		var state AgentState
-		if err := json.Unmarshal(data, &state); err == nil {
-			manager.table = state.QTable
-		}
-	}
-
-	return manager
-}
-
-// GetQValues returns Q-values for a state, creating new entry if needed
-func (m *QTableManager) GetQValues(state string, numActions int) []float64 {
-	m.mu.RLock()
-	qValues, exists := m.table[state]
-	m.mu.RUnlock()
-
-	if !exists {
-		m.mu.Lock()
-		m.table[state] = make([]float64, numActions)
-		qValues = m.table[state]
-		m.mu.Unlock()
-	}
-
-	return qValues
-}
-
-// UpdateQValue updates a specific Q-value in the table
-func (m *QTableManager) UpdateQValue(state string, action int, value float64) {
-	m.mu.Lock()
-	if _, exists := m.table[state]; !exists {
-		m.table[state] = make([]float64, 4) // Assuming 4 actions for snake
-	}
-	m.table[state][action] = value
-	m.mu.Unlock()
-}
-
-// SaveQTable saves the Q-table to file
-func (m *QTableManager) SaveQTable() error {
-	m.mu.RLock()
-	state := AgentState{
-		QTable: m.table,
-	}
-	m.mu.RUnlock()
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshaling QTable: %v", err)
-	}
-
-	return os.WriteFile("qtable.json", data, 0644)
-}
+// QTable stores Q-values for state-action pairs
+type QTable map[string][]float64
 
 // Agent represents a Q-learning agent
 type Agent struct {
-	manager         *QTableManager
+	QTable          QTable
 	LearningRate    float64
 	Discount        float64
 	Epsilon         float64
@@ -86,10 +23,10 @@ type Agent struct {
 	TrainingEpisode int
 }
 
-// NewAgent creates a new Q-learning agent with shared Q-table
-func NewAgent(manager *QTableManager, learningRate, discount float64) *Agent {
-	return &Agent{
-		manager:         manager,
+// NewAgent creates a new Q-learning agent
+func NewAgent(learningRate, discount, epsilon float64) *Agent {
+	agent := &Agent{
+		QTable:          make(QTable),
 		LearningRate:    learningRate,
 		Discount:        discount,
 		Epsilon:         0.9, // Start with high exploration
@@ -98,6 +35,19 @@ func NewAgent(manager *QTableManager, learningRate, discount float64) *Agent {
 		EpsilonDecay:    0.995, // Decay rate per episode
 		TrainingEpisode: 0,
 	}
+
+	// Try to load existing state
+	if err := agent.LoadQTable("qtable.json"); err == nil {
+		// Successfully loaded existing state, keep the loaded epsilon and episode
+		// but update the learning parameters
+		agent.LearningRate = learningRate
+		agent.Discount = discount
+		agent.InitialEpsilon = 0.9
+		agent.MinEpsilon = 0.1
+		agent.EpsilonDecay = 0.995
+	}
+
+	return agent
 }
 
 // GetAction selects an action using epsilon-greedy policy
@@ -126,25 +76,32 @@ func (a *Agent) IncrementEpisode() {
 
 // Update updates Q-value for a state-action pair
 func (a *Agent) Update(state string, action int, reward float64, nextState string, numActions int) {
-	// Get current and next state Q-values
-	currentQ := a.manager.GetQValues(state, numActions)[action]
-	maxNextQ := a.getMaxQValue(nextState)
+	// Initialize Q-values if state not seen before
+	if _, exists := a.QTable[state]; !exists {
+		a.QTable[state] = make([]float64, numActions)
+	}
+	if _, exists := a.QTable[nextState]; !exists {
+		a.QTable[nextState] = make([]float64, numActions)
+	}
 
 	// Q-learning update formula
-	newQ := currentQ + a.LearningRate*(reward+a.Discount*maxNextQ-currentQ)
+	currentQ := a.QTable[state][action]
+	maxNextQ := a.getMaxQValue(nextState)
 
-	// Update Q-value in shared table
-	a.manager.UpdateQValue(state, action, newQ)
+	// Q(s,a) = Q(s,a) + α[r + γ*max(Q(s',a')) - Q(s,a)]
+	a.QTable[state][action] = currentQ + a.LearningRate*(reward+a.Discount*maxNextQ-currentQ)
 }
 
 // getBestAction returns the action with highest Q-value for given state
 func (a *Agent) getBestAction(state string, numActions int) int {
-	qValues := a.manager.GetQValues(state, numActions)
+	if _, exists := a.QTable[state]; !exists {
+		a.QTable[state] = make([]float64, numActions)
+	}
 
 	bestAction := 0
 	maxQ := math.Inf(-1)
 
-	for action, qValue := range qValues {
+	for action, qValue := range a.QTable[state] {
 		if qValue > maxQ {
 			maxQ = qValue
 			bestAction = action
@@ -156,10 +113,12 @@ func (a *Agent) getBestAction(state string, numActions int) int {
 
 // getMaxQValue returns the maximum Q-value for given state
 func (a *Agent) getMaxQValue(state string) float64 {
-	qValues := a.manager.GetQValues(state, 4) // Assuming 4 actions for snake
+	if _, exists := a.QTable[state]; !exists {
+		return 0
+	}
 
 	maxQ := math.Inf(-1)
-	for _, qValue := range qValues {
+	for _, qValue := range a.QTable[state] {
 		if qValue > maxQ {
 			maxQ = qValue
 		}
@@ -168,7 +127,56 @@ func (a *Agent) getMaxQValue(state string) float64 {
 	return maxQ
 }
 
-// AgentState represents the complete state to be saved
+// AgentState represents the complete state of the agent to be saved
 type AgentState struct {
-	QTable map[string][]float64 `json:"qtable"`
+	QTable          QTable  `json:"qtable"`
+	Epsilon         float64 `json:"epsilon"`
+	TrainingEpisode int     `json:"training_episode"`
+}
+
+// SaveQTable saves the agent's state to a file
+func (a *Agent) SaveQTable(filename string) error {
+	state := AgentState{
+		QTable:          a.QTable,
+		Epsilon:         a.Epsilon,
+		TrainingEpisode: a.TrainingEpisode,
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error marshaling QTable: %v", err)
+	}
+
+	err = os.WriteFile(filename, data, 0644)
+	if err != nil {
+		return fmt.Errorf("error writing QTable to file: %v", err)
+	}
+
+	return nil
+}
+
+// LoadQTable loads the agent's state from a file
+func (a *Agent) LoadQTable(filename string) error {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// If file doesn't exist, start with empty state
+			a.QTable = make(QTable)
+			return nil
+		}
+		return fmt.Errorf("error reading QTable file: %v", err)
+	}
+
+	var state AgentState
+	err = json.Unmarshal(data, &state)
+	if err != nil {
+		return fmt.Errorf("error unmarshaling QTable: %v", err)
+	}
+
+	// Update agent state
+	a.QTable = state.QTable
+	a.Epsilon = state.Epsilon
+	a.TrainingEpisode = state.TrainingEpisode
+
+	return nil
 }

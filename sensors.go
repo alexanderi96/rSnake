@@ -9,8 +9,8 @@ const (
 )
 
 // GetDangers returns whether there are dangers (wall or body) ahead, right, and left
-func (g *Game) GetDangers(snakeIdx int) (ahead, right, left bool) {
-	snake := g.GetSnake(snakeIdx)
+func (g *Game) GetDangers() (ahead, right, left bool) {
+	snake := g.snake
 	head := snake.GetHead()
 	dir := snake.Direction
 
@@ -19,7 +19,7 @@ func (g *Game) GetDangers(snakeIdx int) (ahead, right, left bool) {
 		X: (head.X + dir.X + g.Grid.Width) % g.Grid.Width,
 		Y: (head.Y + dir.Y + g.Grid.Height) % g.Grid.Height,
 	}
-	ahead = g.checkCollision(aheadPos, snake) != NoCollision
+	ahead = g.checkCollision(aheadPos) != NoCollision
 
 	// Calculate right position based on current direction
 	rightDir := Point{X: -dir.Y, Y: dir.X} // Rotate 90° clockwise
@@ -27,7 +27,7 @@ func (g *Game) GetDangers(snakeIdx int) (ahead, right, left bool) {
 		X: (head.X + rightDir.X + g.Grid.Width) % g.Grid.Width,
 		Y: (head.Y + rightDir.Y + g.Grid.Height) % g.Grid.Height,
 	}
-	right = g.checkCollision(rightPos, snake) != NoCollision
+	right = g.checkCollision(rightPos) != NoCollision
 
 	// Calculate left position based on current direction
 	leftDir := Point{X: dir.Y, Y: -dir.X} // Rotate 90° counterclockwise
@@ -35,14 +35,14 @@ func (g *Game) GetDangers(snakeIdx int) (ahead, right, left bool) {
 		X: (head.X + leftDir.X + g.Grid.Width) % g.Grid.Width,
 		Y: (head.Y + leftDir.Y + g.Grid.Height) % g.Grid.Height,
 	}
-	left = g.checkCollision(leftPos, snake) != NoCollision
+	left = g.checkCollision(leftPos) != NoCollision
 
 	return ahead, right, left
 }
 
 // GetFoodDirection returns the relative direction of food from the snake's head
-func (g *Game) GetFoodDirection(snakeIdx int) (up, right, down, left bool) {
-	head := g.GetSnake(snakeIdx).GetHead()
+func (g *Game) GetFoodDirection() (up, right, down, left bool) {
+	head := g.snake.GetHead()
 	food := g.food
 
 	// Calculate relative position considering grid wrapping
@@ -70,8 +70,8 @@ func (g *Game) GetFoodDirection(snakeIdx int) (up, right, down, left bool) {
 }
 
 // GetCurrentDirection returns the current direction of the snake as an integer (0-3)
-func (g *Game) GetCurrentDirection(snakeIdx int) int {
-	dir := g.GetSnake(snakeIdx).Direction
+func (g *Game) GetCurrentDirection() int {
+	dir := g.snake.Direction
 	switch {
 	case dir.Y < 0:
 		return UP

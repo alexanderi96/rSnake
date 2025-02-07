@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sync"
 
 	"golang.org/x/exp/rand"
@@ -42,10 +41,9 @@ const (
 )
 
 type Game struct {
-	Grid   Grid
-	snakes []*Snake
-	agents []*SnakeAgent
-	food   Point
+	Grid  Grid
+	snake *Snake
+	food  Point
 }
 
 func NewSnake(startPos Point, color Color) *Snake {
@@ -61,80 +59,30 @@ func NewSnake(startPos Point, color Color) *Snake {
 	}
 }
 
-func NewGame(width, height int, numSnakes int) *Game {
+func NewGame(width, height int) *Game {
 	grid := Grid{
 		Width:  width,
 		Height: height,
 	}
 
+	// Create initial snake
+	startPos := Point{X: width / 4, Y: height / 2}
+	color := Color{
+		R: uint8(rand.Intn(200) + 55),
+		G: uint8(rand.Intn(200) + 55),
+		B: uint8(rand.Intn(200) + 55),
+	}
+	snake := NewSnake(startPos, color)
+
 	game := &Game{
-		Grid:   grid,
-		snakes: make([]*Snake, numSnakes),
-		agents: make([]*SnakeAgent, numSnakes),
+		Grid:  grid,
+		snake: snake,
 	}
 
-	// Initialize snakes and agents first
-	game.initializeAgents(numSnakes)
-
-	// Generate initial food after snakes are initialized
+	// Generate initial food
 	game.food = game.generateFood()
 
 	return game
-}
-
-func (g *Game) initializeAgents(numSnakes int) {
-	startPositions := []Point{
-		{X: g.Grid.Width / 4, Y: g.Grid.Height / 2},     // Left side
-		{X: 3 * g.Grid.Width / 4, Y: g.Grid.Height / 2}, // Right side
-		{X: g.Grid.Width / 2, Y: g.Grid.Height / 4},     // Top
-		{X: g.Grid.Width / 2, Y: 3 * g.Grid.Height / 4}, // Bottom
-	}
-
-	for i := 0; i < numSnakes; i++ {
-		if g.snakes[i] == nil || g.snakes[i].Dead {
-			pos := startPositions[i%len(startPositions)]
-
-			if g.agents[i] == nil {
-				// If no agent exists, create new snake and agent
-				color := Color{
-					R: uint8(rand.Intn(200) + 55),
-					G: uint8(rand.Intn(200) + 55),
-					B: uint8(rand.Intn(200) + 55),
-				}
-				g.snakes[i] = NewSnake(pos, color)
-				g.agents[i] = NewSnakeAgent(g, i)
-			} else {
-				// If agent exists, just reset the snake with same color
-				g.snakes[i] = NewSnake(pos, g.snakes[i].Color)
-				// Increment episode counter for continued learning
-				g.agents[i].agent.IncrementEpisode()
-			}
-		}
-	}
-}
-
-// UpdateAgents updates all agents and respawns dead ones
-func (g *Game) UpdateAgents() {
-	for i, agent := range g.agents {
-		if agent == nil {
-			g.initializeAgents(len(g.snakes))
-			continue
-		}
-
-		snake := g.GetSnake(i)
-		if snake.Dead {
-			// Save QTable before respawning
-			err := agent.SaveQTable()
-			if err != nil {
-				fmt.Printf("Error saving QTable: %v\n", err)
-			}
-
-			// Respawn the snake and create new agent
-			g.initializeAgents(len(g.snakes))
-		} else {
-			agent.Update()
-		}
-	}
 }
 
 func (s *Snake) Move(newHead Point) {
@@ -165,15 +113,8 @@ func (s *Snake) SetDirection(dir Point) {
 	s.Direction = dir
 }
 
-func (g *Game) GetSnake(index int) *Snake {
-	if index >= 0 && index < len(g.snakes) {
-		return g.snakes[index]
-	}
-	return nil
-}
-
-func (g *Game) GetSnakes() []*Snake {
-	return g.snakes
+func (g *Game) GetSnake() *Snake {
+	return g.snake
 }
 
 func (g *Game) GetFood() Point {
@@ -181,70 +122,54 @@ func (g *Game) GetFood() Point {
 }
 
 func (g *Game) Update() {
-	for _, snake := range g.snakes {
-		if snake.Dead || snake.GameOver {
-			continue
-		}
+	if g.snake.Dead || g.snake.GameOver {
+		return
+	}
 
-		snake.Mutex.Lock()
+	g.snake.Mutex.Lock()
+	defer g.snake.Mutex.Unlock()
 
-		// Calculate new head position
-		newHead := g.calculateNewPosition(snake)
+	// Calculate new head position
+	newHead := g.calculateNewPosition()
 
-		// Check for collisions
-		collisionType := g.checkCollision(newHead, snake)
-		if collisionType != NoCollision {
-			snake.Dead = true
-			snake.GameOver = true
-			snake.LastCollisionType = collisionType
-			snake.Mutex.Unlock()
-			continue
-		}
+	// Check for collisions
+	collisionType := g.checkCollision(newHead)
+	if collisionType != NoCollision {
+		g.snake.Dead = true
+		g.snake.GameOver = true
+		g.snake.LastCollisionType = collisionType
+		return
+	}
 
-		// Move snake
-		snake.Move(newHead)
+	// Move snake
+	g.snake.Move(newHead)
 
-		// Check for food
-		if newHead == g.food {
-			snake.Score++
-			g.food = g.generateFood()
-		} else {
-			snake.RemoveTail()
-		}
-
-		snake.Mutex.Unlock()
+	// Check for food
+	if newHead == g.food {
+		g.snake.Score++
+		g.food = g.generateFood()
+	} else {
+		g.snake.RemoveTail()
 	}
 }
 
-func (g *Game) calculateNewPosition(snake *Snake) Point {
-	head := snake.GetHead()
-	newX := head.X + snake.Direction.X
-	newY := head.Y + snake.Direction.Y
+func (g *Game) calculateNewPosition() Point {
+	head := g.snake.GetHead()
+	newX := head.X + g.snake.Direction.X
+	newY := head.Y + g.snake.Direction.Y
 
 	return Point{X: newX, Y: newY}
 }
 
-func (g *Game) checkCollision(pos Point, currentSnake *Snake) CollisionType {
+func (g *Game) checkCollision(pos Point) CollisionType {
 	if pos.X < 0 || pos.X >= g.Grid.Width || pos.Y < 0 || pos.Y >= g.Grid.Height {
 		return WallCollision
 	}
 
 	// Check self collision
-	for _, part := range currentSnake.Body[:len(currentSnake.Body)-1] {
+	for _, part := range g.snake.Body[:len(g.snake.Body)-1] {
 		if pos == part {
 			return SelfCollision
-		}
-	}
-
-	// Check collision with other snakes
-	for _, snake := range g.snakes {
-		if snake == currentSnake {
-			continue
-		}
-		for _, part := range snake.Body {
-			if pos == part {
-				return SelfCollision // Using SelfCollision type for snake-to-snake collisions
-			}
 		}
 	}
 	return NoCollision
@@ -256,16 +181,11 @@ func (g *Game) generateFood() Point {
 			X: rand.Intn(g.Grid.Width),
 			Y: rand.Intn(g.Grid.Height),
 		}
-		// Check if food position is valid (not on any snake)
+		// Check if food position is valid (not on snake)
 		valid := true
-		for _, snake := range g.snakes {
-			for _, part := range snake.Body {
-				if food == part {
-					valid = false
-					break
-				}
-			}
-			if !valid {
+		for _, part := range g.snake.Body {
+			if food == part {
+				valid = false
 				break
 			}
 		}
