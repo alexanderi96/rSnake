@@ -3,12 +3,26 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
+	"os"
+	"runtime/pprof"
 	"time"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
+var shouldBeProfiled = true
+
 func main() {
+	if shouldBeProfiled {
+		f, err := os.Create("cpu.pprof")
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
 	speed := flag.Int("speed", 1, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
@@ -17,7 +31,7 @@ func main() {
 	rl.SetWindowState(rl.FlagWindowResizable)
 	defer rl.CloseWindow()
 
-	rl.SetTargetFPS(60)
+	rl.SetTargetFPS(999)
 
 	// Calculate initial grid dimensions
 	width := (rl.GetScreenWidth() - 20) / 20
@@ -67,9 +81,11 @@ func main() {
 
 		// Handle quit
 		if rl.IsKeyPressed(rl.KeyQ) || rl.IsKeyPressed(rl.KeyEscape) {
-			// Save QTable before quitting
 			if err := agent.SaveQTable(); err != nil {
-				fmt.Printf("Error saving QTable on exit: %v\n", err)
+				fmt.Printf("Error saving QTable: %v\n", err)
+			}
+			if err := renderer.stats.saveToFile(); err != nil {
+				fmt.Printf("Error saving stats: %v\n", err)
 			}
 			break
 		}

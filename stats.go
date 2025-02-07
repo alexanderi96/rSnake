@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"snake-game/qlearning"
 	"sync"
 	"time"
 )
+
+const StatsFile = qlearning.DataDir + "/stats.json"
 
 type GameRecord struct {
 	StartTime time.Time `json:"startTime"`
@@ -40,7 +43,7 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 		Score:     score,
 	}
 	s.Games = append(s.Games, game)
-	s.saveToFile()
+	// s.saveToFile()
 }
 
 func (s *GameStats) GetStats() GameStatsData {
@@ -100,11 +103,11 @@ func (s *GameStats) saveToFile() error {
 		return err
 	}
 
-	return os.WriteFile("game_stats.json", jsonData, 0644)
+	return os.WriteFile(StatsFile, jsonData, 0644)
 }
 
 func (s *GameStats) loadFromFile() error {
-	data, err := os.ReadFile("game_stats.json")
+	data, err := os.ReadFile(StatsFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.Games = make([]GameRecord, 0)

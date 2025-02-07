@@ -8,10 +8,20 @@ import (
 	"os"
 )
 
-// QTable stores Q-values for state-action pairs
+// In qlearning.go
+const (
+	InitialEpsilon = 0.9
+	MinEpsilon     = 0.01   // Più esplorazione a lungo termine
+	EpsilonDecay   = 0.9997 // Decay più graduale
+
+	DataDir    = "./data"
+	QtableFile = DataDir + "/qtable.json"
+)
+
+// QTable memorizza i valori Q per coppie stato-azione.
 type QTable map[string][]float64
 
-// Agent represents a Q-learning agent
+// Agent rappresenta un agente di Q-learning.
 type Agent struct {
 	QTable          QTable
 	LearningRate    float64
@@ -23,36 +33,35 @@ type Agent struct {
 	TrainingEpisode int
 }
 
-// NewAgent creates a new Q-learning agent
+// NewAgent crea un nuovo agente di Q-learning.
 func NewAgent(learningRate, discount, epsilon float64) *Agent {
 	agent := &Agent{
 		QTable:          make(QTable),
 		LearningRate:    learningRate,
 		Discount:        discount,
-		Epsilon:         0.9, // Start with high exploration
-		InitialEpsilon:  0.9,
-		MinEpsilon:      0.1,
-		EpsilonDecay:    0.995, // Decay rate per episode
+		Epsilon:         InitialEpsilon, // Partenza con alta esplorazione
+		InitialEpsilon:  InitialEpsilon,
+		MinEpsilon:      MinEpsilon,
+		EpsilonDecay:    EpsilonDecay, // Decay rallentato: ad esempio, dopo 100 episodi, epsilon decadrà meno
 		TrainingEpisode: 0,
 	}
 
-	// Try to load existing state
-	if err := agent.LoadQTable("qtable.json"); err == nil {
-		// Successfully loaded existing state, keep the loaded epsilon and episode
-		// but update the learning parameters
+	// Prova a caricare uno stato esistente
+	if err := agent.LoadQTable(QtableFile); err == nil {
+		// Aggiorna i parametri di apprendimento, mantenendo lo stato caricato
 		agent.LearningRate = learningRate
 		agent.Discount = discount
-		agent.InitialEpsilon = 0.9
-		agent.MinEpsilon = 0.1
-		agent.EpsilonDecay = 0.995
+		agent.InitialEpsilon = InitialEpsilon
+		agent.MinEpsilon = MinEpsilon
+		agent.EpsilonDecay = EpsilonDecay
 	}
 
 	return agent
 }
 
-// GetAction selects an action using epsilon-greedy policy
+// GetAction seleziona un'azione usando una politica epsilon-greedy.
 func (a *Agent) GetAction(state string, numActions int) int {
-	// Update epsilon with decay
+	// Aggiorna epsilon con il decadimento
 	if a.Epsilon > a.MinEpsilon {
 		a.Epsilon = a.InitialEpsilon * math.Pow(a.EpsilonDecay, float64(a.TrainingEpisode))
 		if a.Epsilon < a.MinEpsilon {
@@ -60,23 +69,29 @@ func (a *Agent) GetAction(state string, numActions int) int {
 		}
 	}
 
-	// Exploration: random action
+	// Esplorazione: azione casuale
 	if rand.Float64() < a.Epsilon {
 		return rand.Intn(numActions)
 	}
 
-	// Exploitation: best known action
+	// Sfruttamento: azione con il massimo valore Q
 	return a.getBestAction(state, numActions)
 }
 
-// IncrementEpisode increments the training episode counter
+// IncrementEpisode incrementa il contatore degli episodi di training.
 func (a *Agent) IncrementEpisode() {
 	a.TrainingEpisode++
+	// Decadimento più rapido iniziale, poi più lento
+	if a.TrainingEpisode < 1000 {
+		a.Epsilon = math.Max(0.1, a.InitialEpsilon*math.Exp(-float64(a.TrainingEpisode)/500))
+	} else {
+		a.Epsilon = math.Max(0.05, a.InitialEpsilon*math.Exp(-float64(a.TrainingEpisode)/1000))
+	}
 }
 
-// Update updates Q-value for a state-action pair
+// Update aggiorna il valore Q per una coppia stato-azione.
 func (a *Agent) Update(state string, action int, reward float64, nextState string, numActions int) {
-	// Initialize Q-values if state not seen before
+	// Inizializza i valori Q se lo stato non è stato ancora visto
 	if _, exists := a.QTable[state]; !exists {
 		a.QTable[state] = make([]float64, numActions)
 	}
@@ -84,15 +99,14 @@ func (a *Agent) Update(state string, action int, reward float64, nextState strin
 		a.QTable[nextState] = make([]float64, numActions)
 	}
 
-	// Q-learning update formula
+	// Formula di aggiornamento del Q-learning:
+	// Q(s,a) = Q(s,a) + α [r + γ * max_a' Q(s',a') - Q(s,a)]
 	currentQ := a.QTable[state][action]
 	maxNextQ := a.getMaxQValue(nextState)
-
-	// Q(s,a) = Q(s,a) + α[r + γ*max(Q(s',a')) - Q(s,a)]
 	a.QTable[state][action] = currentQ + a.LearningRate*(reward+a.Discount*maxNextQ-currentQ)
 }
 
-// getBestAction returns the action with highest Q-value for given state
+// getBestAction restituisce l'azione con il valore Q più alto per uno stato dato.
 func (a *Agent) getBestAction(state string, numActions int) int {
 	if _, exists := a.QTable[state]; !exists {
 		a.QTable[state] = make([]float64, numActions)
@@ -111,7 +125,7 @@ func (a *Agent) getBestAction(state string, numActions int) int {
 	return bestAction
 }
 
-// getMaxQValue returns the maximum Q-value for given state
+// getMaxQValue restituisce il massimo valore Q per uno stato dato.
 func (a *Agent) getMaxQValue(state string) float64 {
 	if _, exists := a.QTable[state]; !exists {
 		return 0
@@ -127,14 +141,14 @@ func (a *Agent) getMaxQValue(state string) float64 {
 	return maxQ
 }
 
-// AgentState represents the complete state of the agent to be saved
+// AgentState rappresenta lo stato completo dell'agente da salvare.
 type AgentState struct {
 	QTable          QTable  `json:"qtable"`
 	Epsilon         float64 `json:"epsilon"`
 	TrainingEpisode int     `json:"training_episode"`
 }
 
-// SaveQTable saves the agent's state to a file
+// SaveQTable salva lo stato dell'agente su un file.
 func (a *Agent) SaveQTable(filename string) error {
 	state := AgentState{
 		QTable:          a.QTable,
@@ -155,14 +169,16 @@ func (a *Agent) SaveQTable(filename string) error {
 	return nil
 }
 
-// LoadQTable loads the agent's state from a file
+// LoadQTable carica lo stato dell'agente da un file.
 func (a *Agent) LoadQTable(filename string) error {
+	if a.QTable == nil {
+		a.QTable = make(QTable)
+	}
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// If file doesn't exist, start with empty state
-			a.QTable = make(QTable)
-			return nil
+			return nil // Se il file non esiste, si usa la QTable vuota
 		}
 		return fmt.Errorf("error reading QTable file: %v", err)
 	}
@@ -173,10 +189,11 @@ func (a *Agent) LoadQTable(filename string) error {
 		return fmt.Errorf("error unmarshaling QTable: %v", err)
 	}
 
-	// Update agent state
-	a.QTable = state.QTable
-	a.Epsilon = state.Epsilon
-	a.TrainingEpisode = state.TrainingEpisode
+	if state.QTable != nil {
+		a.QTable = state.QTable
+		a.Epsilon = state.Epsilon
+		a.TrainingEpisode = state.TrainingEpisode
+	}
 
 	return nil
 }
