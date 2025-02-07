@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 
 	"snake-game/qlearning"
 )
@@ -16,7 +15,7 @@ type SnakeAgent struct {
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
-	agent := qlearning.NewAgent(0.1, 0.9, 0.1)
+	agent := qlearning.NewAgent(0.5, 0.95, 0.2)
 	return &SnakeAgent{
 		agent:    agent,
 		game:     game,
@@ -118,31 +117,30 @@ func (sa *SnakeAgent) Update() {
 	}
 }
 
-// calculateReward determina il reward per l'ultima azione.
 func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	snake := sa.game.GetSnake()
-	maxDist := sa.game.Grid.Width + sa.game.Grid.Height
-
 	if snake.Dead {
-		return -100.0 // Penalità fissa per la morte.
+		return -1000.0 // Penalità fissa alta
 	}
 
+	// Reward per aver mangiato
 	if snake.Score > oldScore {
-		return 100.0 + 50*float64(maxDist-sa.getManhattanDistance(snake.GetHead(), sa.game.food))/float64(maxDist)
+		return 500.0 + 50.0*float64(snake.Score)
 	}
 
-	oldDist := sa.getManhattanDistance(sa.game.GetSnake().GetPreviousHead(), sa.game.food)
+	// Reward per avvicinamento al cibo
+	oldDist := sa.getManhattanDistance(snake.GetPreviousHead(), sa.game.food)
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
+	distReward := 20.0 * float64(oldDist-newDist)
 
-	distRatio := float64(newDist) / float64(maxDist)
-
-	if newDist < oldDist {
-		// Reward scalato quadraticamente con la distanza.
-		return 30 * (1 + math.Pow(distRatio, 2))
-	} else {
-		// Penalità esponenziale per l'allontanamento.
-		return -25 * math.Exp(1-distRatio)
+	// Penalità stagnazione
+	stepsWithoutFood := sa.game.Steps - oldLength*10
+	stagnationPenalty := -0.1 * float64(stepsWithoutFood)
+	if stepsWithoutFood > 50 {
+		stagnationPenalty -= 10.0 // Penalità aggiuntiva dopo 50 passi senza cibo
 	}
+
+	return distReward + stagnationPenalty
 }
 
 // getManhattanDistance calcola la distanza Manhattan tra due punti, considerando il wrapping della griglia.
@@ -170,10 +168,10 @@ func abs(x int) int {
 
 // Reset prepara l'agente per una nuova partita mantenendo le conoscenze apprese.
 func (sa *SnakeAgent) Reset() {
-	err := sa.agent.SaveQTable("qtable.json")
-	if err != nil {
-		fmt.Printf("Error saving QTable: %v\n", err)
-	}
+	// err := sa.agent.SaveQTable(qlearning.QtableFile)
+	// if err != nil {
+	// 	fmt.Printf("Error saving QTable: %v\n", err)
+	// }
 
 	width := sa.game.Grid.Width
 	height := sa.game.Grid.Height
@@ -183,5 +181,5 @@ func (sa *SnakeAgent) Reset() {
 
 // SaveQTable salva la QTable su file.
 func (sa *SnakeAgent) SaveQTable() error {
-	return sa.agent.SaveQTable("qtable.json")
+	return sa.agent.SaveQTable(qlearning.QtableFile)
 }

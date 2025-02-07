@@ -44,6 +44,7 @@ type Game struct {
 	Grid  Grid
 	snake *Snake
 	food  Point
+	Steps int
 }
 
 func NewSnake(startPos Point, color Color) *Snake {
@@ -77,6 +78,7 @@ func NewGame(width, height int) *Game {
 	game := &Game{
 		Grid:  grid,
 		snake: snake,
+		Steps: 0,
 	}
 
 	// Generate initial food
@@ -125,6 +127,8 @@ func (g *Game) Update() {
 	if g.snake.Dead || g.snake.GameOver {
 		return
 	}
+
+	g.Steps++ // Incrementiamo il contatore ad ogni passo
 
 	g.snake.Mutex.Lock()
 	defer g.snake.Mutex.Unlock()

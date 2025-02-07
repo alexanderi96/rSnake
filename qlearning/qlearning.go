@@ -8,6 +8,16 @@ import (
 	"os"
 )
 
+// In qlearning.go
+const (
+	InitialEpsilon = 0.9
+	MinEpsilon     = 0.01   // Più esplorazione a lungo termine
+	EpsilonDecay   = 0.9997 // Decay più graduale
+
+	DataDir    = "./data"
+	QtableFile = DataDir + "/qtable.json"
+)
+
 // QTable memorizza i valori Q per coppie stato-azione.
 type QTable map[string][]float64
 
@@ -29,21 +39,21 @@ func NewAgent(learningRate, discount, epsilon float64) *Agent {
 		QTable:          make(QTable),
 		LearningRate:    learningRate,
 		Discount:        discount,
-		Epsilon:         0.9, // Partenza con alta esplorazione
-		InitialEpsilon:  0.9,
-		MinEpsilon:      0.1,
-		EpsilonDecay:    0.999, // Decay rallentato: ad esempio, dopo 100 episodi, epsilon decadrà meno
+		Epsilon:         InitialEpsilon, // Partenza con alta esplorazione
+		InitialEpsilon:  InitialEpsilon,
+		MinEpsilon:      MinEpsilon,
+		EpsilonDecay:    EpsilonDecay, // Decay rallentato: ad esempio, dopo 100 episodi, epsilon decadrà meno
 		TrainingEpisode: 0,
 	}
 
 	// Prova a caricare uno stato esistente
-	if err := agent.LoadQTable("qtable.json"); err == nil {
+	if err := agent.LoadQTable(QtableFile); err == nil {
 		// Aggiorna i parametri di apprendimento, mantenendo lo stato caricato
 		agent.LearningRate = learningRate
 		agent.Discount = discount
-		agent.InitialEpsilon = 0.9
-		agent.MinEpsilon = 0.1
-		agent.EpsilonDecay = 0.999
+		agent.InitialEpsilon = InitialEpsilon
+		agent.MinEpsilon = MinEpsilon
+		agent.EpsilonDecay = EpsilonDecay
 	}
 
 	return agent
@@ -71,6 +81,12 @@ func (a *Agent) GetAction(state string, numActions int) int {
 // IncrementEpisode incrementa il contatore degli episodi di training.
 func (a *Agent) IncrementEpisode() {
 	a.TrainingEpisode++
+	// Decadimento più rapido iniziale, poi più lento
+	if a.TrainingEpisode < 1000 {
+		a.Epsilon = math.Max(0.1, a.InitialEpsilon*math.Exp(-float64(a.TrainingEpisode)/500))
+	} else {
+		a.Epsilon = math.Max(0.05, a.InitialEpsilon*math.Exp(-float64(a.TrainingEpisode)/1000))
+	}
 }
 
 // Update aggiorna il valore Q per una coppia stato-azione.
