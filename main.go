@@ -39,6 +39,7 @@ func main() {
 	game := NewGame(width, height)
 	agent := NewSnakeAgent(game)
 	renderer := NewRenderer()
+	renderer.stats = game.Stats // Initialize renderer with game's stats
 	ticker := time.NewTicker(time.Duration(*speed) * time.Millisecond)
 	defer ticker.Stop()
 
@@ -58,9 +59,11 @@ func main() {
 			// Save stats before reset
 			renderer.stats.AddGame(snake.Score, gameStartTime, time.Now())
 			gameStartTime = time.Time{} // Reset start time
+
 			// Reset agent with new game
 			agent.Reset()
-			game = agent.game // Update our game reference
+			game = agent.game           // Update our game reference
+			renderer.stats = game.Stats // Ensure renderer uses the same stats instance
 		}
 
 		// Handle window resize
@@ -84,7 +87,7 @@ func main() {
 			if err := agent.SaveQTable(); err != nil {
 				fmt.Printf("Error saving QTable: %v\n", err)
 			}
-			if err := renderer.stats.saveToFile(); err != nil {
+			if err := renderer.stats.SaveToFile(); err != nil {
 				fmt.Printf("Error saving stats: %v\n", err)
 			}
 			break

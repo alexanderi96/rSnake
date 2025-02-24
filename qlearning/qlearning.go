@@ -14,7 +14,7 @@ const (
 	MinEpsilon     = 0.01  // Più esplorazione a lungo termine
 	EpsilonDecay   = 0.999 // Decay più graduale
 
-	DataDir    = "./data"
+	DataDir    = "data"
 	QtableFile = DataDir + "/qtable.json"
 )
 
@@ -150,6 +150,11 @@ type AgentState struct {
 
 // SaveQTable salva lo stato dell'agente su un file.
 func (a *Agent) SaveQTable(filename string) error {
+	// Ensure data directory exists
+	if err := os.MkdirAll(DataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %v", err)
+	}
+
 	state := AgentState{
 		QTable:          a.QTable,
 		Epsilon:         a.Epsilon,
@@ -161,8 +166,7 @@ func (a *Agent) SaveQTable(filename string) error {
 		return fmt.Errorf("error marshaling QTable: %v", err)
 	}
 
-	err = os.WriteFile(filename, data, 0644)
-	if err != nil {
+	if err := os.WriteFile(filename, data, 0644); err != nil {
 		return fmt.Errorf("error writing QTable to file: %v", err)
 	}
 

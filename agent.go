@@ -150,20 +150,17 @@ func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	}
 	reward += stagnationPenalty
 
-	// 4. Bonus/Penalità basati sul confronto con le metriche medie
-	avgScore := sa.game.Stats.GetAverageScore()       // Media dei punteggi delle partite
+	// 4. Bonus/Penalità basati sulla durata
 	avgDuration := sa.game.Stats.GetAverageDuration() // Media delle durate (in secondi)
 	currentDuration := sa.game.ElapsedTime()          // Durata corrente della partita (in secondi)
 
-	// Bonus o penalità in funzione della differenza tra il punteggio corrente e la media
-	scoreDiff := float64(snake.Score) - avgScore
-	reward += 50.0 * scoreDiff
+	// Bonus basato sul punteggio corrente, indipendente dalla media
+	reward += 50.0 * float64(snake.Score)
 
-	// Bonus o penalità in funzione della differenza tra la durata corrente e quella media:
-	// - Se la partita sta andando più veloce (durata inferiore alla media) viene aggiunto un bonus;
-	// - Altrimenti viene applicata una penalità.
-	durationDiff := avgDuration - currentDuration
-	reward += 50.0 * durationDiff
+	// Bonus per la velocità di gioco, ma con un impatto minore
+	if currentDuration < avgDuration {
+		reward += 20.0 // Bonus fisso per essere più veloce della media
+	}
 
 	return reward
 }
@@ -193,14 +190,27 @@ func abs(x int) int {
 
 // Reset prepara l'agente per una nuova partita mantenendo le conoscenze apprese.
 func (sa *SnakeAgent) Reset() {
-	// err := sa.agent.SaveQTable(qlearning.QtableFile)
-	// if err != nil {
-	// 	fmt.Printf("Error saving QTable: %v\n", err)
-	// }
+	// Salva lo stato corrente prima del reset
+	err := sa.agent.SaveQTable(qlearning.QtableFile)
+	if err != nil {
+		fmt.Printf("Error saving QTable: %v\n", err)
+	}
+
+	// Salva le statistiche
+	if err := sa.game.Stats.SaveToFile(); err != nil {
+		fmt.Printf("Error saving stats: %v\n", err)
+	}
+
+	// Preserve the existing stats
+	existingStats := sa.game.Stats
 
 	width := sa.game.Grid.Width
 	height := sa.game.Grid.Height
 	sa.game = NewGame(width, height)
+
+	// Restore the stats
+	sa.game.Stats = existingStats
+
 	sa.agent.IncrementEpisode()
 }
 
