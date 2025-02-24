@@ -220,48 +220,26 @@ func (r *Renderer) drawStatsGraph() {
 		}
 	}
 
-	// Sort stats by compression index (higher compression on the left)
+	// Sort stats by timestamp
 	sortedStats := make([]GameRecord, len(stats))
 	copy(sortedStats, stats)
 	for i := 0; i < len(sortedStats)-1; i++ {
 		for j := i + 1; j < len(sortedStats); j++ {
-			if sortedStats[i].CompressionIndex < sortedStats[j].CompressionIndex {
+			if sortedStats[i].StartTime.After(sortedStats[j].StartTime) {
 				sortedStats[i], sortedStats[j] = sortedStats[j], sortedStats[i]
 			}
 		}
 	}
 
-	// Find max compression index to determine number of sectors
-	maxCompressionIndex := 0
-	for _, stat := range sortedStats {
-		if stat.CompressionIndex > maxCompressionIndex {
-			maxCompressionIndex = stat.CompressionIndex
-		}
-	}
-
-	// Group stats by compression index
-	groupedStats := make(map[int][]GameRecord)
-	for _, stat := range sortedStats {
-		groupedStats[stat.CompressionIndex] = append(groupedStats[stat.CompressionIndex], stat)
-	}
-
 	scaleY := float32(graphHeight-40) / float32(maxScore)
 	durationScaleY := float32(graphHeight-40) / float32(maxDuration)
 
-	// Count total records to determine spacing
-	totalRecords := 0
-	for compressionIdx := maxCompressionIndex; compressionIdx >= 0; compressionIdx-- {
-		if records, exists := groupedStats[compressionIdx]; exists {
-			totalRecords += len(records)
-		}
-	}
-
-	if totalRecords == 0 {
+	if len(sortedStats) == 0 {
 		return
 	}
 
-	// Calculate point spacing for continuous layout
-	pointSpacing := float32(graphWidth) / float32(totalRecords-1)
+	// Calculate point spacing using all available width
+	pointSpacing := float32(graphWidth) / float32(len(sortedStats)-1)
 	currentX := float32(borderPadding)
 
 	const (
@@ -270,153 +248,109 @@ func (r *Renderer) drawStatsGraph() {
 		barAlpha   = uint8(180) // Standard alpha for bars
 	)
 
-	// Process compression indices in descending order
-	for compressionIdx := maxCompressionIndex; compressionIdx >= 0; compressionIdx-- {
-		records := groupedStats[compressionIdx]
-		if len(records) == 0 {
-			continue
+	// Draw all records chronologically
+	for i, game := range sortedStats {
+		// Calculate x positions for score and duration bars
+		scoreX := currentX - barSpacing/2
+		durationX := currentX + barSpacing/2
+
+		// Draw score bar and point (green)
+		var scoreY float32
+		if game.CompressionIndex == 0 {
+			scoreY = float32(graphY+graphHeight) - float32(game.Score)*scaleY
+			// Draw single score bar
+			rl.DrawRectangle(
+				int32(scoreX-barWidth/2),
+				int32(scoreY),
+				int32(barWidth),
+				int32(float32(graphY+graphHeight)-scoreY),
+				rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
+		} else {
+			scoreY = float32(graphY+graphHeight) - float32(game.AverageScore)*scaleY
+			minScoreY := float32(graphY+graphHeight) - float32(game.MinScore)*scaleY
+			maxScoreY := float32(graphY+graphHeight) - float32(game.MaxScore)*scaleY
+
+			// Draw min-max range bar for compressed records
+			rl.DrawRectangle(
+				int32(scoreX-barWidth/2),
+				int32(maxScoreY),
+				int32(barWidth),
+				int32(minScoreY-maxScoreY),
+				rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
+
+			// Draw average score marker
+			rl.DrawRectangle(
+				int32(scoreX-barWidth/2),
+				int32(scoreY),
+				int32(barWidth),
+				int32(2),
+				rl.Green)
 		}
-		// Draw all records in this group
-		for i, game := range records {
-			// Calculate x positions for score and duration bars
-			scoreX := currentX - barSpacing/2
-			durationX := currentX + barSpacing/2
 
-			// Draw score bar and point (green)
-			var scoreY float32
-			if game.CompressionIndex == 0 {
-				scoreY = float32(graphY+graphHeight) - float32(game.Score)*scaleY
-				// Draw single score bar
-				rl.DrawRectangle(
-					int32(scoreX-barWidth/2),
-					int32(scoreY),
-					int32(barWidth),
-					int32(float32(graphY+graphHeight)-scoreY),
-					rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
-			} else {
-				scoreY = float32(graphY+graphHeight) - float32(game.AverageScore)*scaleY
-				minScoreY := float32(graphY+graphHeight) - float32(game.MinScore)*scaleY
-				maxScoreY := float32(graphY+graphHeight) - float32(game.MaxScore)*scaleY
+		// Draw duration bar and point (purple)
+		var durationY float32
+		if game.CompressionIndex == 0 {
+			duration := float32(game.EndTime.Sub(game.StartTime).Seconds())
+			durationY = float32(graphY+graphHeight) - duration*durationScaleY
+			// Draw single duration bar
+			rl.DrawRectangle(
+				int32(durationX-barWidth/2),
+				int32(durationY),
+				int32(barWidth),
+				int32(float32(graphY+graphHeight)-durationY),
+				rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
+		} else {
+			durationY = float32(graphY+graphHeight) - float32(game.AverageDuration)*durationScaleY
+			minDurationY := float32(graphY+graphHeight) - float32(game.MinDuration)*durationScaleY
+			maxDurationY := float32(graphY+graphHeight) - float32(game.MaxDuration)*durationScaleY
 
-				// Draw min-max range bar for compressed records
-				rl.DrawRectangle(
-					int32(scoreX-barWidth/2),
-					int32(maxScoreY),
-					int32(barWidth),
-					int32(minScoreY-maxScoreY),
-					rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
+			// Draw min-max range bar for compressed records
+			rl.DrawRectangle(
+				int32(durationX-barWidth/2),
+				int32(maxDurationY),
+				int32(barWidth),
+				int32(minDurationY-maxDurationY),
+				rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
 
-				// Draw average score marker
-				rl.DrawRectangle(
-					int32(scoreX-barWidth/2),
-					int32(scoreY),
-					int32(barWidth),
-					int32(2),
-					rl.Green)
-			}
-
-			// Draw duration bar and point (purple)
-			var durationY float32
-			if game.CompressionIndex == 0 {
-				duration := float32(game.EndTime.Sub(game.StartTime).Seconds())
-				durationY = float32(graphY+graphHeight) - duration*durationScaleY
-				// Draw single duration bar
-				rl.DrawRectangle(
-					int32(durationX-barWidth/2),
-					int32(durationY),
-					int32(barWidth),
-					int32(float32(graphY+graphHeight)-durationY),
-					rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
-			} else {
-				durationY = float32(graphY+graphHeight) - float32(game.AverageDuration)*durationScaleY
-				minDurationY := float32(graphY+graphHeight) - float32(game.MinDuration)*durationScaleY
-				maxDurationY := float32(graphY+graphHeight) - float32(game.MaxDuration)*durationScaleY
-
-				// Draw min-max range bar for compressed records
-				rl.DrawRectangle(
-					int32(durationX-barWidth/2),
-					int32(maxDurationY),
-					int32(barWidth),
-					int32(minDurationY-maxDurationY),
-					rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
-
-				// Draw average duration marker
-				rl.DrawRectangle(
-					int32(durationX-barWidth/2),
-					int32(durationY),
-					int32(barWidth),
-					int32(2),
-					rl.Purple)
-			}
-
-			// Draw connecting lines between points if not the last point
-			if i == len(records)-1 && compressionIdx > 0 {
-				// If this is the last point in a group and there are lower compression groups,
-				// look for the first point in the next non-empty group
-				nextCompressionIdx := compressionIdx - 1
-				for nextCompressionIdx >= 0 {
-					if nextRecords, exists := groupedStats[nextCompressionIdx]; exists && len(nextRecords) > 0 {
-						nextX := currentX + pointSpacing
-						var nextScoreY, nextDurationY float32
-						nextGame := nextRecords[0]
-
-						if nextGame.CompressionIndex == 0 {
-							nextScoreY = float32(graphY+graphHeight) - float32(nextGame.Score)*scaleY
-							nextDuration := float32(nextGame.EndTime.Sub(nextGame.StartTime).Seconds())
-							nextDurationY = float32(graphY+graphHeight) - nextDuration*durationScaleY
-						} else {
-							nextScoreY = float32(graphY+graphHeight) - float32(nextGame.AverageScore)*scaleY
-							nextDurationY = float32(graphY+graphHeight) - float32(nextGame.AverageDuration)*durationScaleY
-						}
-
-						// Draw connecting lines for scores and durations
-						rl.DrawLine(
-							int32(scoreX),
-							int32(scoreY),
-							int32(nextX-barSpacing/2),
-							int32(nextScoreY),
-							rl.Green)
-						rl.DrawLine(
-							int32(durationX),
-							int32(durationY),
-							int32(nextX+barSpacing/2),
-							int32(nextDurationY),
-							rl.Purple)
-						break
-					}
-					nextCompressionIdx--
-				}
-			} else if i < len(records)-1 {
-				// Draw lines to next point in same group
-				nextX := currentX + pointSpacing
-				var nextScoreY, nextDurationY float32
-				nextGame := records[i+1]
-
-				if nextGame.CompressionIndex == 0 {
-					nextScoreY = float32(graphY+graphHeight) - float32(nextGame.Score)*scaleY
-					nextDuration := float32(nextGame.EndTime.Sub(nextGame.StartTime).Seconds())
-					nextDurationY = float32(graphY+graphHeight) - nextDuration*durationScaleY
-				} else {
-					nextScoreY = float32(graphY+graphHeight) - float32(nextGame.AverageScore)*scaleY
-					nextDurationY = float32(graphY+graphHeight) - float32(nextGame.AverageDuration)*durationScaleY
-				}
-
-				// Draw connecting lines for scores and durations
-				rl.DrawLine(
-					int32(scoreX),
-					int32(scoreY),
-					int32(nextX-barSpacing/2),
-					int32(nextScoreY),
-					rl.Green)
-				rl.DrawLine(
-					int32(durationX),
-					int32(durationY),
-					int32(nextX+barSpacing/2),
-					int32(nextDurationY),
-					rl.Purple)
-			}
-
-			currentX += pointSpacing
+			// Draw average duration marker
+			rl.DrawRectangle(
+				int32(durationX-barWidth/2),
+				int32(durationY),
+				int32(barWidth),
+				int32(2),
+				rl.Purple)
 		}
+
+		// Draw connecting lines to next point if not the last point
+		if i < len(sortedStats)-1 {
+			nextX := currentX + pointSpacing
+			var nextScoreY, nextDurationY float32
+			nextGame := sortedStats[i+1]
+
+			if nextGame.CompressionIndex == 0 {
+				nextScoreY = float32(graphY+graphHeight) - float32(nextGame.Score)*scaleY
+				nextDuration := float32(nextGame.EndTime.Sub(nextGame.StartTime).Seconds())
+				nextDurationY = float32(graphY+graphHeight) - nextDuration*durationScaleY
+			} else {
+				nextScoreY = float32(graphY+graphHeight) - float32(nextGame.AverageScore)*scaleY
+				nextDurationY = float32(graphY+graphHeight) - float32(nextGame.AverageDuration)*durationScaleY
+			}
+
+			// Draw connecting lines for scores and durations
+			rl.DrawLine(
+				int32(scoreX),
+				int32(scoreY),
+				int32(nextX-barSpacing/2),
+				int32(nextScoreY),
+				rl.Green)
+			rl.DrawLine(
+				int32(durationX),
+				int32(durationY),
+				int32(nextX+barSpacing/2),
+				int32(nextDurationY),
+				rl.Purple)
+		}
+
+		currentX += pointSpacing
 	}
 }

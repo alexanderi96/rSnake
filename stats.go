@@ -12,7 +12,7 @@ import (
 
 const (
 	StatsFile = "data/stats.json"
-	GroupSize = 100 // Numero di partite per gruppo
+	GroupSize = 50 // Numero di partite per gruppo
 )
 
 // GameStats contiene tutte le partite registrate e fornisce metodi per
