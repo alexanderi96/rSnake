@@ -12,7 +12,7 @@ import (
 
 const (
 	StatsFile = "data/stats.json"
-	GroupSize = 5 // Numero di partite per gruppo
+	GroupSize = 100 // Numero di partite per gruppo
 )
 
 // GameStats contiene tutte le partite registrate e fornisce metodi per
@@ -30,6 +30,7 @@ type GameRecord struct {
 	CompressionIndex int       `json:"compressionIndex"` // 0 per partite singole, >0 per gruppi
 	GamesCount       int       `json:"gamesCount"`       // 1 per partite singole, >1 per gruppi
 	AverageScore     float64   `json:"averageScore"`     // Per gruppi
+	MedianScore      float64   `json:"medianScore"`      // Per gruppi
 	MaxScore         int       `json:"maxScore"`         // Per gruppi
 	MinScore         int       `json:"minScore"`         // Per gruppi
 	AverageDuration  float64   `json:"averageDuration"`  // Per gruppi
@@ -58,6 +59,7 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 		CompressionIndex: 0, // Partita singola
 		GamesCount:       1,
 		AverageScore:     float64(score),
+		MedianScore:      float64(score),
 		MaxScore:         score,
 		MinScore:         score,
 		AverageDuration:  endTime.Sub(startTime).Seconds(),
@@ -106,6 +108,7 @@ func (s *GameStats) groupGames() {
 			group := records[i:end]
 			var totalScore float64
 			var totalDuration float64
+			allScores := make([]float64, 0)
 			maxScore := group[0].MaxScore
 			minScore := group[0].MinScore
 			maxDuration := group[0].MaxDuration
@@ -136,6 +139,21 @@ func (s *GameStats) groupGames() {
 				totalScore += g.AverageScore * float64(g.GamesCount)
 				totalDuration += g.AverageDuration * float64(g.GamesCount)
 				totalGames += g.GamesCount
+				// Aggiungi il punteggio mediano ripetuto per il numero di giochi nel gruppo
+				for i := 0; i < g.GamesCount; i++ {
+					allScores = append(allScores, g.MedianScore)
+				}
+			}
+
+			// Calcola la mediana
+			sort.Float64s(allScores)
+			var medianScore float64
+			if len(allScores) > 0 {
+				if len(allScores)%2 == 0 {
+					medianScore = (allScores[len(allScores)/2-1] + allScores[len(allScores)/2]) / 2
+				} else {
+					medianScore = allScores[len(allScores)/2]
+				}
 			}
 
 			newRecord := GameRecord{
@@ -144,6 +162,7 @@ func (s *GameStats) groupGames() {
 				CompressionIndex: compressionLevel + 1,
 				GamesCount:       totalGames,
 				AverageScore:     totalScore / float64(totalGames),
+				MedianScore:      medianScore,
 				MaxScore:         maxScore,
 				MinScore:         minScore,
 				AverageDuration:  totalDuration / float64(totalGames),
@@ -190,6 +209,34 @@ func (s *GameStats) GetAverageScore() float64 {
 	}
 
 	return totalScore / float64(totalGames)
+}
+
+// GetMedianScore calcola e restituisce il punteggio mediano.
+func (s *GameStats) GetMedianScore() float64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	if len(s.Games) == 0 {
+		return 0
+	}
+
+	// Raccogli tutti i punteggi mediani pesati per il numero di giochi
+	allScores := make([]float64, 0)
+	for _, game := range s.Games {
+		for i := 0; i < game.GamesCount; i++ {
+			allScores = append(allScores, game.MedianScore)
+		}
+	}
+
+	// Calcola la mediana
+	sort.Float64s(allScores)
+	if len(allScores) == 0 {
+		return 0
+	}
+	if len(allScores)%2 == 0 {
+		return (allScores[len(allScores)/2-1] + allScores[len(allScores)/2]) / 2
+	}
+	return allScores[len(allScores)/2]
 }
 
 // GetMaxScore restituisce il punteggio massimo registrato.

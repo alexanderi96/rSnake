@@ -264,6 +264,12 @@ func (r *Renderer) drawStatsGraph() {
 	pointSpacing := float32(graphWidth) / float32(totalRecords-1)
 	currentX := float32(borderPadding)
 
+	const (
+		barWidth   = float32(4) // Standard width for all bars
+		barSpacing = float32(6) // Space between score and duration bars
+		barAlpha   = uint8(180) // Standard alpha for bars
+	)
+
 	// Process compression indices in descending order
 	for compressionIdx := maxCompressionIndex; compressionIdx >= 0; compressionIdx-- {
 		records := groupedStats[compressionIdx]
@@ -272,16 +278,21 @@ func (r *Renderer) drawStatsGraph() {
 		}
 		// Draw all records in this group
 		for i, game := range records {
-			// Calculate bar width based on compression index
-			barWidth := float32(4) // Base width for non-compressed records
-			if game.CompressionIndex > 0 {
-				barWidth = float32(4 + (game.CompressionIndex * 2)) // Increase width with compression level
-			}
+			// Calculate x positions for score and duration bars
+			scoreX := currentX - barSpacing/2
+			durationX := currentX + barSpacing/2
 
-			// Draw score bar (green)
+			// Draw score bar and point (green)
 			var scoreY float32
 			if game.CompressionIndex == 0 {
 				scoreY = float32(graphY+graphHeight) - float32(game.Score)*scaleY
+				// Draw single score bar
+				rl.DrawRectangle(
+					int32(scoreX-barWidth/2),
+					int32(scoreY),
+					int32(barWidth),
+					int32(float32(graphY+graphHeight)-scoreY),
+					rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
 			} else {
 				scoreY = float32(graphY+graphHeight) - float32(game.AverageScore)*scaleY
 				minScoreY := float32(graphY+graphHeight) - float32(game.MinScore)*scaleY
@@ -289,21 +300,33 @@ func (r *Renderer) drawStatsGraph() {
 
 				// Draw min-max range bar for compressed records
 				rl.DrawRectangle(
-					int32(currentX-barWidth/2),
+					int32(scoreX-barWidth/2),
 					int32(maxScoreY),
 					int32(barWidth),
 					int32(minScoreY-maxScoreY),
-					rl.Color{R: 0, G: 180, B: 0, A: 100})
+					rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
+
+				// Draw average score marker
+				rl.DrawRectangle(
+					int32(scoreX-barWidth/2),
+					int32(scoreY),
+					int32(barWidth),
+					int32(2),
+					rl.Green)
 			}
 
-			// Draw score point
-			rl.DrawCircle(int32(currentX), int32(scoreY), float32(barWidth)/2, rl.Green)
-
-			// Draw duration bar (purple)
+			// Draw duration bar and point (purple)
 			var durationY float32
 			if game.CompressionIndex == 0 {
 				duration := float32(game.EndTime.Sub(game.StartTime).Seconds())
 				durationY = float32(graphY+graphHeight) - duration*durationScaleY
+				// Draw single duration bar
+				rl.DrawRectangle(
+					int32(durationX-barWidth/2),
+					int32(durationY),
+					int32(barWidth),
+					int32(float32(graphY+graphHeight)-durationY),
+					rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
 			} else {
 				durationY = float32(graphY+graphHeight) - float32(game.AverageDuration)*durationScaleY
 				minDurationY := float32(graphY+graphHeight) - float32(game.MinDuration)*durationScaleY
@@ -311,17 +334,22 @@ func (r *Renderer) drawStatsGraph() {
 
 				// Draw min-max range bar for compressed records
 				rl.DrawRectangle(
-					int32(currentX-barWidth/2),
+					int32(durationX-barWidth/2),
 					int32(maxDurationY),
 					int32(barWidth),
 					int32(minDurationY-maxDurationY),
-					rl.Color{R: 180, G: 0, B: 180, A: 100})
+					rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
+
+				// Draw average duration marker
+				rl.DrawRectangle(
+					int32(durationX-barWidth/2),
+					int32(durationY),
+					int32(barWidth),
+					int32(2),
+					rl.Purple)
 			}
 
-			// Draw duration point
-			rl.DrawCircle(int32(currentX), int32(durationY), float32(barWidth)/2, rl.Purple)
-
-			// Store point data for line drawing
+			// Draw connecting lines between points if not the last point
 			if i == len(records)-1 && compressionIdx > 0 {
 				// If this is the last point in a group and there are lower compression groups,
 				// look for the first point in the next non-empty group
@@ -341,14 +369,25 @@ func (r *Renderer) drawStatsGraph() {
 							nextDurationY = float32(graphY+graphHeight) - float32(nextGame.AverageDuration)*durationScaleY
 						}
 
-						rl.DrawLine(int32(currentX), int32(scoreY), int32(nextX), int32(nextScoreY), rl.Green)
-						rl.DrawLine(int32(currentX), int32(durationY), int32(nextX), int32(nextDurationY), rl.Purple)
+						// Draw connecting lines for scores and durations
+						rl.DrawLine(
+							int32(scoreX),
+							int32(scoreY),
+							int32(nextX-barSpacing/2),
+							int32(nextScoreY),
+							rl.Green)
+						rl.DrawLine(
+							int32(durationX),
+							int32(durationY),
+							int32(nextX+barSpacing/2),
+							int32(nextDurationY),
+							rl.Purple)
 						break
 					}
 					nextCompressionIdx--
 				}
 			} else if i < len(records)-1 {
-				// Draw line to next point in same group
+				// Draw lines to next point in same group
 				nextX := currentX + pointSpacing
 				var nextScoreY, nextDurationY float32
 				nextGame := records[i+1]
@@ -362,8 +401,19 @@ func (r *Renderer) drawStatsGraph() {
 					nextDurationY = float32(graphY+graphHeight) - float32(nextGame.AverageDuration)*durationScaleY
 				}
 
-				rl.DrawLine(int32(currentX), int32(scoreY), int32(nextX), int32(nextScoreY), rl.Green)
-				rl.DrawLine(int32(currentX), int32(durationY), int32(nextX), int32(nextDurationY), rl.Purple)
+				// Draw connecting lines for scores and durations
+				rl.DrawLine(
+					int32(scoreX),
+					int32(scoreY),
+					int32(nextX-barSpacing/2),
+					int32(nextScoreY),
+					rl.Green)
+				rl.DrawLine(
+					int32(durationX),
+					int32(durationY),
+					int32(nextX+barSpacing/2),
+					int32(nextDurationY),
+					rl.Purple)
 			}
 
 			currentX += pointSpacing
