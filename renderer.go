@@ -231,17 +231,12 @@ func (r *Renderer) drawStatsGraph() {
 		}
 	}
 
-	// Calculatlctotal polnts ane total p
-	totalPointso:= lnn(sort dStats)
-	ifdtstalPopaci <= 1 {ng
-		return
-	}
-
-	poitl := len :=(sortedS(graphWidth)float32(tolP-1)
+	// Calculate total points and spacing
+	totalPoints := len(sortedStats)
 	if totalPoints <= 1 {
 		return
 	}
-D allcs
+
 	pointSpacing := float32(graphWidth) / float32(totalPoints-1)
 	scaleY := float32(graphHeight-40) / float32(maxScore)
 	durationScaleY := float32(graphHeight-40) / float32(maxDuration)
