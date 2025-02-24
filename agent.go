@@ -116,30 +116,56 @@ func (sa *SnakeAgent) Update() {
 		sa.maxScore = sa.game.GetSnake().Score
 	}
 }
+
+// calculateReward calcola il reward in base a diversi fattori:
+// - Consumo di cibo (aumento del punteggio)
+// - Variazione della distanza Manhattan rispetto al cibo
+// - Penalità per stagnazione (passi senza mangiare)
+// - Bonus o penalità basati sul confronto tra punteggio corrente e average score
+// - Bonus o penalità basati sul confronto tra durata corrente e average duration
 func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	snake := sa.game.GetSnake()
 	if snake.Dead {
 		return -1000.0
 	}
 
-	// Aumenta significativamente il reward per il cibo
+	reward := 0.0
+
+	// 1. Reward per aver mangiato (score aumenta)
 	if snake.Score > oldScore {
-		return 1000.0 + 100.0*float64(snake.Score)
+		reward += 1000.0 + 100.0*float64(snake.Score)
 	}
 
-	// Aumenta la penalità per movimenti inefficienti
+	// 2. Modifica del reward in base alla variazione della distanza Manhattan dal cibo
 	oldDist := sa.getManhattanDistance(snake.GetPreviousHead(), sa.game.food)
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
 	distReward := 30.0 * float64(oldDist-newDist)
+	reward += distReward
 
-	// Penalità più aggressive per la stagnazione
+	// 3. Penalità per stagnazione: se sono passati molti step senza mangiare
 	stepsWithoutFood := sa.game.Steps - oldLength*10
-	stagnationPenalty := -1.0 * float64(stepsWithoutFood) // Aumentata di 10x
-	if stepsWithoutFood > 30 {                            // Ridotto da 50 a 30
-		stagnationPenalty -= 20.0 // Aumentata da 10 a 20
+	stagnationPenalty := -1.0 * float64(stepsWithoutFood)
+	if stepsWithoutFood > 30 { // Se il numero di step senza cibo supera una soglia, penalizza ulteriormente
+		stagnationPenalty -= 20.0
 	}
+	reward += stagnationPenalty
 
-	return distReward + stagnationPenalty
+	// 4. Bonus/Penalità basati sul confronto con le metriche medie
+	avgScore := sa.game.Stats.GetAverageScore()       // Media dei punteggi delle partite
+	avgDuration := sa.game.Stats.GetAverageDuration() // Media delle durate (in secondi)
+	currentDuration := sa.game.ElapsedTime()          // Durata corrente della partita (in secondi)
+
+	// Bonus o penalità in funzione della differenza tra il punteggio corrente e la media
+	scoreDiff := float64(snake.Score) - avgScore
+	reward += 50.0 * scoreDiff
+
+	// Bonus o penalità in funzione della differenza tra la durata corrente e quella media:
+	// - Se la partita sta andando più veloce (durata inferiore alla media) viene aggiunto un bonus;
+	// - Altrimenti viene applicata una penalità.
+	durationDiff := avgDuration - currentDuration
+	reward += 50.0 * durationDiff
+
+	return reward
 }
 
 // getManhattanDistance calcola la distanza Manhattan tra due punti, considerando il wrapping della griglia.

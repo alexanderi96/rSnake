@@ -171,14 +171,10 @@ func (r *Renderer) Draw(g *Game) {
 	xOffset += baseLabelOffset
 
 	// Draw duration labels
-	avgDuration := 0.0
-	for _, game := range stats.Games {
-		avgDuration += game.EndTime.Sub(game.StartTime).Seconds()
-	}
-	avgDuration /= float64(len(stats.Games))
 
 	xOffset += baseLabelOffset
 
+	avgDuration := r.stats.GetAverageDuration()
 	rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", avgDuration),
 		xOffset,
 		yOffset,

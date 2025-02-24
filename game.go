@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"time"
 
 	"golang.org/x/exp/rand"
 )
@@ -41,10 +42,12 @@ const (
 )
 
 type Game struct {
-	Grid  Grid
-	snake *Snake
-	food  Point
-	Steps int
+	Grid      Grid
+	snake     *Snake
+	food      Point
+	Steps     int
+	StartTime time.Time
+	Stats     *GameStats
 }
 
 func NewSnake(startPos Point, color Color) *Snake {
@@ -76,15 +79,22 @@ func NewGame(width, height int) *Game {
 	snake := NewSnake(startPos, color)
 
 	game := &Game{
-		Grid:  grid,
-		snake: snake,
-		Steps: 0,
+		Grid:      grid,
+		snake:     snake,
+		Steps:     0,
+		StartTime: time.Now(),
+		Stats:     NewGameStats(), // Inizializza le statistiche
 	}
 
 	// Generate initial food
 	game.food = game.generateFood()
 
 	return game
+}
+
+// ElapsedTime restituisce la durata corrente della partita in secondi.
+func (g *Game) ElapsedTime() float64 {
+	return time.Since(g.StartTime).Seconds()
 }
 
 func (s *Snake) Move(newHead Point) {
