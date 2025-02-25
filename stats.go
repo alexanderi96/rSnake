@@ -18,8 +18,9 @@ const (
 // GameStats contiene tutte le partite registrate e fornisce metodi per
 // ottenere statistiche come punteggio medio, durata media, ecc.
 type GameStats struct {
-	Games []GameRecord // Array di record di partita (sia singole che raggruppate)
-	mutex sync.RWMutex
+	Games      []GameRecord `json:"games"`      // Array di record di partita (sia singole che raggruppate)
+	TotalGames int          `json:"totalGames"` // Contatore totale delle partite giocate
+	mutex      sync.RWMutex `json:"-"`          // Non salvare il mutex in JSON
 }
 
 // GameRecord rappresenta i dati di una partita (singola o raggruppata).
@@ -41,7 +42,8 @@ type GameRecord struct {
 // NewGameStats crea una nuova istanza di GameStats e tenta di caricare i dati dal file.
 func NewGameStats() *GameStats {
 	stats := &GameStats{
-		Games: make([]GameRecord, 0),
+		Games:      make([]GameRecord, 0),
+		TotalGames: 0,
 	}
 	stats.loadFromFile()
 	return stats
@@ -51,6 +53,9 @@ func NewGameStats() *GameStats {
 func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	// Incrementa il contatore totale delle partite
+	s.TotalGames++
 
 	game := GameRecord{
 		StartTime:        startTime,
@@ -84,62 +89,79 @@ func (s *GameStats) groupGames() {
 		return
 	}
 
-	// Cerca il record attivo che sta comprimendo
-	activeIdx := -1
-	for i, game := range s.Games {
-		if game.CompressionIndex > 0 && game.GamesCount < GroupSize {
-			activeIdx = i
-			break
+	// Ottieni il massimo livello di compressione attuale
+	maxLevel := 0
+	for _, game := range s.Games {
+		if game.CompressionIndex > maxLevel {
+			maxLevel = game.CompressionIndex
 		}
 	}
 
-	// Se non c'è un record attivo
-	if activeIdx == -1 {
-		// Cerca il primo record che ha raggiunto GroupSize elementi
-		for i, game := range s.Games {
-			if game.GamesCount >= GroupSize && i+1 < len(s.Games) && s.Games[i+1].CompressionIndex == 0 {
-				// Inizia la compressione del record successivo
-				nextRecord := s.Games[i+1]
-				nextRecord.CompressionIndex = game.CompressionIndex
-				s.Games[i+1] = nextRecord
-				return
-			}
-		}
-
-		// Se non abbiamo trovato un record pieno, ma abbiamo più di GroupSize record non compressi
-		uncompressedCount := 0
-		for _, game := range s.Games {
-			if game.CompressionIndex == 0 {
-				uncompressedCount++
-			}
-		}
-
-		if uncompressedCount > GroupSize {
-			// Trova il primo record non compresso
-			for i, game := range s.Games {
-				if game.CompressionIndex == 0 {
-					game.CompressionIndex = 1
-					s.Games[i] = game
-					return
+	// Per ogni livello, controlla se ci sono più di GroupSize elementi consecutivi
+	for level := 0; level <= maxLevel; level++ {
+		for {
+			// Conta quanti elementi abbiamo per questo livello
+			sameLevel := make([]int, 0) // Indici dei record con lo stesso livello
+			for i := 0; i < len(s.Games); i++ {
+				if s.Games[i].CompressionIndex == level {
+					sameLevel = append(sameLevel, i)
 				}
 			}
-		}
-	} else {
-		// Continua la compressione del record attivo
-		if activeIdx+1 < len(s.Games) && s.Games[activeIdx+1].CompressionIndex == 0 {
-			s.mergeRecords(activeIdx, activeIdx+1)
+
+			// Se non abbiamo più di GroupSize elementi, passa al livello successivo
+			if len(sameLevel) <= GroupSize {
+				break
+			}
+
+			// Promuovi il record più vecchio al livello successivo
+			oldestIdx := sameLevel[0]
+
+			// Cerca se esiste già un record del livello successivo che può assorbire
+			nextLevelExists := false
+			nextLevelIdx := -1
+			for i := 0; i < oldestIdx; i++ {
+				if s.Games[i].CompressionIndex == level+1 && s.Games[i].GamesCount < GroupSize {
+					nextLevelExists = true
+					nextLevelIdx = i
+					break
+				}
+			}
+
+			if nextLevelExists {
+				// Prova ad assorbire nel record esistente
+				if !s.mergeRecords(nextLevelIdx, oldestIdx) {
+					// Se il merge fallisce, promuovi al livello successivo e resetta il conteggio
+					s.Games[oldestIdx].CompressionIndex = level + 1
+					s.Games[oldestIdx].GamesCount = 1
+				}
+			} else {
+				// Promuovi direttamente al livello successivo e resetta il conteggio
+				s.Games[oldestIdx].CompressionIndex = level + 1
+				s.Games[oldestIdx].GamesCount = 1
+			}
+
+			// Aggiorna il massimo livello se necessario
+			if level+1 > maxLevel {
+				maxLevel = level + 1
+			}
 		}
 	}
 }
 
 // mergeRecords unisce due record adiacenti, dove il primo è già compresso
-func (s *GameStats) mergeRecords(compressedIdx, newIdx int) {
+// Restituisce true se il merge è avvenuto, false se il record compresso ha raggiunto il limite
+func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	if compressedIdx >= len(s.Games) || newIdx >= len(s.Games) {
-		return
+		return false
 	}
 
 	compressed := s.Games[compressedIdx]
 	newRecord := s.Games[newIdx]
+
+	// Se il record compresso ha già GroupSize elementi, non può assorbire altri
+	if compressed.GamesCount >= GroupSize {
+		return false
+	}
 
 	// Calcola il nuovo numero totale di giochi
 	totalGames := compressed.GamesCount + 1
@@ -204,6 +226,8 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) {
 	newGames = append(newGames, compressed)
 	newGames = append(newGames, s.Games[newIdx+1:]...)
 	s.Games = newGames
+
+	return true
 }
 
 // GetStats restituisce i dati attuali delle statistiche.
@@ -359,7 +383,7 @@ func (s *GameStats) SaveToFile() error {
 		return fmt.Errorf("failed to create data directory: %v", err)
 	}
 
-	jsonData, err := json.Marshal(s.Games)
+	jsonData, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("failed to marshal stats data: %v", err)
 	}
@@ -377,12 +401,13 @@ func (s *GameStats) loadFromFile() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.Games = make([]GameRecord, 0)
+			s.TotalGames = 0
 			return nil // Il file non esiste ancora, quindi si parte con statistiche vuote
 		}
 		return err
 	}
 
-	if err := json.Unmarshal(data, &s.Games); err != nil {
+	if err := json.Unmarshal(data, s); err != nil {
 		return err
 	}
 

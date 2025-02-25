@@ -147,11 +147,7 @@ func (r *Renderer) Draw(g *Game) {
 	xOffset += spacing
 
 	// Total games
-	totalGames := 0
-	for _, game := range stats {
-		totalGames += game.GamesCount
-	}
-	rl.DrawText(fmt.Sprintf("Total Games: %d", totalGames),
+	rl.DrawText(fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
 		xOffset,
 		yOffset,
 		fontSize, rl.White)
