@@ -2,49 +2,108 @@ package main
 
 import (
 	"fmt"
+	"math"
 
 	"snake-game/qlearning"
 )
 
 // SnakeAgent rappresenta l'agente che gioca a Snake usando Q-learning.
 type SnakeAgent struct {
-	agent *qlearning.Agent
-	game  *Game
+	agent        *qlearning.Agent
+	game         *Game
+	foodReward   float64
+	deathPenalty float64
 }
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
 	agent := qlearning.NewAgent(0.5, 0.8, 0.95) // Learning rate aumentato per apprendimento più rapido
 	return &SnakeAgent{
-		agent: agent,
-		game:  game,
+		agent:        agent,
+		game:         game,
+		foodReward:   500.0,  // Default reward values
+		deathPenalty: -250.0, // Can be overridden by curriculum
 	}
 }
 
-// getState costruisce lo stato secondo il formato:
-// state := fmt.Sprintf("%d:%d:%d:%d", foodDir, distAhead, distLeft, distRight)
-// dove:
-//   - foodDir è la direzione del cibo relativa allo snake:
-//     0: cibo davanti, 1: cibo a destra, 2: cibo dietro, 3: cibo a sinistra
-//   - distAhead, distLeft, distRight indicano la distanza dal pericolo in ogni direzione
-//     (0 se non c'è pericolo, 1 se adiacente, >1 per distanze maggiori)
+// SetRewardValues imposta i valori di reward per la fase corrente
+func (sa *SnakeAgent) SetRewardValues(foodReward, deathPenalty float64) {
+	sa.foodReward = foodReward
+	sa.deathPenalty = deathPenalty
+}
+
+// getState costruisce uno stato più dettagliato che include:
+// - Direzione del cibo
+// - Distanze dai muri e dal proprio corpo
+// - Configurazione dei pericoli nelle 8 celle circostanti
+// - Lunghezza del serpente normalizzata
+// - Distanza normalizzata dal cibo
 func (sa *SnakeAgent) getState() string {
-	// Ottieni la direzione assoluta del cibo
-	absoluteFoodDir := int(sa.game.GetFoodDirection())
+	snake := sa.game.GetSnake()
+	head := snake.GetHead()
+	food := sa.game.food
 
-	// Ottieni la direzione attuale dello snake in forma cardinale
-	currentDir := int(sa.game.GetCurrentDirection())
+	// Direzione del cibo (0=sopra, 1=destra, 2=sotto, 3=sinistra)
+	foodDirX := food.X - head.X
+	foodDirY := food.Y - head.Y
+	foodDir := -1
 
-	// Calcola la direzione del cibo relativa allo snake
-	foodDir := (absoluteFoodDir - currentDir + 4) % 4
+	if math.Abs(float64(foodDirX)) > math.Abs(float64(foodDirY)) {
+		if foodDirX > 0 {
+			foodDir = 1 // destra
+		} else {
+			foodDir = 3 // sinistra
+		}
+	} else {
+		if foodDirY > 0 {
+			foodDir = 2 // giù
+		} else {
+			foodDir = 0 // su
+		}
+	}
 
-	// Ottieni le distanze dai pericoli nelle varie direzioni
+	// Distanze dai pericoli nelle varie direzioni
 	distAhead, distLeft, distRight := sa.game.GetDangers()
 
-	// Stato finale: usa solo le distanze dai pericoli
-	state := fmt.Sprintf("%d:%d:%d:%d",
-		foodDir, distAhead, distLeft, distRight)
+	// Distanza normalizzata dal cibo
+	foodDist := math.Sqrt(math.Pow(float64(head.X-food.X), 2) + math.Pow(float64(head.Y-food.Y), 2))
+	foodDistNorm := int(math.Min(foodDist/5.0, 10.0))
+
+	// Lunghezza del serpente (normalizzata)
+	length := math.Min(float64(len(snake.Body)), 20.0)
+	lengthNorm := int(length / 4.0)
+
+	// Configurazione pericoli vicini (8 celle circostanti)
+	dangerN := sa.game.checkCollision(Point{X: head.X, Y: head.Y - 1}) != NoCollision
+	dangerNE := sa.game.checkCollision(Point{X: head.X + 1, Y: head.Y - 1}) != NoCollision
+	dangerE := sa.game.checkCollision(Point{X: head.X + 1, Y: head.Y}) != NoCollision
+	dangerSE := sa.game.checkCollision(Point{X: head.X + 1, Y: head.Y + 1}) != NoCollision
+	dangerS := sa.game.checkCollision(Point{X: head.X, Y: head.Y + 1}) != NoCollision
+	dangerSW := sa.game.checkCollision(Point{X: head.X - 1, Y: head.Y + 1}) != NoCollision
+	dangerW := sa.game.checkCollision(Point{X: head.X - 1, Y: head.Y}) != NoCollision
+	dangerNW := sa.game.checkCollision(Point{X: head.X - 1, Y: head.Y - 1}) != NoCollision
+
+	dangerPattern := fmt.Sprintf("%d%d%d%d%d%d%d%d",
+		boolToInt(dangerN), boolToInt(dangerNE),
+		boolToInt(dangerE), boolToInt(dangerSE),
+		boolToInt(dangerS), boolToInt(dangerSW),
+		boolToInt(dangerW), boolToInt(dangerNW))
+
+	// Stato finale: combina tutte le informazioni
+	state := fmt.Sprintf("%d:%d:%d:%d:%d:%d:%s:%d",
+		int(sa.game.GetCurrentDirection()), foodDir,
+		distAhead, distLeft, distRight,
+		foodDistNorm, dangerPattern, lengthNorm)
+
 	return state
+}
+
+// boolToInt converte un booleano in intero
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // relativeActionToAbsolute converte un'azione relativa in una direzione assoluta.
@@ -94,80 +153,255 @@ func (sa *SnakeAgent) Update() {
 	// Aggiorna i Q-values.
 	newState := sa.getState()
 	sa.agent.Update(currentState, action, reward, newState, 3)
-
 }
 
 func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	snake := sa.game.GetSnake()
-	if snake.Dead {
-		return -1000.0
-	}
+	head := snake.GetHead()
+	previousHead := snake.GetPreviousHead()
+	food := sa.game.food
 
-	reward := 0.0
+	// Reward base per essere ancora vivo (proporzionale alla lunghezza)
+	reward := math.Min(float64(len(snake.Body))*0.2, 10.0)
 
-	// Reward significativo per il cibo
+	// --- REWARD PER IL CIBO ---
+
+	// Reward per mangiare cibo (valore basato sulla fase di training)
 	if snake.Score > oldScore {
-		reward += 500.0                       // Reward base per il cibo
-		reward += 50.0 * float64(snake.Score) // Bonus per punteggio totale
+		// Reward base per mangiare
+		reward += sa.foodReward
+
+		// Bonus proporzionale alla lunghezza attuale (incentiva crescita continua)
+		reward += float64(len(snake.Body)) * 2.0
+
+		// Reset del contatore di stagnazione
+		sa.game.Steps = len(snake.Body) * 10
 	}
 
-	// Reward/penalità per la distanza dal cibo
-	oldDist := sa.getManhattanDistance(snake.GetPreviousHead(), sa.game.food)
-	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
+	// --- REWARD PER AVVICINAMENTO AL CIBO ---
+
+	// Calcola distanza precedente e attuale dal cibo
+	oldDist := math.Sqrt(math.Pow(float64(previousHead.X-food.X), 2) +
+		math.Pow(float64(previousHead.Y-food.Y), 2))
+	newDist := math.Sqrt(math.Pow(float64(head.X-food.X), 2) +
+		math.Pow(float64(head.Y-food.Y), 2))
+
+	// Reward per avvicinamento con scala logaritmica (più significativo quando si è vicini)
 	distDiff := oldDist - newDist
-
 	if distDiff > 0 {
-		reward += 10.0 * float64(distDiff) // Reward per avvicinamento
+		// Avvicinamento
+		reward += 10.0 * distDiff * (1.0 + 1.0/math.Max(newDist, 1.0))
 	} else {
-		reward -= 5.0 * float64(-distDiff) // Penalità per allontanamento
+		// Allontanamento (penalità più leggera)
+		reward += 5.0 * distDiff
 	}
 
-	// Reward per mantenere una distanza di sicurezza dai pericoli
-	distAhead, distLeft, distRight := sa.game.GetDangers()
+	// --- REWARD PER SPAZIO APERTO ---
 
-	// Funzione helper per calcolare il bonus di sicurezza
-	safetyBonus := func(dist int) float64 {
-		if dist == 0 { // Nessun pericolo rilevato entro 5 celle
-			return 20.0
+	// Premiare quando il serpente mantiene più spazio aperto attorno a sé
+	freedomReward := sa.calculateFreedomReward()
+	reward += freedomReward
+
+	// --- REWARD PER EVITARE TRAPPOLE ---
+
+	// Penalizzare movimenti che portano a situazioni di "tunnel" o vicoli ciechi
+	trapPenalty := sa.calculateTrapPenalty()
+	reward -= trapPenalty
+
+	// --- REWARD PER EFFICIENZA DEL PERCORSO ---
+
+	// Premiare percorsi efficienti verso il cibo
+	if len(snake.Body) > 5 {
+		pathEfficiency := sa.calculatePathEfficiency()
+		reward += pathEfficiency
+	}
+
+	// --- PENALITÀ PER LA MORTE ---
+
+	if snake.Dead {
+		// Penalità base per la morte
+		reward = sa.deathPenalty
+
+		// Penalità aggiuntiva proporzionale alla distanza dal cibo
+		// (morte vicino al cibo è più grave)
+		if newDist < 5 {
+			reward -= (5 - newDist) * 10
 		}
-		return float64(dist) * 4.0 // Più distanza = più reward
+
+		// Penalità ridotta se il serpente è già molto lungo
+		// (incentiva il rischio quando già cresciuto)
+		if len(snake.Body) > 15 {
+			reward *= 0.8
+		}
 	}
 
-	// Applica il bonus per ogni direzione
-	reward += safetyBonus(distAhead)
-	reward += safetyBonus(distLeft)
-	reward += safetyBonus(distRight)
+	// --- PENALITÀ PER STAGNAZIONE ---
 
-	// Penalità per stagnazione
+	// Penalità per stagnazione con crescita più lenta e progressiva
 	stepsWithoutFood := sa.game.Steps - oldLength*10
 	if stepsWithoutFood > 30 {
-		reward -= float64(stepsWithoutFood) * 0.1
+		// Penalità esponenziale che cresce col tempo
+		stagnationPenalty := math.Pow(float64(stepsWithoutFood-30)*0.05, 2)
+		reward -= math.Min(stagnationPenalty, 150.0) // Cap massimo sulla penalità
+	}
+
+	// --- REWARD PER COMPORTAMENTI STRATEGICI ---
+
+	// Premiare comportamenti perimetrali quando il serpente è lungo
+	if len(snake.Body) > 10 {
+		perimeterBonus := sa.calculatePerimeterBonus()
+		reward += perimeterBonus
 	}
 
 	return reward
 }
 
-// getManhattanDistance calcola la distanza Manhattan tra due punti, considerando il wrapping della griglia.
-func (sa *SnakeAgent) getManhattanDistance(p1, p2 Point) int {
-	dx := abs(p1.X - p2.X)
-	dy := abs(p1.Y - p2.Y)
+// calculateFreedomReward calcola un reward basato sullo spazio libero intorno alla testa
+func (sa *SnakeAgent) calculateFreedomReward() float64 {
+	head := sa.game.GetSnake().GetHead()
+	freedom := 0
 
-	if dx > sa.game.Grid.Width/2 {
-		dx = sa.game.Grid.Width - dx
-	}
-	if dy > sa.game.Grid.Height/2 {
-		dy = sa.game.Grid.Height - dy
+	// Controlla le 8 celle circostanti
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			if dx == 0 && dy == 0 {
+				continue // Salta la cella centrale (testa)
+			}
+
+			checkPoint := Point{X: head.X + dx, Y: head.Y + dy}
+			if sa.game.checkCollision(checkPoint) == NoCollision {
+				freedom++
+			}
+		}
 	}
 
-	return dx + dy
+	// Reward esponenziale che premia di più avere più spazio libero
+	return math.Pow(float64(freedom), 1.5)
 }
 
-// abs restituisce il valore assoluto di un intero.
-func abs(x int) int {
-	if x < 0 {
-		return -x
+// calculateTrapPenalty penalizza situazioni di "tunnel" o vicoli ciechi
+func (sa *SnakeAgent) calculateTrapPenalty() float64 {
+	head := sa.game.GetSnake().GetHead()
+	grid := sa.game.Grid
+
+	// Verifica se il serpente è in un corridoio con una sola via d'uscita
+	adjacentWalls := 0
+	possibleMoves := 0
+
+	// Controlla le 4 direzioni cardinali
+	directions := []Point{
+		{X: 0, Y: -1}, // Nord
+		{X: 1, Y: 0},  // Est
+		{X: 0, Y: 1},  // Sud
+		{X: -1, Y: 0}, // Ovest
 	}
-	return x
+
+	for _, dir := range directions {
+		checkPoint := Point{X: head.X + dir.X, Y: head.Y + dir.Y}
+
+		// Controlla se è fuori dai limiti
+		if checkPoint.X < 0 || checkPoint.X >= grid.Width ||
+			checkPoint.Y < 0 || checkPoint.Y >= grid.Height {
+			adjacentWalls++
+			continue
+		}
+
+		// Controlla collisioni con il corpo
+		if sa.game.checkCollision(checkPoint) != NoCollision {
+			adjacentWalls++
+		} else {
+			possibleMoves++
+		}
+	}
+
+	// Penalizza fortemente corridoi con una sola uscita
+	if possibleMoves == 1 {
+		// Controllo addizionale per vedere quanto è profondo il corridoio
+		depth := sa.measureTrapDepth()
+		return 20.0 + float64(depth)*5.0
+	} else if possibleMoves == 2 && adjacentWalls == 2 {
+		// Situazione a "L" - potenziale trappola
+		return 10.0
+	}
+
+	return 0.0
+}
+
+// measureTrapDepth misura quanto è profondo un vicolo cieco
+func (sa *SnakeAgent) measureTrapDepth() int {
+	// Implementazione base - può essere estesa con BFS/DFS
+	head := sa.game.GetSnake().GetHead()
+	currentDir := sa.game.GetCurrentDirection().ToPoint()
+
+	depth := 0
+	currentPos := Point{X: head.X + currentDir.X, Y: head.Y + currentDir.Y}
+
+	// Continua a muoversi in avanti finché possibile
+	for sa.game.checkCollision(currentPos) == NoCollision {
+		depth++
+		currentPos.X += currentDir.X
+		currentPos.Y += currentDir.Y
+
+		// Prevenzione di loop infiniti
+		if depth > 20 {
+			break
+		}
+	}
+
+	return depth
+}
+
+// calculatePathEfficiency premia percorsi efficienti verso il cibo
+func (sa *SnakeAgent) calculatePathEfficiency() float64 {
+	snake := sa.game.GetSnake()
+	head := snake.GetHead()
+	food := sa.game.food
+
+	// Distanza diretta (Manhattan) dal cibo
+	manhattanDist := float64(math.Abs(float64(head.X-food.X)) + math.Abs(float64(head.Y-food.Y)))
+
+	// Percorso effettivo (numero di celle attraversate)
+	actualPath := sa.estimateActualPath()
+
+	// Rapporto di efficienza (1.0 = percorso ottimale)
+	efficiency := math.Min(manhattanDist/math.Max(actualPath, 1.0), 1.0)
+
+	return efficiency * 15.0
+}
+
+// estimateActualPath stima la lunghezza del percorso effettivo verso il cibo
+func (sa *SnakeAgent) estimateActualPath() float64 {
+	// Implementazione semplificata - in una versione completa
+	// si potrebbe usare A* o altri algoritmi di pathfinding
+	head := sa.game.GetSnake().GetHead()
+	food := sa.game.food
+
+	// Distanza Euclidea come approssimazione
+	return math.Sqrt(math.Pow(float64(head.X-food.X), 2) + math.Pow(float64(head.Y-food.Y), 2))
+}
+
+// calculatePerimeterBonus premia comportamenti perimetrali quando strategico
+func (sa *SnakeAgent) calculatePerimeterBonus() float64 {
+	head := sa.game.GetSnake().GetHead()
+	grid := sa.game.Grid
+
+	// Controlla se la testa è sul perimetro
+	isOnPerimeter := head.X == 0 || head.X == grid.Width-1 ||
+		head.Y == 0 || head.Y == grid.Height-1
+
+	if isOnPerimeter {
+		// Bonus base per stare sul perimetro
+		bonus := 5.0
+
+		// Bonus aggiuntivo se il serpente è molto lungo (strategia efficace)
+		if len(sa.game.GetSnake().Body) > 20 {
+			bonus += 15.0
+		}
+
+		return bonus
+	}
+
+	return 0.0
 }
 
 // Reset prepara l'agente per una nuova partita mantenendo le conoscenze apprese.
