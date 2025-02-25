@@ -47,15 +47,12 @@ type Transition struct {
 	Done      bool
 }
 
-// PrioritizedReplayBuffer stores experience with priorities
-type PrioritizedReplayBuffer struct {
-	buffer     []Transition
-	priorities []float64
-	alpha      float64 // How much to emphasize priorities
-	beta       float64 // How much to correct importance sampling bias
-	maxSize    int
-	position   int
-	size       int
+// ReplayBuffer stores experience for training
+type ReplayBuffer struct {
+	buffer   []Transition
+	maxSize  int
+	position int
+	size     int
 }
 
 // DQN represents the deep Q-network
@@ -72,7 +69,7 @@ type DQN struct {
 type Agent struct {
 	dqn             *DQN
 	targetDQN       *DQN
-	replayBuffer    *PrioritizedReplayBuffer
+	replayBuffer    *ReplayBuffer
 	LearningRate    float64
 	Discount        float64
 	Epsilon         float64
@@ -83,103 +80,40 @@ type Agent struct {
 	updateCounter   int
 }
 
-// NewPrioritizedReplayBuffer creates a new prioritized replay buffer
-func NewPrioritizedReplayBuffer(maxSize int) *PrioritizedReplayBuffer {
-	return &PrioritizedReplayBuffer{
-		buffer:     make([]Transition, maxSize),
-		priorities: make([]float64, maxSize),
-		alpha:      0.6,
-		beta:       0.4,
-		maxSize:    maxSize,
-		position:   0,
-		size:       0,
+// NewReplayBuffer creates a new replay buffer
+func NewReplayBuffer(maxSize int) *ReplayBuffer {
+	return &ReplayBuffer{
+		buffer:   make([]Transition, maxSize),
+		maxSize:  maxSize,
+		position: 0,
+		size:     0,
 	}
 }
 
-// Add adds a transition to the buffer with maximum priority
-func (b *PrioritizedReplayBuffer) Add(t Transition) {
-	maxPriority := 1.0
-	if b.size > 0 {
-		maxPriority = b.getMaxPriority()
-	}
-
+// Add adds a transition to the buffer
+func (b *ReplayBuffer) Add(t Transition) {
 	b.buffer[b.position] = t
-	b.priorities[b.position] = maxPriority
-
 	b.position = (b.position + 1) % b.maxSize
 	if b.size < b.maxSize {
 		b.size++
 	}
 }
 
-func (b *PrioritizedReplayBuffer) getMaxPriority() float64 {
-	maxPriority := b.priorities[0]
-	for i := 1; i < b.size; i++ {
-		if b.priorities[i] > maxPriority {
-			maxPriority = b.priorities[i]
-		}
-	}
-	return maxPriority
-}
-
-// Sample returns a batch of transitions based on priorities
-func (b *PrioritizedReplayBuffer) Sample(batchSize int) ([]Transition, []int, []float64) {
+// Sample returns a random batch of transitions
+func (b *ReplayBuffer) Sample(batchSize int) []Transition {
 	if batchSize > b.size {
 		batchSize = b.size
 	}
 
 	batch := make([]Transition, batchSize)
-	indices := make([]int, batchSize)
-	weights := make([]float64, batchSize)
 
-	// Calculate selection probabilities
-	sum := 0.0
-	for i := 0; i < b.size; i++ {
-		sum += math.Pow(b.priorities[i], b.alpha)
-	}
-
-	probabilities := make([]float64, b.size)
-	for i := 0; i < b.size; i++ {
-		probabilities[i] = math.Pow(b.priorities[i], b.alpha) / sum
-	}
-
-	// Sample based on probabilities
+	// Reservoir sampling for uniform random selection
 	for i := 0; i < batchSize; i++ {
-		r := rand.Float64()
-		cumProb := 0.0
-		for j := 0; j < b.size; j++ {
-			cumProb += probabilities[j]
-			if r < cumProb {
-				indices[i] = j
-				batch[i] = b.buffer[j]
-				weights[i] = math.Pow(float64(b.size)*probabilities[j], -b.beta)
-				break
-			}
-		}
+		idx := rand.Intn(b.size)
+		batch[i] = b.buffer[idx]
 	}
 
-	// Normalize weights
-	maxWeight := weights[0]
-	for i := 1; i < len(weights); i++ {
-		if weights[i] > maxWeight {
-			maxWeight = weights[i]
-		}
-	}
-	for i := range weights {
-		weights[i] /= maxWeight
-	}
-
-	return batch, indices, weights
-}
-
-// UpdatePriorities updates priorities after learning
-func (b *PrioritizedReplayBuffer) UpdatePriorities(indices []int, errors []float64) {
-	for i, idx := range indices {
-		b.priorities[idx] = math.Pow(errors[i]+1e-5, b.alpha)
-	}
-
-	// Gradually increase beta to reduce bias
-	b.beta = math.Min(1.0, b.beta+0.001)
+	return batch
 }
 
 // NewDQN creates a new DQN
@@ -220,81 +154,46 @@ func NewDQN() *DQN {
 
 // Forward performs a forward pass through the network
 func (dqn *DQN) Forward(states []float64) ([]float64, error) {
-	// Create a new graph for this forward pass
-	g := gorgonia.NewGraph()
-
-	// Convert states to tensor
 	batchSize := len(states) / InputFeatures
 	if batchSize == 0 && len(states) == InputFeatures {
 		batchSize = 1
 	}
+
+	// Convert states to tensor and create graph
+	g := dqn.g
 	statesTensor := tensor.New(tensor.WithBacking(states), tensor.WithShape(batchSize, InputFeatures))
 	statesNode := gorgonia.NodeFromAny(g, statesTensor)
 
-	// Create new weight nodes in the graph
-	w1 := gorgonia.NewMatrix(g, tensor.Float64, gorgonia.WithShape(HiddenLayerSize, InputFeatures))
-	b1 := gorgonia.NewMatrix(g, tensor.Float64, gorgonia.WithShape(HiddenLayerSize, 1))
-	w2 := gorgonia.NewMatrix(g, tensor.Float64, gorgonia.WithShape(OutputActions, HiddenLayerSize))
-	b2 := gorgonia.NewMatrix(g, tensor.Float64, gorgonia.WithShape(OutputActions, 1))
-
-	// Copy weights from the stored nodes
-	if err := gorgonia.Let(w1, dqn.w1.Value()); err != nil {
-		return nil, fmt.Errorf("failed to copy w1: %v", err)
-	}
-	if err := gorgonia.Let(b1, dqn.b1.Value()); err != nil {
-		return nil, fmt.Errorf("failed to copy b1: %v", err)
-	}
-	if err := gorgonia.Let(w2, dqn.w2.Value()); err != nil {
-		return nil, fmt.Errorf("failed to copy w2: %v", err)
-	}
-	if err := gorgonia.Let(b2, dqn.b2.Value()); err != nil {
-		return nil, fmt.Errorf("failed to copy b2: %v", err)
-	}
-
 	// First layer
-	// Reshape input for batch processing
-	statesReshaped := gorgonia.Must(gorgonia.Reshape(statesNode, tensor.Shape{batchSize, InputFeatures}))
-
-	// First layer computation
-	h1 := gorgonia.Must(gorgonia.Mul(statesReshaped, gorgonia.Must(gorgonia.Transpose(w1))))
-
-	// Create bias matrix for broadcasting
+	h1 := gorgonia.Must(gorgonia.Mul(statesNode, gorgonia.Must(gorgonia.Transpose(dqn.w1))))
+	// Create bias matrix for batch
 	b1Data := make([]float64, batchSize*HiddenLayerSize)
-	b1Value := b1.Value().Data().([]float64)
+	b1Value := dqn.b1.Value().Data().([]float64)
 	for i := 0; i < batchSize; i++ {
-		for j := 0; j < HiddenLayerSize; j++ {
-			b1Data[i*HiddenLayerSize+j] = b1Value[j]
-		}
+		copy(b1Data[i*HiddenLayerSize:], b1Value)
 	}
 	b1Tensor := tensor.New(tensor.WithBacking(b1Data), tensor.WithShape(batchSize, HiddenLayerSize))
 	b1Node := gorgonia.NodeFromAny(g, b1Tensor)
-
 	h1 = gorgonia.Must(gorgonia.Add(h1, b1Node))
 	h1 = gorgonia.Must(gorgonia.Rectify(h1))
 
-	// Output layer computation
-	output := gorgonia.Must(gorgonia.Mul(h1, gorgonia.Must(gorgonia.Transpose(w2))))
-
-	// Create bias matrix for broadcasting
+	// Output layer
+	output := gorgonia.Must(gorgonia.Mul(h1, gorgonia.Must(gorgonia.Transpose(dqn.w2))))
+	// Create bias matrix for batch
 	b2Data := make([]float64, batchSize*OutputActions)
-	b2Value := b2.Value().Data().([]float64)
+	b2Value := dqn.b2.Value().Data().([]float64)
 	for i := 0; i < batchSize; i++ {
-		for j := 0; j < OutputActions; j++ {
-			b2Data[i*OutputActions+j] = b2Value[j]
-		}
+		copy(b2Data[i*OutputActions:], b2Value)
 	}
 	b2Tensor := tensor.New(tensor.WithBacking(b2Data), tensor.WithShape(batchSize, OutputActions))
 	b2Node := gorgonia.NodeFromAny(g, b2Tensor)
-
 	pred := gorgonia.Must(gorgonia.Add(output, b2Node))
 
-	// Create and run VM
-	vm := gorgonia.NewTapeMachine(g)
-	defer vm.Close()
-
-	if err := vm.RunAll(); err != nil {
+	// Run forward pass
+	if err := dqn.vm.RunAll(); err != nil {
 		return nil, fmt.Errorf("forward pass error: %v", err)
 	}
+	dqn.vm.Reset()
 
 	// Extract predictions
 	predValue := pred.Value()
@@ -318,7 +217,7 @@ func NewAgent(learningRate, discount, epsilon float64) *Agent {
 	agent := &Agent{
 		dqn:             NewDQN(),
 		targetDQN:       NewDQN(),
-		replayBuffer:    NewPrioritizedReplayBuffer(ReplayBufferSize),
+		replayBuffer:    NewReplayBuffer(ReplayBufferSize),
 		LearningRate:    learningRate,
 		Discount:        discount,
 		Epsilon:         InitialEpsilon,
@@ -387,7 +286,7 @@ func (a *Agent) Update(state string, action int, reward float64, nextState strin
 		Action:    action,
 		Reward:    reward,
 		NextState: nextStateVec,
-		Done:      false, // We don't have this information, assume not done
+		Done:      false,
 	})
 
 	// Only train if we have enough samples
@@ -395,12 +294,9 @@ func (a *Agent) Update(state string, action int, reward float64, nextState strin
 		return
 	}
 
-	// Sample batch with priorities
-	batch, indices, weights := a.replayBuffer.Sample(BatchSize)
-	tdErrors := a.trainOnBatch(batch, weights)
-
-	// Update priorities based on TD errors
-	a.replayBuffer.UpdatePriorities(indices, tdErrors)
+	// Sample batch
+	batch := a.replayBuffer.Sample(BatchSize)
+	a.trainOnBatch(batch)
 
 	// Update target network periodically
 	a.updateCounter++
@@ -410,8 +306,8 @@ func (a *Agent) Update(state string, action int, reward float64, nextState strin
 	}
 }
 
-// trainOnBatch performs a training step on a batch of transitions and returns TD errors
-func (a *Agent) trainOnBatch(batch []Transition, weights []float64) []float64 {
+// trainOnBatch performs a training step on a batch of transitions
+func (a *Agent) trainOnBatch(batch []Transition) {
 	g := a.dqn.g
 
 	// Prepare batch data
@@ -430,23 +326,22 @@ func (a *Agent) trainOnBatch(batch []Transition, weights []float64) []float64 {
 	// Get current Q-values
 	currentQValues, err := a.dqn.Forward(states)
 	if err != nil {
-		return make([]float64, len(batch)) // Return zero TD errors on error
+		return
 	}
 
 	// Get target Q-values
 	nextQValues, err := a.targetDQN.Forward(nextStates)
 	if err != nil {
-		return make([]float64, len(batch)) // Return zero TD errors on error
+		return
 	}
 
 	// Calculate target Q-values using Double DQN
 	targetQValues := make([]float64, len(batch)*OutputActions)
-	tdErrors := make([]float64, len(batch))
 
-	// Get next state Q-values from both networks
+	// Get next state Q-values from primary network
 	nextQValuesPrimary, err := a.dqn.Forward(nextStates)
 	if err != nil {
-		return tdErrors
+		return
 	}
 
 	for i := 0; i < len(batch); i++ {
@@ -471,8 +366,6 @@ func (a *Agent) trainOnBatch(batch []Transition, weights []float64) []float64 {
 			targetQValues[baseIdx+j] = currentQValues[baseIdx+j]
 			if j == actions[i] {
 				targetQValues[baseIdx+j] = target
-				// Calculate TD error for priority update
-				tdErrors[i] = math.Abs(target - currentQValues[baseIdx+j])
 			}
 		}
 	}
@@ -484,21 +377,10 @@ func (a *Agent) trainOnBatch(batch []Transition, weights []float64) []float64 {
 	currentTensor := tensor.New(tensor.WithBacking(currentQValues), tensor.WithShape(len(batch), OutputActions))
 	currentNode := gorgonia.NodeFromAny(g, currentTensor)
 
-	// Apply importance sampling weights to loss calculation
-	// Broadcast weights to match the shape of squared differences
-	weightsExpanded := make([]float64, len(batch)*OutputActions)
-	for i := 0; i < len(batch); i++ {
-		for j := 0; j < OutputActions; j++ {
-			weightsExpanded[i*OutputActions+j] = weights[i]
-		}
-	}
-	weightsTensor := tensor.New(tensor.WithBacking(weightsExpanded), tensor.WithShape(len(batch), OutputActions))
-	weightsNode := gorgonia.NodeFromAny(g, weightsTensor)
-
+	// Calculate loss
 	diff := gorgonia.Must(gorgonia.Sub(currentNode, targetNode))
 	squaredDiff := gorgonia.Must(gorgonia.Square(diff))
-	weightedDiff := gorgonia.Must(gorgonia.HadamardProd(squaredDiff, weightsNode))
-	loss := gorgonia.Must(gorgonia.Mean(weightedDiff))
+	loss := gorgonia.Must(gorgonia.Mean(squaredDiff))
 
 	// Backpropagate and update weights
 	gorgonia.Grad(loss, a.dqn.w1, a.dqn.w2, a.dqn.b1, a.dqn.b2)
@@ -507,16 +389,10 @@ func (a *Agent) trainOnBatch(batch []Transition, weights []float64) []float64 {
 	grads := gorgonia.NodesToValueGrads(nodes)
 	a.dqn.solver.Step(grads)
 	a.dqn.vm.Reset()
-
-	return tdErrors
 }
 
 // updateTargetNetwork copies weights from DQN to target network
 func (a *Agent) updateTargetNetwork() {
-	// Create a new DQN with the same architecture
-	a.targetDQN = NewDQN()
-
-	// Copy weights
 	tensor.Copy(a.targetDQN.w1.Value().(*tensor.Dense), a.dqn.w1.Value().(*tensor.Dense))
 	tensor.Copy(a.targetDQN.w2.Value().(*tensor.Dense), a.dqn.w2.Value().(*tensor.Dense))
 	tensor.Copy(a.targetDQN.b1.Value().(*tensor.Dense), a.dqn.b1.Value().(*tensor.Dense))
