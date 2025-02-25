@@ -157,24 +157,24 @@ func (r *Renderer) Draw(g *Game) {
 		fontSize, rl.White)
 	xOffset += spacing
 
-	// Average score
-	avgScore := r.stats.GetAverageScore()
+	// Average score (using most granular data)
+	avgScore := r.stats.GetAverageScore(0)
 	rl.DrawText(fmt.Sprintf("Avg Score: %.1f", avgScore),
 		xOffset,
 		yOffset,
 		fontSize, rl.Green)
 	xOffset += spacing
 
-	// Max score
-	maxScore := r.stats.GetMaxScore()
+	// Max score (using most granular data)
+	maxScore := r.stats.GetMaxScore(0)
 	rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
 		xOffset,
 		yOffset,
 		fontSize, rl.Green)
 	xOffset += spacing
 
-	// Average duration
-	avgDuration := r.stats.GetAverageDuration()
+	// Average duration (using most granular data)
+	avgDuration := r.stats.GetAverageDuration(0)
 	rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", avgDuration),
 		xOffset,
 		yOffset,
