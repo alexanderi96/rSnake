@@ -161,8 +161,8 @@ func (r *Renderer) Draw(g *Game) {
 		fontSize, rl.Green)
 	xOffset += spacing
 
-	// Max score (using most granular data)
-	maxScore := r.stats.GetMaxScore(0)
+	// Max score (using absolute maximum across all compression levels)
+	maxScore := r.stats.GetAbsoluteMaxScore()
 	rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
 		xOffset,
 		yOffset,
@@ -204,13 +204,9 @@ func (r *Renderer) drawStatsGraph() {
 	}
 
 	// Find max values for scaling
-	var maxScore int
+	maxScore := r.stats.GetAbsoluteMaxScore()
 	var maxDuration float64
-
 	for _, game := range stats {
-		if game.MaxScore > maxScore {
-			maxScore = game.MaxScore
-		}
 		if game.MaxDuration > maxDuration {
 			maxDuration = game.MaxDuration
 		}
