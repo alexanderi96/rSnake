@@ -22,11 +22,12 @@ func NewSnakeAgent(game *Game) *SnakeAgent {
 }
 
 // getState costruisce lo stato secondo il formato:
-// state := fmt.Sprintf("%d:%v:%v:%v", foodDir, dangerAhead, dangerLeft, dangerRight)
+// state := fmt.Sprintf("%d:%d:%d:%d", foodDir, distAhead, distLeft, distRight)
 // dove:
 //   - foodDir è la direzione del cibo relativa allo snake:
 //     0: cibo davanti, 1: cibo a destra, 2: cibo dietro, 3: cibo a sinistra
-//   - dangerAhead, dangerLeft, dangerRight indicano se c'è pericolo nelle direzioni relative.
+//   - distAhead, distLeft, distRight indicano la distanza dal pericolo in ogni direzione
+//     (0 se non c'è pericolo, 1 se adiacente, >1 per distanze maggiori)
 func (sa *SnakeAgent) getState() string {
 	// Ottieni la direzione assoluta del cibo
 	absoluteFoodDir := int(sa.game.GetFoodDirection())
@@ -35,14 +36,14 @@ func (sa *SnakeAgent) getState() string {
 	currentDir := int(sa.game.GetCurrentDirection())
 
 	// Calcola la direzione del cibo relativa allo snake
-	// La formula standard: (absoluteFoodDir - snakeDir + 4) % 4
 	foodDir := (absoluteFoodDir - currentDir + 4) % 4
 
-	// Ottieni i pericoli relativi alla direzione corrente
-	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
+	// Ottieni le distanze dai pericoli nelle varie direzioni
+	distAhead, distLeft, distRight := sa.game.GetDangers()
 
-	// Stato finale: una stringa che contiene la posizione del cibo (relativa) e i flag per il pericolo
-	state := fmt.Sprintf("%d:%v:%v:%v", foodDir, dangerAhead, dangerLeft, dangerRight)
+	// Stato finale: usa solo le distanze dai pericoli
+	state := fmt.Sprintf("%d:%d:%d:%d",
+		foodDir, distAhead, distLeft, distRight)
 	return state
 }
 
@@ -120,6 +121,22 @@ func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	} else {
 		reward -= 5.0 * float64(-distDiff) // Penalità per allontanamento
 	}
+
+	// Reward per mantenere una distanza di sicurezza dai pericoli
+	distAhead, distLeft, distRight := sa.game.GetDangers()
+
+	// Funzione helper per calcolare il bonus di sicurezza
+	safetyBonus := func(dist int) float64 {
+		if dist == 0 { // Nessun pericolo rilevato entro 5 celle
+			return 20.0
+		}
+		return float64(dist) * 4.0 // Più distanza = più reward
+	}
+
+	// Applica il bonus per ogni direzione
+	reward += safetyBonus(distAhead)
+	reward += safetyBonus(distLeft)
+	reward += safetyBonus(distRight)
 
 	// Penalità per stagnazione
 	stepsWithoutFood := sa.game.Steps - oldLength*10

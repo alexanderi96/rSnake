@@ -12,7 +12,7 @@ import (
 
 const (
 	StatsFile = "data/stats.json"
-	GroupSize = 25 // Numero di partite per gruppo
+	GroupSize = 10 // Numero di partite per gruppo
 )
 
 // GameStats contiene tutte le partite registrate e fornisce metodi per
@@ -31,7 +31,6 @@ type GameRecord struct {
 	CompressionIndex int       `json:"compressionIndex"` // 0 per partite singole, >0 per gruppi
 	GamesCount       int       `json:"gamesCount"`       // 1 per partite singole, >1 per gruppi
 	AverageScore     float64   `json:"averageScore"`     // Per gruppi
-	MedianScore      float64   `json:"medianScore"`      // Per gruppi
 	MaxScore         int       `json:"maxScore"`         // Per gruppi
 	MinScore         int       `json:"minScore"`         // Per gruppi
 	AverageDuration  float64   `json:"averageDuration"`  // Per gruppi
@@ -64,7 +63,6 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 		CompressionIndex: 0, // Partita singola
 		GamesCount:       1,
 		AverageScore:     float64(score),
-		MedianScore:      float64(score),
 		MaxScore:         score,
 		MinScore:         score,
 		AverageDuration:  endTime.Sub(startTime).Seconds(),
@@ -169,48 +167,62 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	// Calcola le nuove statistiche
 	newAvgScore := (compressed.AverageScore*float64(compressed.GamesCount) + float64(newRecord.Score)) / float64(totalGames)
 
-	// Aggiorna min/max score
+	// Per il record compresso, usa i valori esistenti
 	newMaxScore := compressed.MaxScore
-	if newRecord.Score > newMaxScore {
-		newMaxScore = newRecord.Score
-	}
 	newMinScore := compressed.MinScore
-	if newRecord.Score < newMinScore {
-		newMinScore = newRecord.Score
+
+	// Per il nuovo record, confronta con Score
+	if newRecord.GamesCount == 1 {
+		if newRecord.Score > newMaxScore {
+			newMaxScore = newRecord.Score
+		}
+		if newRecord.Score < newMinScore {
+			newMinScore = newRecord.Score
+		}
+	} else {
+		// Se il nuovo record è già compresso, confronta con i suoi max/min
+		if newRecord.MaxScore > newMaxScore {
+			newMaxScore = newRecord.MaxScore
+		}
+		if newRecord.MinScore < newMinScore {
+			newMinScore = newRecord.MinScore
+		}
 	}
 
 	// Calcola la nuova durata media e min/max
-	newDuration := newRecord.EndTime.Sub(newRecord.StartTime).Seconds()
-	newAvgDuration := (compressed.AverageDuration*float64(compressed.GamesCount) + newDuration) / float64(totalGames)
-	newMaxDuration := compressed.MaxDuration
-	if newDuration > newMaxDuration {
-		newMaxDuration = newDuration
-	}
-	newMinDuration := compressed.MinDuration
-	if newDuration < newMinDuration {
-		newMinDuration = newDuration
+	var newDuration float64
+	if newRecord.GamesCount == 1 {
+		newDuration = newRecord.EndTime.Sub(newRecord.StartTime).Seconds()
+	} else {
+		// Se il nuovo record è già compresso, usa la sua durata media
+		newDuration = newRecord.AverageDuration
 	}
 
-	// Calcola la nuova mediana
-	scores := make([]float64, 0, totalGames)
-	// Aggiungi i punteggi del record compresso
-	for i := 0; i < compressed.GamesCount; i++ {
-		scores = append(scores, compressed.MedianScore)
-	}
-	// Aggiungi il nuovo punteggio
-	scores = append(scores, float64(newRecord.Score))
-	sort.Float64s(scores)
-	var newMedianScore float64
-	if len(scores)%2 == 0 {
-		newMedianScore = (scores[len(scores)/2-1] + scores[len(scores)/2]) / 2
+	newAvgDuration := (compressed.AverageDuration*float64(compressed.GamesCount) + newDuration) / float64(totalGames)
+
+	// Aggiorna max/min duration considerando se il record è già compresso
+	newMaxDuration := compressed.MaxDuration
+	newMinDuration := compressed.MinDuration
+
+	if newRecord.GamesCount == 1 {
+		if newDuration > newMaxDuration {
+			newMaxDuration = newDuration
+		}
+		if newDuration < newMinDuration {
+			newMinDuration = newDuration
+		}
 	} else {
-		newMedianScore = scores[len(scores)/2]
+		if newRecord.MaxDuration > newMaxDuration {
+			newMaxDuration = newRecord.MaxDuration
+		}
+		if newRecord.MinDuration < newMinDuration {
+			newMinDuration = newRecord.MinDuration
+		}
 	}
 
 	// Aggiorna il record compresso
 	compressed.GamesCount = totalGames
 	compressed.AverageScore = newAvgScore
-	compressed.MedianScore = newMedianScore
 	compressed.MaxScore = newMaxScore
 	compressed.MinScore = newMinScore
 	compressed.AverageDuration = newAvgDuration
@@ -268,32 +280,6 @@ func (s *GameStats) GetAverageScore(compressionLevel int) float64 {
 	}
 
 	return totalScore / float64(totalGames)
-}
-
-// GetMedianScore calcola e restituisce il punteggio mediano per un determinato livello di compressione.
-func (s *GameStats) GetMedianScore(compressionLevel int) float64 {
-	records := s.GetStatsForLevel(compressionLevel)
-	if len(records) == 0 {
-		return 0
-	}
-
-	// Raccogli tutti i punteggi mediani pesati per il numero di giochi
-	allScores := make([]float64, 0)
-	for _, game := range records {
-		for i := 0; i < game.GamesCount; i++ {
-			allScores = append(allScores, game.MedianScore)
-		}
-	}
-
-	// Calcola la mediana
-	sort.Float64s(allScores)
-	if len(allScores) == 0 {
-		return 0
-	}
-	if len(allScores)%2 == 0 {
-		return (allScores[len(allScores)/2-1] + allScores[len(allScores)/2]) / 2
-	}
-	return allScores[len(allScores)/2]
 }
 
 // GetMaxCompressionLevel restituisce il massimo livello di compressione presente nelle statistiche

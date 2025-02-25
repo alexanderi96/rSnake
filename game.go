@@ -189,6 +189,24 @@ func (g *Game) checkCollision(pos Point) CollisionType {
 	return NoCollision
 }
 
+// isAdjacent controlla se un punto è adiacente alla testa del serpente
+func (g *Game) isAdjacent(pos Point) bool {
+	head := g.snake.GetHead()
+	dx := abs(pos.X - head.X)
+	dy := abs(pos.Y - head.Y)
+
+	// Gestisce il wrapping della griglia
+	if dx > g.Grid.Width/2 {
+		dx = g.Grid.Width - dx
+	}
+	if dy > g.Grid.Height/2 {
+		dy = g.Grid.Height - dy
+	}
+
+	// È adiacente se è a distanza 1 in una delle direzioni cardinali
+	return (dx == 1 && dy == 0) || (dx == 0 && dy == 1)
+}
+
 func (g *Game) generateFood() Point {
 	for {
 		food := Point{

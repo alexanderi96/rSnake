@@ -59,42 +59,37 @@ func (d Direction) TurnRight() Direction {
 	}
 }
 
-// GetDangers restituisce i pericoli relativi alla direzione corrente dello snake.
-// Vengono restituiti tre booleani indicanti rispettivamente:
-//   - dangerAhead: pericolo nella direzione "avanti"
-//   - dangerLeft: pericolo a sinistra
-//   - dangerRight: pericolo a destra
-func (g *Game) GetDangers() (dangerAhead, dangerLeft, dangerRight bool) {
+// GetDangers restituisce le distanze dai pericoli rispetto alla direzione corrente dello snake.
+// Vengono restituiti:
+//   - distAhead, distLeft, distRight: distanza dal primo pericolo in quella direzione
+//     (0 se non c'è pericolo entro 5 celle, 1 se adiacente, >1 per distanze maggiori)
+func (g *Game) GetDangers() (distAhead, distLeft, distRight int) {
 	snake := g.snake
 	head := snake.GetHead()
 	currentDir := g.GetCurrentDirection()
 
-	// Calcola la posizione "avanti" rispetto alla direzione attuale,
-	// considerando il wrapping della griglia.
-	aheadVector := currentDir.ToPoint()
-	aheadPos := Point{
-		X: (head.X + aheadVector.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + aheadVector.Y + g.Grid.Height) % g.Grid.Height,
+	// Funzione helper per calcolare la distanza dal pericolo in una direzione
+	getDangerDistance := func(dir Direction) int {
+		vector := dir.ToPoint()
+		pos := head
+		for dist := 1; dist <= 5; dist++ { // Controlliamo fino a 5 celle di distanza
+			pos = Point{
+				X: (pos.X + vector.X + g.Grid.Width) % g.Grid.Width,
+				Y: (pos.Y + vector.Y + g.Grid.Height) % g.Grid.Height,
+			}
+			if g.checkCollision(pos) != NoCollision {
+				return dist
+			}
+		}
+		return 0 // Nessun pericolo entro 5 celle
 	}
-	dangerAhead = g.checkCollision(aheadPos) != NoCollision
 
-	// Calcola la posizione a sinistra (rotazione a sinistra)
-	leftVector := currentDir.TurnLeft().ToPoint()
-	leftPos := Point{
-		X: (head.X + leftVector.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + leftVector.Y + g.Grid.Height) % g.Grid.Height,
-	}
-	dangerLeft = g.checkCollision(leftPos) != NoCollision
+	// Calcola le distanze in ogni direzione
+	distAhead = getDangerDistance(currentDir)
+	distLeft = getDangerDistance(currentDir.TurnLeft())
+	distRight = getDangerDistance(currentDir.TurnRight())
 
-	// Calcola la posizione a destra (rotazione a destra)
-	rightVector := currentDir.TurnRight().ToPoint()
-	rightPos := Point{
-		X: (head.X + rightVector.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + rightVector.Y + g.Grid.Height) % g.Grid.Height,
-	}
-	dangerRight = g.checkCollision(rightPos) != NoCollision
-
-	return dangerAhead, dangerLeft, dangerRight
+	return
 }
 
 // GetFoodDirection restituisce la direzione assoluta principale in cui si trova il cibo rispetto alla testa dello snake.
