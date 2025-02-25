@@ -84,8 +84,8 @@ func main() {
 
 		// Handle quit
 		if rl.IsKeyPressed(rl.KeyQ) || rl.IsKeyPressed(rl.KeyEscape) {
-			if err := agent.SaveQTable(); err != nil {
-				fmt.Printf("Error saving QTable: %v\n", err)
+			if err := agent.SaveWeights(); err != nil {
+				fmt.Printf("Error saving weights: %v\n", err)
 			}
 			if err := renderer.stats.SaveToFile(); err != nil {
 				fmt.Printf("Error saving stats: %v\n", err)

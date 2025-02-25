@@ -185,7 +185,7 @@ func (sa *SnakeAgent) Reset() {
 	sa.agent.IncrementEpisode()
 }
 
-// SaveQTable salva la QTable su file.
-func (sa *SnakeAgent) SaveQTable() error {
-	return sa.agent.SaveQTable(qlearning.QtableFile)
+// SaveWeights salva i pesi della rete neurale su file.
+func (sa *SnakeAgent) SaveWeights() error {
+	return sa.agent.SaveWeights(qlearning.WeightsFile)
 }
