@@ -312,18 +312,45 @@ func (s *GameStats) GetMaxCompressionLevel() int {
 
 // GetMaxScore restituisce il punteggio massimo registrato per un determinato livello di compressione.
 func (s *GameStats) GetMaxScore(compressionLevel int) int {
-	records := s.GetStatsForLevel(compressionLevel)
-	if len(records) == 0 {
-		return 0
-	}
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 
-	maxScore := records[0].MaxScore
-	for _, game := range records {
-		if game.MaxScore > maxScore {
-			maxScore = game.MaxScore
+	maxScore := 0
+	for _, game := range s.Games {
+		if game.CompressionIndex == compressionLevel {
+			// Per record non compressi usa Score, per quelli compressi usa MaxScore
+			if game.GamesCount == 1 {
+				if game.Score > maxScore {
+					maxScore = game.Score
+				}
+			} else {
+				if game.MaxScore > maxScore {
+					maxScore = game.MaxScore
+				}
+			}
 		}
 	}
+	return maxScore
+}
 
+// GetAbsoluteMaxScore restituisce il punteggio massimo mai registrato tra tutti i livelli di compressione.
+func (s *GameStats) GetAbsoluteMaxScore() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	maxScore := 0
+	for _, game := range s.Games {
+		// Per record non compressi usa Score, per quelli compressi usa MaxScore
+		if game.GamesCount == 1 {
+			if game.Score > maxScore {
+				maxScore = game.Score
+			}
+		} else {
+			if game.MaxScore > maxScore {
+				maxScore = game.MaxScore
+			}
+		}
+	}
 	return maxScore
 }
 

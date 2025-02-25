@@ -2,54 +2,47 @@ package main
 
 import (
 	"fmt"
-	"math"
 
 	"snake-game/qlearning"
 )
 
 // SnakeAgent rappresenta l'agente che gioca a Snake usando Q-learning.
 type SnakeAgent struct {
-	agent    *qlearning.Agent
-	game     *Game
-	maxScore int
+	agent *qlearning.Agent
+	game  *Game
 }
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
 	agent := qlearning.NewAgent(0.5, 0.8, 0.95) // Learning rate aumentato per apprendimento più rapido
 	return &SnakeAgent{
-		agent:    agent,
-		game:     game,
-		maxScore: 0,
+		agent: agent,
+		game:  game,
 	}
 }
 
-// getState costruisce uno stato più ricco che include:
-// - Direzione del cibo relativa
-// - Pericoli nelle direzioni relative
-// - Lunghezza del serpente
-// - Distanza dal cibo
+// getState costruisce lo stato secondo il formato:
+// state := fmt.Sprintf("%d:%v:%v:%v", foodDir, dangerAhead, dangerLeft, dangerRight)
+// dove:
+//   - foodDir è la direzione del cibo relativa allo snake:
+//     0: cibo davanti, 1: cibo a destra, 2: cibo dietro, 3: cibo a sinistra
+//   - dangerAhead, dangerLeft, dangerRight indicano se c'è pericolo nelle direzioni relative.
 func (sa *SnakeAgent) getState() string {
-	// Direzione del cibo relativa allo snake
-	foodDir := sa.game.GetRelativeFoodDirection()
+	// Ottieni la direzione assoluta del cibo
+	absoluteFoodDir := int(sa.game.GetFoodDirection())
 
-	// Pericoli nelle direzioni relative
+	// Ottieni la direzione attuale dello snake in forma cardinale
+	currentDir := int(sa.game.GetCurrentDirection())
+
+	// Calcola la direzione del cibo relativa allo snake
+	// La formula standard: (absoluteFoodDir - snakeDir + 4) % 4
+	foodDir := (absoluteFoodDir - currentDir + 4) % 4
+
+	// Ottieni i pericoli relativi alla direzione corrente
 	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
 
-	// Lunghezza del serpente
-	snakeLength := len(sa.game.GetSnake().Body)
-
-	// Distanza dal cibo
-	foodDist := sa.getManhattanDistance(sa.game.GetSnake().GetHead(), sa.game.food)
-
-	// Stato finale: include più informazioni per una rappresentazione più ricca
-	state := fmt.Sprintf("%d:%v:%v:%v:%d:%d:%d",
-		foodDir,                              // direzione del cibo
-		dangerAhead, dangerLeft, dangerRight, // pericoli
-		snakeLength,                        // lunghezza del serpente
-		foodDist,                           // distanza dal cibo
-		int(sa.game.GetCurrentDirection()), // direzione corrente
-	)
+	// Stato finale: una stringa che contiene la posizione del cibo (relativa) e i flag per il pericolo
+	state := fmt.Sprintf("%d:%v:%v:%v", foodDir, dangerAhead, dangerLeft, dangerRight)
 	return state
 }
 
@@ -101,58 +94,38 @@ func (sa *SnakeAgent) Update() {
 	newState := sa.getState()
 	sa.agent.Update(currentState, action, reward, newState, 3)
 
-	// Aggiorna il punteggio massimo se necessario.
-	if sa.game.GetSnake().Score > sa.maxScore {
-		sa.maxScore = sa.game.GetSnake().Score
-	}
 }
 
-// calculateReward calcola il reward in base a diversi fattori:
-// - Consumo di cibo (aumento del punteggio)
-// - Variazione della distanza Manhattan rispetto al cibo
-// - Penalità per stagnazione (passi senza mangiare)
-// - Bonus o penalità basati sul confronto tra punteggio corrente e average score
-// - Bonus o penalità basati sul confronto tra durata corrente e average duration
 func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
 	snake := sa.game.GetSnake()
 	if snake.Dead {
-		return -500.0 // Penalità ridotta per la morte
+		return -1000.0
 	}
 
 	reward := 0.0
 
-	// Reward base per sopravvivenza
-	reward += 1.0
-
-	// Reward per cibo mangiato aumentato
+	// Reward significativo per il cibo
 	if snake.Score > oldScore {
-		reward += 1000.0                           // Reward base aumentato per il cibo
-		reward += 100.0 * float64(len(snake.Body)) // Bonus maggiore per lunghezza
+		reward += 500.0                       // Reward base per il cibo
+		reward += 50.0 * float64(snake.Score) // Bonus per punteggio totale
 	}
 
-	// Reward per avvicinamento al cibo
+	// Reward/penalità per la distanza dal cibo
 	oldDist := sa.getManhattanDistance(snake.GetPreviousHead(), sa.game.food)
 	newDist := sa.getManhattanDistance(snake.GetHead(), sa.game.food)
 	distDiff := oldDist - newDist
 
 	if distDiff > 0 {
-		// Reward aumentato per avvicinamento
-		reward += 30.0 * float64(distDiff)
+		reward += 10.0 * float64(distDiff) // Reward per avvicinamento
 	} else {
-		// Penalità ridotta per allontanamento
-		reward -= 5.0 * float64(-distDiff)
+		reward -= 5.0 * float64(-distDiff) // Penalità per allontanamento
 	}
 
-	// Penalità per stagnazione più leggera
+	// Penalità per stagnazione
 	stepsWithoutFood := sa.game.Steps - oldLength*10
-	if stepsWithoutFood > 0 {
-		stagnationPenalty := -5.0 * math.Log(float64(stepsWithoutFood))
-		reward += stagnationPenalty
+	if stepsWithoutFood > 30 {
+		reward -= float64(stepsWithoutFood) * 0.1
 	}
-
-	// Bonus per efficienza aumentato
-	efficiency := float64(snake.Score) / float64(sa.game.Steps)
-	reward += 100.0 * efficiency
 
 	return reward
 }
@@ -182,17 +155,6 @@ func abs(x int) int {
 
 // Reset prepara l'agente per una nuova partita mantenendo le conoscenze apprese.
 func (sa *SnakeAgent) Reset() {
-	// Salva lo stato corrente prima del reset
-	err := sa.agent.SaveQTable(qlearning.QtableFile)
-	if err != nil {
-		fmt.Printf("Error saving QTable: %v\n", err)
-	}
-
-	// Salva le statistiche
-	if err := sa.game.Stats.SaveToFile(); err != nil {
-		fmt.Printf("Error saving stats: %v\n", err)
-	}
-
 	// Preserve the existing stats
 	existingStats := sa.game.Stats
 
