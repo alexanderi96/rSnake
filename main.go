@@ -69,10 +69,33 @@ func main() {
 		// Handle window resize
 		if rl.IsWindowResized() {
 			renderer.UpdateDimensions()
-			width := (rl.GetScreenWidth() - 20) / 20
-			height := (rl.GetScreenHeight() - 190) / 20
-			game.Grid.Width = width
-			game.Grid.Height = height
+			newWidth := (rl.GetScreenWidth() - 20) / 20
+			newHeight := (rl.GetScreenHeight() - 190) / 20
+
+			// Verifica e correggi la posizione del serpente e del cibo prima di ridimensionare
+			snake := game.GetSnake()
+			snake.Mutex.Lock()
+			for i := 0; i < len(snake.Body); i++ {
+				if snake.Body[i].X >= newWidth {
+					snake.Body[i].X = newWidth - 1
+				}
+				if snake.Body[i].Y >= newHeight {
+					snake.Body[i].Y = newHeight - 1
+				}
+			}
+			snake.Mutex.Unlock()
+
+			// Correggi la posizione del cibo se necessario
+			if game.food.X >= newWidth {
+				game.food.X = newWidth - 1
+			}
+			if game.food.Y >= newHeight {
+				game.food.Y = newHeight - 1
+			}
+
+			// Aggiorna le dimensioni della griglia
+			game.Grid.Width = newWidth
+			game.Grid.Height = newHeight
 		}
 
 		// Update game state at fixed interval

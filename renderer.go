@@ -72,8 +72,38 @@ func (r *Renderer) Draw(g *Game) {
 	r.offsetX = borderPadding
 	r.offsetY = borderPadding
 
-	// Draw grid background
+	// Draw grid background with border
 	rl.DrawRectangle(r.offsetX-1, r.offsetY-1, r.totalGridWidth+2, r.totalGridHeight+2, rl.DarkGray)
+	rl.DrawRectangleLinesEx(
+		rl.Rectangle{
+			X:      float32(r.offsetX - 1),
+			Y:      float32(r.offsetY - 1),
+			Width:  float32(r.totalGridWidth + 2),
+			Height: float32(r.totalGridHeight + 2),
+		},
+		2,
+		rl.Red,
+	)
+
+	// Draw grid lines
+	for x := 0; x <= g.Grid.Width; x++ {
+		rl.DrawLine(
+			r.offsetX+int32(x*int(r.cellSize)),
+			r.offsetY,
+			r.offsetX+int32(x*int(r.cellSize)),
+			r.offsetY+r.totalGridHeight,
+			rl.Color{R: 50, G: 50, B: 50, A: 255},
+		)
+	}
+	for y := 0; y <= g.Grid.Height; y++ {
+		rl.DrawLine(
+			r.offsetX,
+			r.offsetY+int32(y*int(r.cellSize)),
+			r.offsetX+r.totalGridWidth,
+			r.offsetY+int32(y*int(r.cellSize)),
+			rl.Color{R: 50, G: 50, B: 50, A: 255},
+		)
+	}
 
 	// Draw snake
 	snake := g.GetSnake()

@@ -137,12 +137,43 @@ func (g *Game) GetFood() Point {
 	return g.food
 }
 
+func (g *Game) validatePositions() {
+	// Verifica e correggi la posizione del serpente
+	g.snake.Mutex.Lock()
+	for i := 0; i < len(g.snake.Body); i++ {
+		if g.snake.Body[i].X >= g.Grid.Width {
+			g.snake.Body[i].X = g.Grid.Width - 1
+		} else if g.snake.Body[i].X < 0 {
+			g.snake.Body[i].X = 0
+		}
+		if g.snake.Body[i].Y >= g.Grid.Height {
+			g.snake.Body[i].Y = g.Grid.Height - 1
+		} else if g.snake.Body[i].Y < 0 {
+			g.snake.Body[i].Y = 0
+		}
+	}
+	g.snake.Mutex.Unlock()
+
+	// Verifica e correggi la posizione del cibo
+	if g.food.X >= g.Grid.Width {
+		g.food.X = g.Grid.Width - 1
+	} else if g.food.X < 0 {
+		g.food.X = 0
+	}
+	if g.food.Y >= g.Grid.Height {
+		g.food.Y = g.Grid.Height - 1
+	} else if g.food.Y < 0 {
+		g.food.Y = 0
+	}
+}
+
 func (g *Game) Update() {
 	if g.snake.Dead || g.snake.GameOver {
 		return
 	}
 
-	g.Steps++ // Incrementiamo il contatore ad ogni passo
+	g.Steps++             // Incrementiamo il contatore ad ogni passo
+	g.validatePositions() // Verifica e correggi le posizioni
 
 	g.snake.Mutex.Lock()
 	defer g.snake.Mutex.Unlock()
