@@ -28,8 +28,8 @@ const (
 	// Parametri DQN
 	BatchSize        = 32
 	ReplayBufferSize = 5000 // Further reduced
-	HiddenLayerSize  = 8    // Further reduced
-	InputFeatures    = 4
+	HiddenLayerSize  = 12   // Increased for more complex state
+	InputFeatures    = 7    // 4 per food direction one-hot + 3 per danger flags
 	OutputActions    = 3
 	GradientClip     = 0.5 // Reduced for more stable learning
 
@@ -160,15 +160,9 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 
 	g := dqn.g
 
-	// Normalizza gli input a [0,1]
+	// Gli input sono già normalizzati (one-hot e booleani)
 	normalizedStates := make([]float64, len(states))
-	for i := 0; i < len(states); i++ {
-		if i == 0 {
-			normalizedStates[i] = states[i] / 4.0 // Direzione del cibo (0-3)
-		} else {
-			normalizedStates[i] = states[i] / 5.0 // Distanze (0-5)
-		}
-	}
+	copy(normalizedStates, states)
 
 	statesTensor := tensor.New(tensor.WithBacking(normalizedStates), tensor.WithShape(batchSize, InputFeatures))
 	statesNode := gorgonia.NodeFromAny(g, statesTensor)

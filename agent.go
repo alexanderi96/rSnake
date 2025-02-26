@@ -6,17 +6,20 @@ import (
 
 // SnakeAgent rappresenta l'agente che gioca a Snake usando Q-learning.
 type SnakeAgent struct {
-	agent *qlearning.Agent
-	game  *Game
+	agent            *qlearning.Agent
+	game             *Game
+	previousDistance int // Per il reward shaping basato sulla direzione
 }
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
 	agent := qlearning.NewAgent(0.5, 0.8, 0.95)
-	return &SnakeAgent{
+	sa := &SnakeAgent{
 		agent: agent,
 		game:  game,
 	}
+	sa.previousDistance = sa.getManhattanDistance() // Inizializza la distanza iniziale
+	return sa
 }
 
 // getManhattanDistance calcola la distanza Manhattan tra la testa del serpente e il cibo
@@ -28,19 +31,31 @@ func (sa *SnakeAgent) getManhattanDistance() int {
 
 // getState restituisce il vettore di stato semplificato come []float64
 func (sa *SnakeAgent) getState() []float64 {
-	// Ottiene la direzione relativa del cibo rispetto alla direzione corrente
-	foodDir := float64(sa.game.GetRelativeFoodDirection())
+	// One-hot encoding per la direzione del cibo
+	foodDir := sa.game.GetRelativeFoodDirection()
+	foodDirOneHot := make([]float64, 4)
+	foodDirOneHot[foodDir] = 1.0
 
-	// Distanze dai pericoli nelle varie direzioni
-	distAhead, distLeft, distRight := sa.game.GetDangers()
+	// Flag di pericolo immediato
+	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
 
-	// Stato semplificato: solo direzione cibo e pericoli
-	return []float64{
-		foodDir,            // direzione relativa del cibo (0-3)
-		float64(distAhead), // distanza ostacoli avanti (0-5)
-		float64(distLeft),  // distanza ostacoli sinistra (0-5)
-		float64(distRight), // distanza ostacoli destra (0-5)
+	// Converte i bool in float64
+	dangers := []float64{
+		boolToFloat64(dangerAhead),
+		boolToFloat64(dangerLeft),
+		boolToFloat64(dangerRight),
 	}
+
+	// Combina i vettori
+	return append(foodDirOneHot, dangers...)
+}
+
+// boolToFloat64 converte un bool in float64
+func boolToFloat64(b bool) float64 {
+	if b {
+		return 1.0
+	}
+	return 0.0
 }
 
 // relativeActionToAbsolute converte un'azione relativa in una direzione assoluta.
@@ -90,19 +105,31 @@ func (sa *SnakeAgent) Update() {
 
 func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
+	currentDistance := sa.getManhattanDistance()
 
-	// Reward principale per aver mangiato il cibo
-	if snake.Score > oldScore {
-		return 1.0 + float64(snake.Score)*0.1 // Bonus progressivo base
-	}
-
-	// Penalità per morte
+	// Penalità forte per morte
 	if snake.Dead {
-		return -1.0
+		return -10.0
 	}
 
-	// Piccolo reward per sopravvivenza
-	return 0.01
+	// Reward per aver mangiato il cibo
+	if snake.Score > oldScore {
+		sa.previousDistance = currentDistance // Reset della distanza dopo aver mangiato
+		return 1.0
+	}
+
+	// Reward shaping basato sulla direzione
+	reward := -0.01 // Piccola penalità base per ogni step
+
+	// Aggiusta il reward in base alla direzione
+	if currentDistance < sa.previousDistance {
+		reward += 0.1 // Bonus per avvicinamento al cibo
+	} else if currentDistance > sa.previousDistance {
+		reward -= 0.1 // Penalità per allontanamento dal cibo
+	}
+
+	sa.previousDistance = currentDistance
+	return reward
 }
 
 // GetEpsilon returns the current epsilon value
@@ -118,6 +145,7 @@ func (sa *SnakeAgent) Reset() {
 
 	sa.game = NewGame(width, height)
 	sa.game.Stats = existingStats
+	sa.previousDistance = sa.getManhattanDistance() // Inizializza la distanza per il nuovo episodio
 	sa.agent.IncrementEpisode()
 }
 

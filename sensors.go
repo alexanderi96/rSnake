@@ -59,35 +59,29 @@ func (d Direction) TurnRight() Direction {
 	}
 }
 
-// GetDangers restituisce le distanze dai pericoli rispetto alla direzione corrente dello snake.
+// GetDangers restituisce i flag di pericolo immediato rispetto alla direzione corrente dello snake.
 // Vengono restituiti:
-//   - distAhead, distLeft, distRight: distanza dal primo pericolo in quella direzione
-//     (0 se non c'è pericolo entro 5 celle, 1 se adiacente, >1 per distanze maggiori)
-func (g *Game) GetDangers() (distAhead, distLeft, distRight int) {
+//   - dangerAhead, dangerLeft, dangerRight: true se c'è un pericolo nella cella adiacente
+//     in quella direzione, false altrimenti
+func (g *Game) GetDangers() (dangerAhead, dangerLeft, dangerRight bool) {
 	snake := g.snake
 	head := snake.GetHead()
 	currentDir := g.GetCurrentDirection()
 
-	// Funzione helper per calcolare la distanza dal pericolo in una direzione
-	getDangerDistance := func(dir Direction) int {
+	// Funzione helper per verificare il pericolo immediato in una direzione
+	checkImmediateDanger := func(dir Direction) bool {
 		vector := dir.ToPoint()
-		pos := head
-		for dist := 1; dist <= 5; dist++ { // Controlliamo fino a 5 celle di distanza
-			pos = Point{
-				X: pos.X + vector.X,
-				Y: pos.Y + vector.Y,
-			}
-			if g.checkCollision(pos) != NoCollision {
-				return dist
-			}
+		nextPos := Point{
+			X: head.X + vector.X,
+			Y: head.Y + vector.Y,
 		}
-		return 0 // Nessun pericolo entro 5 celle
+		return g.checkCollision(nextPos) != NoCollision
 	}
 
-	// Calcola le distanze in ogni direzione
-	distAhead = getDangerDistance(currentDir)
-	distLeft = getDangerDistance(currentDir.TurnLeft())
-	distRight = getDangerDistance(currentDir.TurnRight())
+	// Verifica i pericoli immediati in ogni direzione
+	dangerAhead = checkImmediateDanger(currentDir)
+	dangerLeft = checkImmediateDanger(currentDir.TurnLeft())
+	dangerRight = checkImmediateDanger(currentDir.TurnRight())
 
 	return
 }
