@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -26,6 +27,9 @@ type TrainingManager struct {
 	mutex          sync.RWMutex
 	isTraining     bool
 	updateInterval time.Duration
+	bestScore      int
+	totalScore     int
+	episodeCount   int
 }
 
 // NewTrainingManager crea un nuovo training manager
@@ -105,6 +109,10 @@ func (tm *TrainingManager) trainingLoop() {
 	for {
 		select {
 		case <-tm.controlChan:
+			// Salva i pesi prima di uscire
+			if err := tm.agent.SaveWeights(); err != nil {
+				fmt.Printf("Error saving final weights: %v\n", err)
+			}
 			return
 		case state := <-tm.gameStateChan:
 			tm.mutex.Lock()
@@ -121,6 +129,11 @@ func (tm *TrainingManager) trainingLoop() {
 			// Esegui l'update dell'agente
 			if !snake.Dead {
 				tm.agent.Update()
+			} else {
+				// Aggiorna le statistiche quando il serpente muore
+				tm.updateStats(snake.Score)
+				// Resetta per il prossimo episodio
+				tm.ResetGame()
 			}
 			tm.mutex.Unlock()
 		case <-ticker.C:
@@ -137,11 +150,30 @@ func (tm *TrainingManager) GetGame() *Game {
 	return tm.game
 }
 
+// updateStats aggiorna le statistiche di training
+func (tm *TrainingManager) updateStats(score int) {
+	tm.totalScore += score
+	if score > tm.bestScore {
+		tm.bestScore = score
+	}
+
+	tm.episodeCount++
+
+	// Salva i pesi periodicamente
+	if tm.episodeCount%500 == 0 {
+		if err := tm.agent.SaveWeights(); err != nil {
+			fmt.Printf("Error saving weights at episode %d: %v\n", tm.episodeCount, err)
+		}
+	}
+
+	// Reset statistiche per il prossimo batch
+	if tm.episodeCount%50 == 0 {
+		tm.totalScore = 0
+	}
+}
+
 // ResetGame resetta il gioco in modo thread-safe
 func (tm *TrainingManager) ResetGame() {
-	tm.mutex.Lock()
-	defer tm.mutex.Unlock()
-
 	// Preserva le statistiche esistenti
 	existingStats := tm.game.Stats
 
