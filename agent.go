@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math"
 
 	"snake-game/qlearning"
@@ -32,78 +31,55 @@ func (sa *SnakeAgent) SetRewardValues(foodReward, deathPenalty float64) {
 	sa.deathPenalty = deathPenalty
 }
 
-// getState costruisce uno stato più dettagliato che include:
-// - Direzione del cibo
-// - Distanze dai muri e dal proprio corpo
-// - Configurazione dei pericoli nelle 8 celle circostanti
-// - Lunghezza del serpente normalizzata
-// - Distanza normalizzata dal cibo
-func (sa *SnakeAgent) getState() string {
+// getState restituisce il vettore di stato direttamente come []float64
+func (sa *SnakeAgent) getState() []float64 {
 	snake := sa.game.GetSnake()
 	head := snake.GetHead()
 	food := sa.game.food
 
-	// Direzione del cibo (0=sopra, 1=destra, 2=sotto, 3=sinistra)
-	foodDirX := food.X - head.X
-	foodDirY := food.Y - head.Y
-	foodDir := -1
-
-	if math.Abs(float64(foodDirX)) > math.Abs(float64(foodDirY)) {
-		if foodDirX > 0 {
-			foodDir = 1 // destra
-		} else {
-			foodDir = 3 // sinistra
-		}
-	} else {
-		if foodDirY > 0 {
-			foodDir = 2 // giù
-		} else {
-			foodDir = 0 // su
-		}
-	}
+	// Ottiene la direzione del cibo usando il sensore
+	foodDir := float64(sa.game.GetFoodDirection())
 
 	// Distanze dai pericoli nelle varie direzioni
 	distAhead, distLeft, distRight := sa.game.GetDangers()
 
 	// Distanza normalizzata dal cibo
 	foodDist := math.Sqrt(math.Pow(float64(head.X-food.X), 2) + math.Pow(float64(head.Y-food.Y), 2))
-	foodDistNorm := int(math.Min(foodDist/5.0, 10.0))
+	foodDistNorm := math.Min(foodDist/5.0, 10.0)
 
 	// Lunghezza del serpente (normalizzata)
-	length := math.Min(float64(len(snake.Body)), 20.0)
-	lengthNorm := int(length / 4.0)
+	lengthNorm := math.Min(float64(len(snake.Body))/4.0, 5.0)
 
-	// Configurazione pericoli vicini (8 celle circostanti)
-	dangerN := sa.game.checkCollision(Point{X: head.X, Y: head.Y - 1}) != NoCollision
-	dangerNE := sa.game.checkCollision(Point{X: head.X + 1, Y: head.Y - 1}) != NoCollision
-	dangerE := sa.game.checkCollision(Point{X: head.X + 1, Y: head.Y}) != NoCollision
-	dangerSE := sa.game.checkCollision(Point{X: head.X + 1, Y: head.Y + 1}) != NoCollision
-	dangerS := sa.game.checkCollision(Point{X: head.X, Y: head.Y + 1}) != NoCollision
-	dangerSW := sa.game.checkCollision(Point{X: head.X - 1, Y: head.Y + 1}) != NoCollision
-	dangerW := sa.game.checkCollision(Point{X: head.X - 1, Y: head.Y}) != NoCollision
-	dangerNW := sa.game.checkCollision(Point{X: head.X - 1, Y: head.Y - 1}) != NoCollision
+	// Pericoli immediati nelle direzioni cardinali
+	currentDir := sa.game.GetCurrentDirection()
+	dirPoint := currentDir.ToPoint()
+	leftDir := Point{X: dirPoint.Y, Y: -dirPoint.X}  // Ruota 90° a sinistra
+	rightDir := Point{X: -dirPoint.Y, Y: dirPoint.X} // Ruota 90° a destra
 
-	dangerPattern := fmt.Sprintf("%d%d%d%d%d%d%d%d",
-		boolToInt(dangerN), boolToInt(dangerNE),
-		boolToInt(dangerE), boolToInt(dangerSE),
-		boolToInt(dangerS), boolToInt(dangerSW),
-		boolToInt(dangerW), boolToInt(dangerNW))
+	dangerAhead := sa.game.checkCollision(Point{X: head.X + dirPoint.X, Y: head.Y + dirPoint.Y}) != NoCollision
+	dangerLeft := sa.game.checkCollision(Point{X: head.X + leftDir.X, Y: head.Y + leftDir.Y}) != NoCollision
+	dangerRight := sa.game.checkCollision(Point{X: head.X + rightDir.X, Y: head.Y + rightDir.Y}) != NoCollision
 
-	// Stato finale: combina tutte le informazioni
-	state := fmt.Sprintf("%d:%d:%d:%d:%d:%d:%s:%d",
-		int(sa.game.GetCurrentDirection()), foodDir,
-		distAhead, distLeft, distRight,
-		foodDistNorm, dangerPattern, lengthNorm)
-
-	return state
+	return []float64{
+		float64(currentDir),
+		foodDir,
+		float64(distAhead),
+		float64(distLeft),
+		float64(distRight),
+		foodDistNorm,
+		lengthNorm,
+		boolToFloat64(dangerAhead),
+		boolToFloat64(dangerLeft),
+		boolToFloat64(dangerRight),
+	}
 }
 
-// boolToInt converte un booleano in intero
-func boolToInt(b bool) int {
+// boolToFloat64 converte un booleano in float64
+func boolToFloat64(b bool) float64 {
 	if b {
-		return 1
+		return 1.0
 	}
-	return 0
+	return 0.0
 }
 
 // relativeActionToAbsolute converte un'azione relativa in una direzione assoluta.
@@ -112,18 +88,20 @@ func boolToInt(b bool) int {
 //	0: ruota a sinistra
 //	1: vai avanti
 //	2: ruota a destra
-func (sa *SnakeAgent) relativeActionToAbsolute(relativeAction int) Direction {
+func (sa *SnakeAgent) relativeActionToAbsolute(relativeAction int) Point {
 	currentDir := sa.game.GetCurrentDirection()
+	var newDir Direction
 	switch relativeAction {
 	case 0: // ruota a sinistra
-		return currentDir.TurnLeft()
+		newDir = currentDir.TurnLeft()
 	case 1: // vai avanti
-		return currentDir
+		newDir = currentDir
 	case 2: // ruota a destra
-		return currentDir.TurnRight()
+		newDir = currentDir.TurnRight()
 	default:
-		return currentDir // fallback
+		newDir = currentDir // fallback
 	}
+	return newDir.ToPoint()
 }
 
 // Update esegue un passo di decisione e aggiornamento Q-learning.
@@ -133,57 +111,42 @@ func (sa *SnakeAgent) Update() {
 	}
 
 	currentState := sa.getState()
-	// Usa 3 possibili azioni relative.
 	action := sa.agent.GetAction(currentState, 3)
+	newDir := sa.relativeActionToAbsolute(action)
 
-	// Converte l'azione relativa in una direzione assoluta.
-	newDir := sa.relativeActionToAbsolute(action).ToPoint()
-
-	// Salva il punteggio corrente per calcolare il reward.
+	// Applica l'azione e calcola il reward
 	oldScore := sa.game.GetSnake().Score
-	oldLength := len(sa.game.GetSnake().Body)
-
-	// Applica l'azione.
 	sa.game.GetSnake().SetDirection(newDir)
 	sa.game.Update()
 
-	// Calcola il reward.
-	reward := sa.calculateReward(oldScore, oldLength)
+	// Sistema di reward semplificato
+	reward := sa.calculateReward(oldScore)
 
-	// Aggiorna i Q-values.
+	// Aggiorna i Q-values
 	newState := sa.getState()
 	sa.agent.Update(currentState, action, reward, newState, 3)
 }
 
-func (sa *SnakeAgent) calculateReward(oldScore, oldLength int) float64 {
+func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
-	head := snake.GetHead()
-	previousHead := snake.GetPreviousHead()
-	food := sa.game.food
 
-	// Base reward for being alive
+	// Reward base per sopravvivenza
 	reward := 1.0
 
-	// Reward for eating food
+	// Reward per mangiare cibo
 	if snake.Score > oldScore {
-		reward += sa.foodReward
-		sa.game.Steps = 0 // Reset stagnation counter
+		reward = sa.foodReward
+		sa.game.Steps = 0
 	}
 
-	// Reward for moving towards/away from food
-	oldDist := math.Sqrt(math.Pow(float64(previousHead.X-food.X), 2) + math.Pow(float64(previousHead.Y-food.Y), 2))
-	newDist := math.Sqrt(math.Pow(float64(head.X-food.X), 2) + math.Pow(float64(head.Y-food.Y), 2))
-	reward += (oldDist - newDist) * 10 // Simple distance-based reward
-
-	// Penalty for death
+	// Penalty per morte
 	if snake.Dead {
 		reward = sa.deathPenalty
 	}
 
-	// Penalty for stagnation
-	stepsWithoutFood := sa.game.Steps - oldLength*10
-	if stepsWithoutFood > 50 {
-		reward -= float64(stepsWithoutFood-50) * 0.1 // Linear penalty
+	// Penalty per stagnazione
+	if sa.game.Steps > 100 {
+		reward *= 0.95 // Decay graduale del reward
 	}
 
 	return reward

@@ -19,11 +19,11 @@ func init() {
 
 const (
 	// Learning parameters
-	LearningRate   = 0.001
-	Gamma          = 0.99
+	LearningRate   = 0.01 // Increased for faster learning
+	Gamma          = 0.95 // Slightly reduced to focus more on immediate rewards
 	InitialEpsilon = 1.0
-	EpsilonDecay   = 0.9975 // Faster decay
-	MinEpsilon     = 0.01
+	EpsilonDecay   = 0.999 // Slower decay for better exploration
+	MinEpsilon     = 0.05  // Higher minimum exploration
 
 	DataDir     = "data"
 	WeightsFile = DataDir + "/dqn_weights.gob"
@@ -34,8 +34,8 @@ const (
 	TargetUpdateFreq = 1000   // More frequent target updates
 	HiddenLayerSize  = 128    // Larger hidden layer
 	MinReplaySize    = 1000
-	InputFeatures    = 7 // Current dir, food dir, distances (3), food dist, length
-	OutputActions    = 3 // left, forward, right
+	InputFeatures    = 10 // Current dir, food dir, distances (3), food dist, length, dangers (3)
+	OutputActions    = 3  // left, forward, right
 )
 
 // Transition represents a single step in the environment
@@ -238,7 +238,7 @@ func NewAgent(learningRate, discount, epsilon float64) *Agent {
 }
 
 // GetAction selects an action using epsilon-greedy policy
-func (a *Agent) GetAction(state string, numActions int) int {
+func (a *Agent) GetAction(state []float64, numActions int) int {
 	// Update epsilon with decay
 	if a.Epsilon > a.MinEpsilon {
 		a.Epsilon = a.InitialEpsilon * math.Pow(a.EpsilonDecay, float64(a.TrainingEpisode))
@@ -247,16 +247,13 @@ func (a *Agent) GetAction(state string, numActions int) int {
 		}
 	}
 
-	// Convert state string to float64 slice
-	stateVec := a.stateToVector(state)
-
 	// Exploration: random action
 	if rand.Float64() < a.Epsilon {
 		return rand.Intn(numActions)
 	}
 
 	// Exploitation: best action from DQN
-	qValues, err := a.dqn.Forward(stateVec)
+	qValues, err := a.dqn.Forward(state)
 	if err != nil {
 		// Fallback to random action on error
 		return rand.Intn(numActions)
@@ -276,16 +273,13 @@ func (a *Agent) GetAction(state string, numActions int) int {
 }
 
 // Update performs a DQN update step
-func (a *Agent) Update(state string, action int, reward float64, nextState string, numActions int) {
-	stateVec := a.stateToVector(state)
-	nextStateVec := a.stateToVector(nextState)
-
+func (a *Agent) Update(state []float64, action int, reward float64, nextState []float64, numActions int) {
 	// Add transition to replay buffer
 	a.replayBuffer.Add(Transition{
-		State:     stateVec,
+		State:     state,
 		Action:    action,
 		Reward:    reward,
-		NextState: nextStateVec,
+		NextState: nextState,
 		Done:      false,
 	})
 
@@ -397,27 +391,6 @@ func (a *Agent) updateTargetNetwork() {
 	tensor.Copy(a.targetDQN.w2.Value().(*tensor.Dense), a.dqn.w2.Value().(*tensor.Dense))
 	tensor.Copy(a.targetDQN.b1.Value().(*tensor.Dense), a.dqn.b1.Value().(*tensor.Dense))
 	tensor.Copy(a.targetDQN.b2.Value().(*tensor.Dense), a.dqn.b2.Value().(*tensor.Dense))
-}
-
-// stateToVector converts a state string to a vector of float64
-func (a *Agent) stateToVector(state string) []float64 {
-	var currentDir, foodDir, distAhead, distLeft, distRight, foodDistNorm int
-	var dangerPattern string
-	var lengthNorm int
-
-	fmt.Sscanf(state, "%d:%d:%d:%d:%d:%d:%s:%d",
-		&currentDir, &foodDir, &distAhead, &distLeft, &distRight,
-		&foodDistNorm, &dangerPattern, &lengthNorm)
-
-	return []float64{
-		float64(currentDir),
-		float64(foodDir),
-		float64(distAhead),
-		float64(distLeft),
-		float64(distRight),
-		float64(foodDistNorm),
-		float64(lengthNorm),
-	}
 }
 
 // IncrementEpisode increments the training episode counter
