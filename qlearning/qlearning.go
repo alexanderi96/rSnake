@@ -3,6 +3,7 @@ package qlearning
 import (
 	"encoding/gob"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -34,7 +35,7 @@ const (
 	TargetUpdateFreq = 500    // Update più frequenti del target network
 	HiddenLayerSize  = 256    // Layer nascosto più grande per catturare pattern più complessi
 	MinReplaySize    = 2000   // Più esperienza prima di iniziare il training
-	InputFeatures    = 10     // Current dir, food dir, distances (3), food dist, length, dangers (3)
+	InputFeatures    = 5      // Current dir, food dir, distances (3)
 	OutputActions    = 3      // left, forward, right
 )
 
@@ -247,17 +248,23 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		}
 	}
 
+	log.Printf("Current epsilon: %.4f, Training episode: %d", a.Epsilon, a.TrainingEpisode)
+
 	// Exploration: random action
 	if rand.Float64() < a.Epsilon {
-		return rand.Intn(numActions)
+		action := rand.Intn(numActions)
+		log.Printf("Exploring: choosing random action %d", action)
+		return action
 	}
 
 	// Exploitation: best action from DQN
 	qValues, err := a.dqn.Forward(state)
 	if err != nil {
-		// Fallback to random action on error
+		log.Printf("Error in forward pass: %v, falling back to random action", err)
 		return rand.Intn(numActions)
 	}
+
+	log.Printf("Q-values for actions: %v", qValues)
 
 	// Find action with maximum Q-value
 	maxQ := math.Inf(-1)
@@ -269,6 +276,7 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		}
 	}
 
+	log.Printf("Exploiting: choosing best action %d with Q-value %.4f", bestAction, maxQ)
 	return bestAction
 }
 
