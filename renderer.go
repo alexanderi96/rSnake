@@ -85,6 +85,68 @@ func (r *Renderer) Draw(g *Game) {
 		rl.Red,
 	)
 
+	// Get playable area boundaries
+	minX, maxX, minY, maxY := g.getPlayableArea()
+
+	// Draw non-playable area with semi-transparent overlay
+	nonPlayableColor := rl.Color{R: 40, G: 40, B: 40, A: 200}
+
+	// Left non-playable area
+	if minX > 0 {
+		rl.DrawRectangle(
+			r.offsetX,
+			r.offsetY,
+			int32(minX)*r.cellSize,
+			r.totalGridHeight,
+			nonPlayableColor,
+		)
+	}
+
+	// Right non-playable area
+	if maxX < g.Grid.Width-1 {
+		rl.DrawRectangle(
+			r.offsetX+int32(maxX+1)*r.cellSize,
+			r.offsetY,
+			r.totalGridWidth-int32(maxX+1)*r.cellSize,
+			r.totalGridHeight,
+			nonPlayableColor,
+		)
+	}
+
+	// Top non-playable area
+	if minY > 0 {
+		rl.DrawRectangle(
+			r.offsetX+int32(minX)*r.cellSize,
+			r.offsetY,
+			int32(maxX-minX+1)*r.cellSize,
+			int32(minY)*r.cellSize,
+			nonPlayableColor,
+		)
+	}
+
+	// Bottom non-playable area
+	if maxY < g.Grid.Height-1 {
+		rl.DrawRectangle(
+			r.offsetX+int32(minX)*r.cellSize,
+			r.offsetY+int32(maxY+1)*r.cellSize,
+			int32(maxX-minX+1)*r.cellSize,
+			r.totalGridHeight-int32(maxY+1)*r.cellSize,
+			nonPlayableColor,
+		)
+	}
+
+	// Draw playable area border
+	rl.DrawRectangleLinesEx(
+		rl.Rectangle{
+			X:      float32(r.offsetX + int32(minX)*r.cellSize),
+			Y:      float32(r.offsetY + int32(minY)*r.cellSize),
+			Width:  float32((maxX - minX + 1) * int(r.cellSize)),
+			Height: float32((maxY - minY + 1) * int(r.cellSize)),
+		},
+		2,
+		rl.Yellow,
+	)
+
 	// Draw grid lines
 	for x := 0; x <= g.Grid.Width; x++ {
 		rl.DrawLine(

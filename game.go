@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -64,6 +63,26 @@ func NewSnake(startPos Point, color Color) *Snake {
 	}
 }
 
+// getPlayableArea returns the current playable area boundaries based on snake length
+func (g *Game) getPlayableArea() (minX, maxX, minY, maxY int) {
+	snakeLength := 1
+	if g.snake != nil {
+		snakeLength = len(g.snake.Body)
+	}
+
+	areaSize := 4 + (2 * (snakeLength - 1)) // Starts with 9x9 area
+
+	centerX := g.Grid.Width / 2
+	centerY := g.Grid.Height / 2
+
+	minX = maxInt(0, centerX-areaSize/2)
+	maxX = minInt(g.Grid.Width-1, centerX+areaSize/2)
+	minY = maxInt(0, centerY-areaSize/2)
+	maxY = minInt(g.Grid.Height-1, centerY+areaSize/2)
+
+	return
+}
+
 func NewGame(width, height int) *Game {
 	game := &Game{
 		Grid: Grid{
@@ -71,26 +90,26 @@ func NewGame(width, height int) *Game {
 			Height: height,
 		},
 		snake:     &Snake{},
-		food:      Point{}, // Temporary position, will be set by generateFood()
+		food:      Point{X: width / 2, Y: height / 2}, // Food starts at center
 		Steps:     0,
 		StartTime: time.Now(),
-		Stats:     NewGameStats(), // Inizializza le statistiche
+		Stats:     NewGameStats(),
 	}
-	// Generate initial food position using the same logic as during gameplay
-	game.food = game.generateFood()
 
-	// Create snake with random position
-	margin := 2
+	// Get initial playable area
+	minX, maxX, minY, maxY := game.getPlayableArea()
 
+	// Create snake with random position within playable area
 	startPos := Point{
-		X: rand.Intn(width-2*margin) + margin,
-		Y: rand.Intn(height-2*margin) + margin,
+		X: minX + rand.Intn(maxX-minX+1),
+		Y: minY + rand.Intn(maxY-minY+1),
 	}
 
+	// Ensure snake doesn't spawn on food
 	for startPos == game.food {
 		startPos = Point{
-			X: rand.Intn(width-2*margin) + margin,
-			Y: rand.Intn(height-2*margin) + margin,
+			X: minX + rand.Intn(maxX-minX+1),
+			Y: minY + rand.Intn(maxY-minY+1),
 		}
 	}
 
@@ -220,7 +239,11 @@ func (g *Game) calculateNewPosition() Point {
 }
 
 func (g *Game) checkCollision(pos Point) CollisionType {
-	if pos.X < 0 || pos.X >= g.Grid.Width || pos.Y < 0 || pos.Y >= g.Grid.Height {
+	// Get current playable area boundaries
+	minX, maxX, minY, maxY := g.getPlayableArea()
+
+	// Check wall collision against dynamic boundaries
+	if pos.X < minX || pos.X > maxX || pos.Y < minY || pos.Y > maxY {
 		return WallCollision
 	}
 
@@ -268,47 +291,6 @@ func maxInt(a, b int) int {
 }
 
 func (g *Game) generateFood() Point {
-	// Calcola l'area di spawn basata sulla lunghezza del serpente
-
-	snakeLength := 1
-
-	if g.snake != nil {
-		snakeLength = len(g.snake.Body)
-	}
-
-	areaSize := 1 + (2 * (snakeLength - 1)) // 1x1 a len 1, 3x3 a len 2, 5x5 a len 3
-
-	// Trova il centro della griglia
-	centerX := g.Grid.Width / 2
-	centerY := g.Grid.Height / 2
-
-	for {
-		// Calcola i limiti dell'area di spawn
-		minX := maxInt(0, centerX-areaSize/2)
-		maxX := minInt(g.Grid.Width-1, centerX+areaSize/2)
-		minY := maxInt(0, centerY-areaSize/2)
-		maxY := minInt(g.Grid.Height-1, centerY+areaSize/2)
-
-		// Genera posizione casuale nell'area consentita
-		food := Point{
-			X: minX + rand.Intn(maxX-minX+1),
-			Y: minY + rand.Intn(maxY-minY+1),
-		}
-
-		// Verifica che la posizione non sia occupata dal serpente
-		valid := true
-		for _, part := range g.snake.Body {
-			if food == part {
-				valid = false
-				break
-			}
-		}
-		if valid {
-			// Only log if food position is invalid
-			if food.X >= g.Grid.Width || food.Y >= g.Grid.Height || food.X < 0 || food.Y < 0 {
-				fmt.Printf("ATTENZIONE: Nuovo cibo spawna fuori dalla griglia! (%d,%d)\n", food.X, food.Y)
-			}
-			return food
-		}
-	}
+	// Food is always at center
+	return Point{X: g.Grid.Width / 2, Y: g.Grid.Height / 2}
 }
