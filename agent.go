@@ -1,34 +1,22 @@
 package main
 
 import (
-	"log"
-
 	"snake-game/qlearning"
 )
 
 // SnakeAgent rappresenta l'agente che gioca a Snake usando Q-learning.
 type SnakeAgent struct {
-	agent        *qlearning.Agent
-	game         *Game
-	foodReward   float64
-	deathPenalty float64
+	agent *qlearning.Agent
+	game  *Game
 }
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
 	agent := qlearning.NewAgent(0.5, 0.8, 0.95) // Learning rate aumentato per apprendimento più rapido
 	return &SnakeAgent{
-		agent:        agent,
-		game:         game,
-		foodReward:   500.0,  // Default reward values
-		deathPenalty: -250.0, // Can be overridden by curriculum
+		agent: agent,
+		game:  game,
 	}
-}
-
-// SetRewardValues imposta i valori di reward per la fase corrente
-func (sa *SnakeAgent) SetRewardValues(foodReward, deathPenalty float64) {
-	sa.foodReward = foodReward
-	sa.deathPenalty = deathPenalty
 }
 
 // getState restituisce il vettore di stato direttamente come []float64
@@ -74,16 +62,12 @@ func (sa *SnakeAgent) relativeActionToAbsolute(relativeAction int) Point {
 // Update esegue un passo di decisione e aggiornamento Q-learning.
 func (sa *SnakeAgent) Update() {
 	if sa.game.GetSnake().Dead {
-		log.Printf("Snake is dead, skipping update")
 		return
 	}
 
 	currentState := sa.getState()
 	action := sa.agent.GetAction(currentState, 3)
 	newDir := sa.relativeActionToAbsolute(action)
-
-	log.Printf("Current state: %v", currentState)
-	log.Printf("Chosen action: %d (direction: %v)", action, newDir)
 
 	// Applica l'azione e calcola il reward
 	oldScore := sa.game.GetSnake().Score
@@ -92,7 +76,6 @@ func (sa *SnakeAgent) Update() {
 
 	// Sistema di reward semplificato
 	reward := sa.calculateReward(oldScore)
-	log.Printf("Reward received: %.2f", reward)
 
 	// Aggiorna i Q-values
 	newState := sa.getState()
@@ -102,38 +85,49 @@ func (sa *SnakeAgent) Update() {
 func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
 
-	// Reward base per sopravvivenza
-	reward := 1.0
+	// Base reward MOLTO più basso per sopravvivenza
+	reward := 0.01
 
-	// Calcola la distanza di Manhattan prima e dopo il movimento
-	oldHead := snake.GetPreviousHead()
-	newHead := snake.GetHead()
-	food := sa.game.GetFood()
+	// Analisi del movimento rispetto allo stato
+	state := sa.getState()
+	currentDir := int(state[0]) // direzione attuale (0-3)
+	foodDir := int(state[1])    // direzione cibo (0-3)
+	distAhead := state[2]       // distanza ostacoli
+	distLeft := state[3]
+	distRight := state[4]
 
-	oldDistance := manhattanDistance(oldHead, food, sa.game.Grid.Width, sa.game.Grid.Height)
-	newDistance := manhattanDistance(newHead, food, sa.game.Grid.Width, sa.game.Grid.Height)
+	// Calcola la differenza di direzione (considerando la circolarità 0-3)
+	dirDiff := (currentDir - foodDir + 4) % 4
 
-	// Premia la riduzione della distanza dal cibo
-	if newDistance < oldDistance {
-		reward += 5.0
-	} else if newDistance > oldDistance {
-		reward -= 2.0
+	// Reward più aggressivi per movimento verso il cibo
+	switch dirDiff {
+	case 0: // Allineato con il cibo
+		reward += 0.4 * (distAhead / 5.0) // Aumentato per incentivare l'allineamento
+	case 1: // Necessaria svolta a destra
+		if distRight > 2 {
+			reward += 0.25 // Svolta sicura - reward aumentato
+		} else {
+			reward += 0.1 // Svolta rischiosa - reward aumentato
+		}
+	case 3: // Necessaria svolta a sinistra
+		if distLeft > 2 {
+			reward += 0.25 // Svolta sicura - reward aumentato
+		} else {
+			reward += 0.1 // Svolta rischiosa - reward aumentato
+		}
+	case 2: // Direzione opposta al cibo
+		reward -= 0.1 // Penalità maggiore per scoraggiare direzione opposta
 	}
 
-	// Reward per mangiare cibo
+	// Reward aumentato per mangiare il cibo
 	if snake.Score > oldScore {
-		reward = sa.foodReward
+		reward = 1.5 // Aumentato per incentivare la ricerca del cibo
 		sa.game.Steps = 0
 	}
 
-	// Penalty per morte
+	// Penalty ridotta per morte
 	if snake.Dead {
-		reward = sa.deathPenalty
-	}
-
-	// Penalty graduale per stagnazione
-	if sa.game.Steps > 100 {
-		reward *= 0.95 // Decay più aggressivo per evitare loop
+		reward = -0.8 // Ridotta per incoraggiare più rischi
 	}
 
 	return reward

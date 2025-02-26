@@ -129,10 +129,6 @@ func (b *ReplayBuffer) Sample(batchSize int) []Transition {
 func NewDQN() *DQN {
 	g := gorgonia.NewGraph()
 
-	// Initialize weights with Xavier initialization and log shapes
-	log.Printf("Initializing network with shapes - Input: %d, Hidden1: %d, Hidden2: %d, Output: %d",
-		InputFeatures, HiddenLayer1Size, HiddenLayer2Size, OutputActions)
-
 	// Create and verify first layer weights
 	w1 := gorgonia.NewMatrix(g,
 		tensor.Float64,
@@ -141,7 +137,6 @@ func NewDQN() *DQN {
 
 	// Verify w1 shape
 	w1Shape := w1.Shape()
-	log.Printf("W1 shape: %v", w1Shape)
 	if w1Shape[0] != InputFeatures || w1Shape[1] != HiddenLayer1Size {
 		log.Fatalf("W1 has incorrect shape. Expected (%d, %d), got %v", InputFeatures, HiddenLayer1Size, w1Shape)
 	}
@@ -221,10 +216,8 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 	var batchSize int
 	if len(states) == InputFeatures {
 		batchSize = 1
-		log.Printf("Forward pass with single state input: %v", states)
 	} else {
 		batchSize = len(states) / InputFeatures
-		log.Printf("Forward pass with batch input: %d samples", batchSize)
 	}
 
 	// Use existing graph
@@ -244,7 +237,6 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 
 	// Convert states to tensor and create graph
 	statesTensor := tensor.New(tensor.WithBacking(normalizedStates), tensor.WithShape(batchSize, InputFeatures))
-	log.Printf("Created input tensor with shape: %v", statesTensor.Shape())
 
 	// Verify input tensor shape
 	if statesTensor.Shape()[1] != InputFeatures {
@@ -254,10 +246,7 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 	statesNode := gorgonia.NodeFromAny(g, statesTensor)
 
 	// First hidden layer with batch normalization
-	log.Printf("Attempting matrix multiplication with shapes: Input %v, W1 %v", statesNode.Shape(), dqn.w1.Shape())
-	// First hidden layer
 	h1 := gorgonia.Must(gorgonia.Mul(statesNode, dqn.w1))
-	log.Printf("First layer output shape: %v", h1.Shape())
 	h1 = gorgonia.Must(gorgonia.Add(h1, expandBias(dqn.b1, batchSize, HiddenLayer1Size)))
 
 	h1 = gorgonia.Must(gorgonia.Rectify(h1))
@@ -343,23 +332,16 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		}
 	}
 
-	log.Printf("Current epsilon: %.4f, Training episode: %d", a.Epsilon, a.TrainingEpisode)
-
 	// Exploration: random action
 	if rand.Float64() < a.Epsilon {
-		action := rand.Intn(numActions)
-		log.Printf("Exploring: choosing random action %d", action)
-		return action
+		return rand.Intn(numActions)
 	}
 
 	// Exploitation: best action from DQN
 	qValues, err := a.dqn.Forward(state)
 	if err != nil {
-		log.Printf("Error in forward pass: %v, falling back to random action", err)
 		return rand.Intn(numActions)
 	}
-
-	log.Printf("Q-values for actions: %v", qValues)
 
 	// Find action with maximum Q-value
 	maxQ := math.Inf(-1)
@@ -371,7 +353,6 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		}
 	}
 
-	log.Printf("Exploiting: choosing best action %d with Q-value %.4f", bestAction, maxQ)
 	return bestAction
 }
 
