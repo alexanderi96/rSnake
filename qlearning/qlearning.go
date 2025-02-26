@@ -20,23 +20,27 @@ func init() {
 
 const (
 	// Learning parameters
-	LearningRate   = 0.005 // Ridotto per un apprendimento più stabile
-	Gamma          = 0.98  // Aumentato per considerare meglio le ricompense future
+	LearningRate   = 0.001 // Reduced for more stable learning
+	Gamma          = 0.99  // Increased for better future reward consideration
 	InitialEpsilon = 1.0
-	EpsilonDecay   = 0.9995 // Decay più lento per mantenere l'esplorazione più a lungo
-	MinEpsilon     = 0.1    // Minimo più alto per garantire sempre un po' di esplorazione
+	EpsilonDecay   = 0.997 // Slower decay
+	MinEpsilon     = 0.01  // Lower minimum for better exploitation
+	TauSoftUpdate  = 0.001 // Soft update rate for target network
 
 	DataDir     = "data"
 	WeightsFile = DataDir + "/dqn_weights.gob"
 
 	// DQN hyperparameters
-	BatchSize        = 128    // Batch size aumentato per training più stabile
-	ReplayBufferSize = 100000 // Manteniamo buffer grande
-	TargetUpdateFreq = 500    // Update più frequenti del target network
-	HiddenLayerSize  = 256    // Layer nascosto più grande per catturare pattern più complessi
-	MinReplaySize    = 2000   // Più esperienza prima di iniziare il training
+	BatchSize        = 64     // Smaller batch for more frequent updates
+	ReplayBufferSize = 100000 // Keep large buffer
+	TargetUpdateFreq = 100    // More frequent soft updates
+	HiddenLayer1Size = 32     // First hidden layer (reduced from 128)
+	HiddenLayer2Size = 16     // Second hidden layer (reduced from 64)
+	DropoutRate      = 0.2    // Dropout probability
+	MinReplaySize    = 1000   // Start training earlier
 	InputFeatures    = 5      // Current dir, food dir, distances (3)
 	OutputActions    = 3      // left, forward, right
+	GradientClip     = 1.0    // Maximum gradient norm
 )
 
 // Transition represents a single step in the environment
@@ -58,12 +62,16 @@ type ReplayBuffer struct {
 
 // DQN represents the deep Q-network
 type DQN struct {
-	g      *gorgonia.ExprGraph
-	w1, w2 *gorgonia.Node
-	b1, b2 *gorgonia.Node
-	pred   *gorgonia.Node
-	vm     gorgonia.VM
-	solver gorgonia.Solver
+	g                                          *gorgonia.ExprGraph
+	w1, w2, w3                                 *gorgonia.Node
+	b1, b2, b3                                 *gorgonia.Node
+	bn1Scale, bn1Bias, bn2Scale, bn2Bias       *gorgonia.Node
+	bn1Mean, bn1Variance, bn2Mean, bn2Variance *gorgonia.Node
+	dropoutMask1, dropoutMask2                 *gorgonia.Node
+	pred                                       *gorgonia.Node
+	vm                                         gorgonia.VM
+	solver                                     gorgonia.Solver
+	training                                   bool
 }
 
 // Agent represents a DQN agent
@@ -121,74 +129,161 @@ func (b *ReplayBuffer) Sample(batchSize int) []Transition {
 func NewDQN() *DQN {
 	g := gorgonia.NewGraph()
 
-	// Initialize weights and biases
+	// Initialize weights with Xavier initialization and log shapes
+	log.Printf("Initializing network with shapes - Input: %d, Hidden1: %d, Hidden2: %d, Output: %d",
+		InputFeatures, HiddenLayer1Size, HiddenLayer2Size, OutputActions)
+
+	// Create and verify first layer weights
 	w1 := gorgonia.NewMatrix(g,
 		tensor.Float64,
-		gorgonia.WithShape(HiddenLayerSize, InputFeatures),
+		gorgonia.WithShape(InputFeatures, HiddenLayer1Size),
 		gorgonia.WithInit(gorgonia.GlorotU(1.0)))
 
-	b1 := gorgonia.NewMatrix(g,
-		tensor.Float64,
-		gorgonia.WithShape(HiddenLayerSize, 1),
-		gorgonia.WithInit(gorgonia.Zeroes()))
+	// Verify w1 shape
+	w1Shape := w1.Shape()
+	log.Printf("W1 shape: %v", w1Shape)
+	if w1Shape[0] != InputFeatures || w1Shape[1] != HiddenLayer1Size {
+		log.Fatalf("W1 has incorrect shape. Expected (%d, %d), got %v", InputFeatures, HiddenLayer1Size, w1Shape)
+	}
 
 	w2 := gorgonia.NewMatrix(g,
 		tensor.Float64,
-		gorgonia.WithShape(OutputActions, HiddenLayerSize),
+		gorgonia.WithShape(HiddenLayer1Size, HiddenLayer2Size),
 		gorgonia.WithInit(gorgonia.GlorotU(1.0)))
+
+	w3 := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(HiddenLayer2Size, OutputActions),
+		gorgonia.WithInit(gorgonia.GlorotU(1.0)))
+
+	// Initialize biases
+	b1 := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(1, HiddenLayer1Size),
+		gorgonia.WithInit(gorgonia.Zeroes()))
 
 	b2 := gorgonia.NewMatrix(g,
 		tensor.Float64,
-		gorgonia.WithShape(OutputActions, 1),
+		gorgonia.WithShape(1, HiddenLayer2Size),
 		gorgonia.WithInit(gorgonia.Zeroes()))
 
-	return &DQN{
-		g:      g,
-		w1:     w1,
-		w2:     w2,
-		b1:     b1,
-		b2:     b2,
-		vm:     gorgonia.NewTapeMachine(g),
-		solver: gorgonia.NewRMSPropSolver(),
+	b3 := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(1, OutputActions),
+		gorgonia.WithInit(gorgonia.Zeroes()))
+
+	// Initialize batch normalization parameters
+	bn1Scale := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(1, HiddenLayer1Size),
+		gorgonia.WithInit(gorgonia.Ones()))
+
+	bn1Bias := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(1, HiddenLayer1Size),
+		gorgonia.WithInit(gorgonia.Zeroes()))
+
+	bn2Scale := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(1, HiddenLayer2Size),
+		gorgonia.WithInit(gorgonia.Ones()))
+
+	bn2Bias := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(1, HiddenLayer2Size),
+		gorgonia.WithInit(gorgonia.Zeroes()))
+
+	dqn := &DQN{
+		g:        g,
+		w1:       w1,
+		w2:       w2,
+		w3:       w3,
+		b1:       b1,
+		b2:       b2,
+		b3:       b3,
+		bn1Scale: bn1Scale,
+		bn1Bias:  bn1Bias,
+		bn2Scale: bn2Scale,
+		bn2Bias:  bn2Bias,
+		solver:   gorgonia.NewAdamSolver(gorgonia.WithL2Reg(1e-6)), // Added L2 regularization
+		training: true,
 	}
+
+	// Create VM after all nodes are added to graph
+	dqn.vm = gorgonia.NewTapeMachine(g)
+
+	return dqn
 }
 
 // Forward performs a forward pass through the network
 func (dqn *DQN) Forward(states []float64) ([]float64, error) {
-	batchSize := len(states) / InputFeatures
-	if batchSize == 0 && len(states) == InputFeatures {
+	// Calculate batch size and ensure proper reshaping
+	var batchSize int
+	if len(states) == InputFeatures {
 		batchSize = 1
+		log.Printf("Forward pass with single state input: %v", states)
+	} else {
+		batchSize = len(states) / InputFeatures
+		log.Printf("Forward pass with batch input: %d samples", batchSize)
+	}
+
+	// Use existing graph
+	g := dqn.g
+
+	// Normalize input states to [0,1]
+	normalizedStates := make([]float64, len(states))
+	for i := 0; i < len(states); i++ {
+		if i < 2 {
+			// First two values are directions (0-4)
+			normalizedStates[i] = states[i] / 4.0
+		} else {
+			// Last three values are distances (0-5)
+			normalizedStates[i] = states[i] / 5.0
+		}
 	}
 
 	// Convert states to tensor and create graph
-	g := dqn.g
-	statesTensor := tensor.New(tensor.WithBacking(states), tensor.WithShape(batchSize, InputFeatures))
+	statesTensor := tensor.New(tensor.WithBacking(normalizedStates), tensor.WithShape(batchSize, InputFeatures))
+	log.Printf("Created input tensor with shape: %v", statesTensor.Shape())
+
+	// Verify input tensor shape
+	if statesTensor.Shape()[1] != InputFeatures {
+		log.Fatalf("Input tensor has incorrect shape. Expected (_, %d), got %v", InputFeatures, statesTensor.Shape())
+	}
+
 	statesNode := gorgonia.NodeFromAny(g, statesTensor)
 
-	// First layer
-	h1 := gorgonia.Must(gorgonia.Mul(statesNode, gorgonia.Must(gorgonia.Transpose(dqn.w1))))
-	// Create bias matrix for batch
-	b1Data := make([]float64, batchSize*HiddenLayerSize)
-	b1Value := dqn.b1.Value().Data().([]float64)
-	for i := 0; i < batchSize; i++ {
-		copy(b1Data[i*HiddenLayerSize:], b1Value)
-	}
-	b1Tensor := tensor.New(tensor.WithBacking(b1Data), tensor.WithShape(batchSize, HiddenLayerSize))
-	b1Node := gorgonia.NodeFromAny(g, b1Tensor)
-	h1 = gorgonia.Must(gorgonia.Add(h1, b1Node))
+	// First hidden layer with batch normalization
+	log.Printf("Attempting matrix multiplication with shapes: Input %v, W1 %v", statesNode.Shape(), dqn.w1.Shape())
+	// First hidden layer
+	h1 := gorgonia.Must(gorgonia.Mul(statesNode, dqn.w1))
+	log.Printf("First layer output shape: %v", h1.Shape())
+	h1 = gorgonia.Must(gorgonia.Add(h1, expandBias(dqn.b1, batchSize, HiddenLayer1Size)))
+
 	h1 = gorgonia.Must(gorgonia.Rectify(h1))
 
-	// Output layer
-	output := gorgonia.Must(gorgonia.Mul(h1, gorgonia.Must(gorgonia.Transpose(dqn.w2))))
-	// Create bias matrix for batch
-	b2Data := make([]float64, batchSize*OutputActions)
-	b2Value := dqn.b2.Value().Data().([]float64)
-	for i := 0; i < batchSize; i++ {
-		copy(b2Data[i*OutputActions:], b2Value)
+	if dqn.training {
+		// Apply dropout during training
+		mask1 := tensor.New(tensor.WithShape(batchSize, HiddenLayer1Size), tensor.WithBacking(generateDropoutMask(batchSize*HiddenLayer1Size)))
+		dqn.dropoutMask1 = gorgonia.NodeFromAny(g, mask1)
+		h1 = gorgonia.Must(gorgonia.HadamardProd(h1, dqn.dropoutMask1))
 	}
-	b2Tensor := tensor.New(tensor.WithBacking(b2Data), tensor.WithShape(batchSize, OutputActions))
-	b2Node := gorgonia.NodeFromAny(g, b2Tensor)
-	pred := gorgonia.Must(gorgonia.Add(output, b2Node))
+
+	// Second hidden layer
+	h2 := gorgonia.Must(gorgonia.Mul(h1, dqn.w2))
+	h2 = gorgonia.Must(gorgonia.Add(h2, expandBias(dqn.b2, batchSize, HiddenLayer2Size)))
+
+	h2 = gorgonia.Must(gorgonia.Rectify(h2))
+
+	if dqn.training {
+		mask2 := tensor.New(tensor.WithShape(batchSize, HiddenLayer2Size), tensor.WithBacking(generateDropoutMask(batchSize*HiddenLayer2Size)))
+		dqn.dropoutMask2 = gorgonia.NodeFromAny(g, mask2)
+		h2 = gorgonia.Must(gorgonia.HadamardProd(h2, dqn.dropoutMask2))
+	}
+
+	// Output layer
+	output := gorgonia.Must(gorgonia.Mul(h2, dqn.w3))
+	pred := gorgonia.Must(gorgonia.Add(output, expandBias(dqn.b3, batchSize, OutputActions)))
 
 	// Run forward pass
 	if err := dqn.vm.RunAll(); err != nil {
@@ -303,14 +398,63 @@ func (a *Agent) Update(state []float64, action int, reward float64, nextState []
 	// Update target network periodically
 	a.updateCounter++
 	if a.updateCounter >= TargetUpdateFreq {
-		a.updateTargetNetwork()
+		a.softUpdateTargetNetwork()
 		a.updateCounter = 0
 	}
+}
+
+// Helper function to generate dropout mask
+func generateDropoutMask(size int) []float64 {
+	mask := make([]float64, size)
+	for i := range mask {
+		if rand.Float64() > DropoutRate {
+			mask[i] = 1.0 / (1.0 - DropoutRate)
+		}
+	}
+	return mask
+}
+
+// Helper function to expand bias for batch operations
+func expandBias(bias *gorgonia.Node, batchSize, size int) *gorgonia.Node {
+	// Create a tensor of ones for broadcasting
+	ones := tensor.New(tensor.WithShape(batchSize, 1), tensor.WithBacking(make([]float64, batchSize)))
+	for i := range ones.Data().([]float64) {
+		ones.Data().([]float64)[i] = 1.0
+	}
+	onesNode := gorgonia.NodeFromAny(bias.Graph(), ones)
+
+	// Broadcast bias to match batch size
+	return gorgonia.Must(gorgonia.Mul(onesNode, bias))
+}
+
+// huberLoss implements the Huber loss function
+func huberLoss(pred, target *gorgonia.Node, delta float64) *gorgonia.Node {
+	diff := gorgonia.Must(gorgonia.Sub(pred, target))
+	absDiff := gorgonia.Must(gorgonia.Abs(diff))
+
+	quadratic := gorgonia.Must(gorgonia.Square(diff))
+	quadratic = gorgonia.Must(gorgonia.Mul(quadratic, gorgonia.NewScalar(pred.Graph(), tensor.Float64, gorgonia.WithValue(0.5))))
+
+	linear := gorgonia.Must(gorgonia.Sub(absDiff, gorgonia.NewScalar(pred.Graph(), tensor.Float64, gorgonia.WithValue(delta/2.0))))
+	linear = gorgonia.Must(gorgonia.Mul(linear, gorgonia.NewScalar(pred.Graph(), tensor.Float64, gorgonia.WithValue(delta))))
+
+	condition := gorgonia.Must(gorgonia.Lte(absDiff, gorgonia.NewScalar(pred.Graph(), tensor.Float64, gorgonia.WithValue(delta)), false))
+	loss := gorgonia.Must(gorgonia.Add(
+		gorgonia.Must(gorgonia.Mul(condition, quadratic)),
+		gorgonia.Must(gorgonia.Mul(
+			gorgonia.Must(gorgonia.Sub(
+				gorgonia.NewScalar(pred.Graph(), tensor.Float64, gorgonia.WithValue(1.0)),
+				condition)),
+			linear))))
+
+	return gorgonia.Must(gorgonia.Mean(loss))
 }
 
 // trainOnBatch performs a training step on a batch of transitions
 func (a *Agent) trainOnBatch(batch []Transition) {
 	g := a.dqn.g
+	a.dqn.training = true
+	defer func() { a.dqn.training = false }()
 
 	// Prepare batch data
 	states := make([]float64, 0, len(batch)*InputFeatures)
@@ -379,26 +523,81 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 	currentTensor := tensor.New(tensor.WithBacking(currentQValues), tensor.WithShape(len(batch), OutputActions))
 	currentNode := gorgonia.NodeFromAny(g, currentTensor)
 
-	// Calculate loss
-	diff := gorgonia.Must(gorgonia.Sub(currentNode, targetNode))
-	squaredDiff := gorgonia.Must(gorgonia.Square(diff))
-	loss := gorgonia.Must(gorgonia.Mean(squaredDiff))
+	// Calculate loss using Huber loss
+	loss := huberLoss(currentNode, targetNode, 1.0)
 
-	// Backpropagate and update weights
-	gorgonia.Grad(loss, a.dqn.w1, a.dqn.w2, a.dqn.b1, a.dqn.b2)
-	a.dqn.vm.RunAll()
-	nodes := gorgonia.Nodes{a.dqn.w1, a.dqn.w2, a.dqn.b1, a.dqn.b2}
+	// Backpropagate and update weights with gradient clipping
+	nodes := gorgonia.Nodes{a.dqn.w1, a.dqn.w2, a.dqn.w3, a.dqn.b1, a.dqn.b2, a.dqn.b3,
+		a.dqn.bn1Scale, a.dqn.bn1Bias, a.dqn.bn2Scale, a.dqn.bn2Bias}
+	gorgonia.Grad(loss, nodes...)
+
+	// Run backprop
+	if err := a.dqn.vm.RunAll(); err != nil {
+		log.Printf("Error during backprop: %v", err)
+		return
+	}
+
+	// Get gradients
 	grads := gorgonia.NodesToValueGrads(nodes)
+
+	// Clip gradients
+	for _, grad := range grads {
+		if grad == nil {
+			continue
+		}
+		if t, ok := grad.(tensor.Tensor); ok {
+			data := t.Data().([]float64)
+			for i := range data {
+				if data[i] > GradientClip {
+					data[i] = GradientClip
+				} else if data[i] < -GradientClip {
+					data[i] = -GradientClip
+				}
+			}
+		}
+	}
+
+	// Update weights
 	a.dqn.solver.Step(grads)
 	a.dqn.vm.Reset()
+
+	// Soft update target network
+	a.softUpdateTargetNetwork()
 }
 
-// updateTargetNetwork copies weights from DQN to target network
-func (a *Agent) updateTargetNetwork() {
-	tensor.Copy(a.targetDQN.w1.Value().(*tensor.Dense), a.dqn.w1.Value().(*tensor.Dense))
-	tensor.Copy(a.targetDQN.w2.Value().(*tensor.Dense), a.dqn.w2.Value().(*tensor.Dense))
-	tensor.Copy(a.targetDQN.b1.Value().(*tensor.Dense), a.dqn.b1.Value().(*tensor.Dense))
-	tensor.Copy(a.targetDQN.b2.Value().(*tensor.Dense), a.dqn.b2.Value().(*tensor.Dense))
+// softUpdateTargetNetwork performs soft update of target network parameters
+func (a *Agent) softUpdateTargetNetwork() {
+	w1Target := a.targetDQN.w1.Value().(*tensor.Dense)
+	w2Target := a.targetDQN.w2.Value().(*tensor.Dense)
+	w3Target := a.targetDQN.w3.Value().(*tensor.Dense)
+	b1Target := a.targetDQN.b1.Value().(*tensor.Dense)
+	b2Target := a.targetDQN.b2.Value().(*tensor.Dense)
+	b3Target := a.targetDQN.b3.Value().(*tensor.Dense)
+
+	w1Current := a.dqn.w1.Value().(*tensor.Dense)
+	w2Current := a.dqn.w2.Value().(*tensor.Dense)
+	w3Current := a.dqn.w3.Value().(*tensor.Dense)
+	b1Current := a.dqn.b1.Value().(*tensor.Dense)
+	b2Current := a.dqn.b2.Value().(*tensor.Dense)
+	b3Current := a.dqn.b3.Value().(*tensor.Dense)
+
+	// θ_target = τ*θ_current + (1-τ)*θ_target
+	softUpdate(w1Target, w1Current, TauSoftUpdate)
+	softUpdate(w2Target, w2Current, TauSoftUpdate)
+	softUpdate(w3Target, w3Current, TauSoftUpdate)
+	softUpdate(b1Target, b1Current, TauSoftUpdate)
+	softUpdate(b2Target, b2Current, TauSoftUpdate)
+	softUpdate(b3Target, b3Current, TauSoftUpdate)
+}
+
+// softUpdate performs the soft update operation for a single tensor
+func softUpdate(target, current *tensor.Dense, tau float64) {
+	targetData := target.Data().([]float64)
+	currentData := current.Data().([]float64)
+
+	for i := range targetData {
+		targetData[i] = tau*currentData[i] + (1-tau)*targetData[i]
+	}
 }
 
 // IncrementEpisode increments the training episode counter
@@ -425,10 +624,16 @@ func (a *Agent) SaveWeights(filename string) error {
 
 	enc := gob.NewEncoder(f)
 	weights := map[string]*tensor.Dense{
-		"w1": a.dqn.w1.Value().(*tensor.Dense),
-		"w2": a.dqn.w2.Value().(*tensor.Dense),
-		"b1": a.dqn.b1.Value().(*tensor.Dense),
-		"b2": a.dqn.b2.Value().(*tensor.Dense),
+		"w1":        a.dqn.w1.Value().(*tensor.Dense),
+		"w2":        a.dqn.w2.Value().(*tensor.Dense),
+		"w3":        a.dqn.w3.Value().(*tensor.Dense),
+		"b1":        a.dqn.b1.Value().(*tensor.Dense),
+		"b2":        a.dqn.b2.Value().(*tensor.Dense),
+		"b3":        a.dqn.b3.Value().(*tensor.Dense),
+		"bn1_scale": a.dqn.bn1Scale.Value().(*tensor.Dense),
+		"bn1_bias":  a.dqn.bn1Bias.Value().(*tensor.Dense),
+		"bn2_scale": a.dqn.bn2Scale.Value().(*tensor.Dense),
+		"bn2_bias":  a.dqn.bn2Bias.Value().(*tensor.Dense),
 	}
 
 	if err := enc.Encode(weights); err != nil {
@@ -455,18 +660,46 @@ func (a *Agent) LoadWeights(filename string) error {
 		return fmt.Errorf("failed to decode weights: %v", err)
 	}
 
-	// Update network weights
+	// Update network weights and parameters
 	if w1, ok := weights["w1"]; ok {
 		tensor.Copy(a.dqn.w1.Value().(*tensor.Dense), w1)
+		tensor.Copy(a.targetDQN.w1.Value().(*tensor.Dense), w1)
 	}
 	if w2, ok := weights["w2"]; ok {
 		tensor.Copy(a.dqn.w2.Value().(*tensor.Dense), w2)
+		tensor.Copy(a.targetDQN.w2.Value().(*tensor.Dense), w2)
+	}
+	if w3, ok := weights["w3"]; ok {
+		tensor.Copy(a.dqn.w3.Value().(*tensor.Dense), w3)
+		tensor.Copy(a.targetDQN.w3.Value().(*tensor.Dense), w3)
 	}
 	if b1, ok := weights["b1"]; ok {
 		tensor.Copy(a.dqn.b1.Value().(*tensor.Dense), b1)
+		tensor.Copy(a.targetDQN.b1.Value().(*tensor.Dense), b1)
 	}
 	if b2, ok := weights["b2"]; ok {
 		tensor.Copy(a.dqn.b2.Value().(*tensor.Dense), b2)
+		tensor.Copy(a.targetDQN.b2.Value().(*tensor.Dense), b2)
+	}
+	if b3, ok := weights["b3"]; ok {
+		tensor.Copy(a.dqn.b3.Value().(*tensor.Dense), b3)
+		tensor.Copy(a.targetDQN.b3.Value().(*tensor.Dense), b3)
+	}
+	if bn1Scale, ok := weights["bn1_scale"]; ok {
+		tensor.Copy(a.dqn.bn1Scale.Value().(*tensor.Dense), bn1Scale)
+		tensor.Copy(a.targetDQN.bn1Scale.Value().(*tensor.Dense), bn1Scale)
+	}
+	if bn1Bias, ok := weights["bn1_bias"]; ok {
+		tensor.Copy(a.dqn.bn1Bias.Value().(*tensor.Dense), bn1Bias)
+		tensor.Copy(a.targetDQN.bn1Bias.Value().(*tensor.Dense), bn1Bias)
+	}
+	if bn2Scale, ok := weights["bn2_scale"]; ok {
+		tensor.Copy(a.dqn.bn2Scale.Value().(*tensor.Dense), bn2Scale)
+		tensor.Copy(a.targetDQN.bn2Scale.Value().(*tensor.Dense), bn2Scale)
+	}
+	if bn2Bias, ok := weights["bn2_bias"]; ok {
+		tensor.Copy(a.dqn.bn2Bias.Value().(*tensor.Dense), bn2Bias)
+		tensor.Copy(a.targetDQN.bn2Bias.Value().(*tensor.Dense), bn2Bias)
 	}
 
 	return nil

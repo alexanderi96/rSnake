@@ -139,6 +139,11 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	return reward
 }
 
+// GetEpsilon returns the current epsilon value
+func (sa *SnakeAgent) GetEpsilon() float64 {
+	return sa.agent.Epsilon
+}
+
 // Reset prepara l'agente per una nuova partita mantenendo le conoscenze apprese.
 func (sa *SnakeAgent) Reset() {
 	// Preserve the existing stats

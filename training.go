@@ -19,28 +19,44 @@ type TrainingPhase struct {
 func TrainWithCurriculum(totalEpisodes int) {
 	phases := []TrainingPhase{
 		{
-			name:         "Sopravvivenza",
-			episodes:     totalEpisodes / 3,
-			gridWidth:    10, // Griglia più piccola per iniziare
+			name:         "Basic Movement",
+			episodes:     totalEpisodes / 5,
+			gridWidth:    8, // Start with very small grid
+			gridHeight:   8,
+			foodReward:   50.0,  // Small reward to encourage basic movement
+			deathPenalty: -50.0, // Mild penalty to learn boundaries
+		},
+		{
+			name:         "Food Collection",
+			episodes:     totalEpisodes / 5,
+			gridWidth:    10,
 			gridHeight:   10,
-			foodReward:   100.0,  // Reward moderato per il cibo
-			deathPenalty: -500.0, // Penalità severa per la morte
+			foodReward:   100.0,  // Increased reward for food
+			deathPenalty: -100.0, // Balanced penalty
 		},
 		{
-			name:         "Raccolta Cibo",
-			episodes:     totalEpisodes / 3,
-			gridWidth:    15, // Griglia media
+			name:         "Survival Skills",
+			episodes:     totalEpisodes / 5,
+			gridWidth:    12,
+			gridHeight:   12,
+			foodReward:   200.0,  // Higher reward for food
+			deathPenalty: -150.0, // Increased penalty
+		},
+		{
+			name:         "Advanced Navigation",
+			episodes:     totalEpisodes / 5,
+			gridWidth:    15,
 			gridHeight:   15,
-			foodReward:   300.0,  // Reward maggiore per il cibo
-			deathPenalty: -250.0, // Penalità moderata
+			foodReward:   300.0,  // High reward for food
+			deathPenalty: -200.0, // High penalty for mistakes
 		},
 		{
-			name:         "Prestazioni Complete",
-			episodes:     totalEpisodes / 3,
-			gridWidth:    20, // Griglia completa
+			name:         "Expert Performance",
+			episodes:     totalEpisodes / 5,
+			gridWidth:    20,
 			gridHeight:   20,
-			foodReward:   500.0,  // Reward massimo per il cibo
-			deathPenalty: -250.0, // Mantiene penalità moderata
+			foodReward:   400.0,  // Maximum reward
+			deathPenalty: -250.0, // Maximum penalty
 		},
 	}
 
@@ -76,24 +92,25 @@ func TrainWithCurriculum(totalEpisodes int) {
 				bestScore = score
 			}
 
-			// Log periodico
-			if (episode+1)%100 == 0 {
-				avgScore := float64(totalScore) / 100.0
+			// Periodic logging with more metrics
+			if (episode+1)%50 == 0 {
+				avgScore := float64(totalScore) / 50.0
 				elapsed := time.Since(startTime)
-				fmt.Printf("Episodio %d/%d - Score Medio: %.2f, Miglior Score: %d, Tempo: %s\n",
-					episode+1, phase.episodes, avgScore, bestScore, elapsed.Round(time.Second))
+				epsilon := agent.GetEpsilon()
+				fmt.Printf("[Phase %s] Episode %d/%d - Avg Score: %.2f, Best Score: %d, Epsilon: %.4f, Time: %s\n",
+					phase.name, episode+1, phase.episodes, avgScore, bestScore, epsilon, elapsed.Round(time.Second))
 
-				// Reset delle statistiche per il prossimo batch
+				// Reset statistics for next batch
 				totalScore = 0
 				startTime = time.Now()
 			}
 
-			// Salva i pesi periodicamente
-			if (episode+1)%1000 == 0 {
+			// Save weights more frequently during training
+			if (episode+1)%500 == 0 {
 				if err := agent.SaveWeights(); err != nil {
-					fmt.Printf("Errore nel salvataggio dei pesi: %v\n", err)
+					fmt.Printf("Error saving weights: %v\n", err)
 				} else {
-					fmt.Printf("Pesi salvati all'episodio %d\n", episode+1)
+					fmt.Printf("Weights saved at episode %d\n", episode+1)
 				}
 			}
 		}

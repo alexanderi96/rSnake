@@ -74,8 +74,8 @@ func (g *Game) GetDangers() (distAhead, distLeft, distRight int) {
 		pos := head
 		for dist := 1; dist <= 5; dist++ { // Controlliamo fino a 5 celle di distanza
 			pos = Point{
-				X: (pos.X + vector.X + g.Grid.Width) % g.Grid.Width,
-				Y: (pos.Y + vector.Y + g.Grid.Height) % g.Grid.Height,
+				X: pos.X + vector.X,
+				Y: pos.Y + vector.Y,
 			}
 			if g.checkCollision(pos) != NoCollision {
 				return dist
