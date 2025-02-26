@@ -65,16 +65,33 @@ func NewSnake(startPos Point, color Color) *Snake {
 }
 
 func NewGame(width, height int) *Game {
-	grid := Grid{
-		Width:  width,
-		Height: height,
+	game := &Game{
+		Grid: Grid{
+			Width:  width,
+			Height: height,
+		},
+		snake:     &Snake{},
+		food:      Point{}, // Temporary position, will be set by generateFood()
+		Steps:     0,
+		StartTime: time.Now(),
+		Stats:     NewGameStats(), // Inizializza le statistiche
 	}
+	// Generate initial food position using the same logic as during gameplay
+	game.food = game.generateFood()
 
 	// Create snake with random position
 	margin := 2
+
 	startPos := Point{
 		X: rand.Intn(width-2*margin) + margin,
 		Y: rand.Intn(height-2*margin) + margin,
+	}
+
+	for startPos == game.food {
+		startPos = Point{
+			X: rand.Intn(width-2*margin) + margin,
+			Y: rand.Intn(height-2*margin) + margin,
+		}
 	}
 
 	color := Color{
@@ -82,18 +99,9 @@ func NewGame(width, height int) *Game {
 		G: uint8(rand.Intn(200) + 55),
 		B: uint8(rand.Intn(200) + 55),
 	}
-	snake := NewSnake(startPos, color)
 
-	game := &Game{
-		Grid:      grid,
-		snake:     snake,
-		food:      Point{X: 0, Y: 0}, // Temporary position, will be set by generateFood()
-		Steps:     0,
-		StartTime: time.Now(),
-		Stats:     NewGameStats(), // Inizializza le statistiche
-	}
-	// Generate initial food position using the same logic as during gameplay
-	game.food = game.generateFood()
+	game.snake = NewSnake(startPos, color)
+
 	return game
 }
 
@@ -261,7 +269,13 @@ func maxInt(a, b int) int {
 
 func (g *Game) generateFood() Point {
 	// Calcola l'area di spawn basata sulla lunghezza del serpente
-	snakeLength := len(g.snake.Body)
+
+	snakeLength := 1
+
+	if g.snake != nil {
+		snakeLength = len(g.snake.Body)
+	}
+
 	areaSize := 1 + (2 * (snakeLength - 1)) // 1x1 a len 1, 3x3 a len 2, 5x5 a len 3
 
 	// Trova il centro della griglia

@@ -191,15 +191,7 @@ func (r *Renderer) Draw(g *Game) {
 		fontSize, rl.White)
 	xOffset += spacing
 
-	// Running average score (verde chiaro)
-	runningAvgScore := float64(r.stats.TotalScore) / float64(r.stats.TotalGames)
-	rl.DrawText(fmt.Sprintf("Avg Score: %.1f", runningAvgScore),
-		xOffset,
-		yOffset,
-		fontSize, avgScoreColor)
-	xOffset += spacing
-
-	// Max score (using absolute maximum across all compression levels)
+	// Max score and its average (verde)
 	maxScore := r.stats.GetAbsoluteMaxScore()
 	rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
 		xOffset,
@@ -207,9 +199,18 @@ func (r *Renderer) Draw(g *Game) {
 		fontSize, scoreColor)
 	xOffset += spacing
 
-	// Running average duration (viola chiaro)
-	runningAvgDuration := r.stats.TotalTime / float64(r.stats.TotalGames)
-	rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", runningAvgDuration),
+	// Get the latest game record for averages
+	latestGame := stats[len(stats)-1]
+
+	// Average max score (verde chiaro)
+	rl.DrawText(fmt.Sprintf("Avg Max: %.1f", latestGame.AverageMaxScore),
+		xOffset,
+		yOffset,
+		fontSize, avgScoreColor)
+	xOffset += spacing
+
+	// Average max duration (viola chiaro)
+	rl.DrawText(fmt.Sprintf("Avg Max Time: %.1fs", latestGame.AverageMaxDuration),
 		xOffset,
 		yOffset,
 		fontSize, avgDurationColor)
@@ -317,11 +318,11 @@ func (r *Renderer) drawStatsGraph() {
 				scoreColor)
 		}
 
-		// Draw running average score point and line (verde chiaro)
-		runningScoreY := float32(graphY+graphHeight) - float32(game.RunningAverageScore)*scaleY
+		// Draw average max score point and line (verde chiaro)
+		avgMaxScoreY := float32(graphY+graphHeight) - float32(game.AverageMaxScore)*scaleY
 		rl.DrawCircle(
 			int32(scoreX),
-			int32(runningScoreY),
+			int32(avgMaxScoreY),
 			2,
 			avgScoreColor)
 
@@ -359,11 +360,11 @@ func (r *Renderer) drawStatsGraph() {
 				durationColor)
 		}
 
-		// Draw running average duration point and line (viola chiaro)
-		runningDurationY := float32(graphY+graphHeight) - float32(game.RunningAverageDuration)*durationScaleY
+		// Draw average max duration point and line (viola chiaro)
+		avgMaxDurationY := float32(graphY+graphHeight) - float32(game.AverageMaxDuration)*durationScaleY
 		rl.DrawCircle(
 			int32(durationX),
-			int32(runningDurationY),
+			int32(avgMaxDurationY),
 			2,
 			avgDurationColor)
 
@@ -397,20 +398,20 @@ func (r *Renderer) drawStatsGraph() {
 				durationColor)
 
 			// Draw connecting lines for running averages
-			nextRunningScoreY := float32(graphY+graphHeight) - float32(nextGame.RunningAverageScore)*scaleY
-			nextRunningDurationY := float32(graphY+graphHeight) - float32(nextGame.RunningAverageDuration)*durationScaleY
+			nextAvgMaxScoreY := float32(graphY+graphHeight) - float32(nextGame.AverageMaxScore)*scaleY
+			nextAvgMaxDurationY := float32(graphY+graphHeight) - float32(nextGame.AverageMaxDuration)*durationScaleY
 
 			rl.DrawLine(
 				int32(scoreX),
-				int32(runningScoreY),
+				int32(avgMaxScoreY),
 				int32(nextX-barSpacing/2),
-				int32(nextRunningScoreY),
+				int32(nextAvgMaxScoreY),
 				avgScoreColor)
 			rl.DrawLine(
 				int32(durationX),
-				int32(runningDurationY),
+				int32(avgMaxDurationY),
 				int32(nextX+barSpacing/2),
-				int32(nextRunningDurationY),
+				int32(nextAvgMaxDurationY),
 				avgDurationColor)
 		}
 

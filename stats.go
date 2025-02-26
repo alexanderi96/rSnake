@@ -38,8 +38,10 @@ type GameRecord struct {
 	CompressedAverageDuration float64   `json:"compressedAverageDuration"` // Media del gruppo compresso
 	MaxDuration               float64   `json:"maxDuration"`               // Per gruppi
 	MinDuration               float64   `json:"minDuration"`               // Per gruppi
-	RunningAverageScore       float64   `json:"runningAverageScore"`       // Media di tutte le partite fino a questo punto
-	RunningAverageDuration    float64   `json:"runningAverageDuration"`    // Media di tutte le durate fino a questo punto
+	AverageMaxScore           float64   `json:"averageMaxScore"`           // Media dei punteggi massimi
+	AverageMinScore           float64   `json:"averageMinScore"`           // Media dei punteggi minimi
+	AverageMaxDuration        float64   `json:"averageMaxDuration"`        // Media delle durate massime
+	AverageMinDuration        float64   `json:"averageMinDuration"`        // Media delle durate minime
 }
 
 // NewGameStats crea una nuova istanza di GameStats e tenta di caricare i dati dal file.
@@ -77,8 +79,10 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 		CompressedAverageDuration: duration,
 		MaxDuration:               duration,
 		MinDuration:               duration,
-		RunningAverageScore:       float64(s.TotalScore) / float64(s.TotalGames),
-		RunningAverageDuration:    s.TotalTime / float64(s.TotalGames),
+		AverageMaxScore:           float64(score),
+		AverageMinScore:           float64(score),
+		AverageMaxDuration:        duration,
+		AverageMinDuration:        duration,
 	}
 	s.Games = append(s.Games, game)
 
@@ -239,8 +243,12 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	compressed.CompressedAverageDuration = newCompressedAvgDuration
 	compressed.MaxDuration = newMaxDuration
 	compressed.MinDuration = newMinDuration
-	compressed.RunningAverageScore = float64(s.TotalScore) / float64(s.TotalGames)
-	compressed.RunningAverageDuration = s.TotalTime / float64(s.TotalGames)
+	// Calcola le medie dei massimi e minimi
+	compressed.AverageMaxScore = (compressed.AverageMaxScore*float64(compressed.GamesCount-1) + float64(newMaxScore)) / float64(totalGames)
+	compressed.AverageMinScore = (compressed.AverageMinScore*float64(compressed.GamesCount-1) + float64(newMinScore)) / float64(totalGames)
+	compressed.AverageMaxDuration = (compressed.AverageMaxDuration*float64(compressed.GamesCount-1) + newMaxDuration) / float64(totalGames)
+	compressed.AverageMinDuration = (compressed.AverageMinDuration*float64(compressed.GamesCount-1) + newMinDuration) / float64(totalGames)
+
 	if newRecord.EndTime.After(compressed.EndTime) {
 		compressed.EndTime = newRecord.EndTime
 	}
