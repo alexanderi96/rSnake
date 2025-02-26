@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -69,12 +70,13 @@ func NewGame(width, height int) *Game {
 		Height: height,
 	}
 
-	// Create initial snake with random position
-	margin := 2 // Mantieni una distanza minima dai bordi
+	// Create snake with random position
+	margin := 2
 	startPos := Point{
-		X: rand.Intn(width-2*margin) + margin,  // Posizione casuale tra margin e width-margin
-		Y: rand.Intn(height-2*margin) + margin, // Posizione casuale tra margin e height-margin
+		X: rand.Intn(width-2*margin) + margin,
+		Y: rand.Intn(height-2*margin) + margin,
 	}
+
 	color := Color{
 		R: uint8(rand.Intn(200) + 55),
 		G: uint8(rand.Intn(200) + 55),
@@ -85,14 +87,13 @@ func NewGame(width, height int) *Game {
 	game := &Game{
 		Grid:      grid,
 		snake:     snake,
+		food:      Point{X: 0, Y: 0}, // Temporary position, will be set by generateFood()
 		Steps:     0,
 		StartTime: time.Now(),
 		Stats:     NewGameStats(), // Inizializza le statistiche
 	}
-
-	// Generate initial food
+	// Generate initial food position using the same logic as during gameplay
 	game.food = game.generateFood()
-
 	return game
 }
 
@@ -289,6 +290,10 @@ func (g *Game) generateFood() Point {
 			}
 		}
 		if valid {
+			// Only log if food position is invalid
+			if food.X >= g.Grid.Width || food.Y >= g.Grid.Height || food.X < 0 || food.Y < 0 {
+				fmt.Printf("ATTENZIONE: Nuovo cibo spawna fuori dalla griglia! (%d,%d)\n", food.X, food.Y)
+			}
 			return food
 		}
 	}

@@ -159,21 +159,15 @@ func (tm *TrainingManager) updateStats(score int) {
 
 	tm.episodeCount++
 
-	// Salva i pesi automaticamente ogni 100 episodi
-	if tm.episodeCount%100 == 0 {
-		// Prova a salvare fino a 3 volte in caso di errore
-		var err error
-		for attempts := 0; attempts < 3; attempts++ {
-			err = tm.agent.SaveWeights()
-			if err == nil {
+	// Salva i pesi automaticamente ogni 500 episodi
+	if tm.episodeCount%500 == 0 {
+		go func() {
+			if err := tm.agent.SaveWeights(); err != nil {
+				fmt.Printf("Failed to save weights at episode %d: %v\n", tm.episodeCount, err)
+			} else {
 				fmt.Printf("Weights automatically saved at episode %d\n", tm.episodeCount)
-				break
 			}
-			time.Sleep(100 * time.Millisecond) // Breve attesa tra i tentativi
-		}
-		if err != nil {
-			fmt.Printf("Failed to save weights at episode %d after 3 attempts: %v\n", tm.episodeCount, err)
-		}
+		}()
 	}
 
 	// Reset statistiche per il prossimo batch

@@ -94,8 +94,18 @@ func main() {
 			}
 
 			// Aggiorna le dimensioni della griglia
+			fmt.Printf("\nRidimensionamento griglia: %dx%d -> %dx%d\n", game.Grid.Width, game.Grid.Height, newWidth, newHeight)
 			game.Grid.Width = newWidth
 			game.Grid.Height = newHeight
+
+			// Verifica posizioni dopo ridimensionamento
+			snake = game.GetSnake()
+			snake.Mutex.RLock()
+			head := snake.GetHead()
+			snake.Mutex.RUnlock()
+			fmt.Printf("Posizione serpente dopo ridimensionamento: (%d,%d)\n", head.X, head.Y)
+			food := game.GetFood()
+			fmt.Printf("Posizione cibo dopo ridimensionamento: (%d,%d)\n", food.X, food.Y)
 		}
 
 		// Update game state at fixed interval
