@@ -129,9 +129,33 @@ func (sa *SnakeAgent) Update() {
 
 func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
+	head := snake.GetHead()
+	food := sa.game.food
+
+	// Calcola la distanza dal cibo
+	currentDist := math.Sqrt(math.Pow(float64(head.X-food.X), 2) + math.Pow(float64(head.Y-food.Y), 2))
+	prevHead := snake.GetPreviousHead()
+	previousDist := math.Sqrt(math.Pow(float64(prevHead.X-food.X), 2) + math.Pow(float64(prevHead.Y-food.Y), 2))
 
 	// Reward base per sopravvivenza
-	reward := 1.0
+	reward := 5.0
+
+	// Reward proporzionale all'avvicinamento al cibo
+	distDiff := previousDist - currentDist
+	if distDiff > 0 {
+		// Reward aumenta con la distanza percorsa verso il cibo
+		reward += 20.0 * distDiff
+	} else if distDiff < 0 {
+		// Penalty più leggera per allontanamento
+		reward -= 10.0 * math.Abs(distDiff)
+	}
+
+	// Bonus per orientamento verso il cibo
+	foodDir := sa.game.GetFoodDirection()
+	currentDir := sa.game.GetCurrentDirection()
+	if float64(foodDir) == float64(currentDir) {
+		reward += 5.0 // Bonus quando si muove nella direzione del cibo
+	}
 
 	// Reward per mangiare cibo
 	if snake.Score > oldScore {
@@ -144,9 +168,9 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 		reward = sa.deathPenalty
 	}
 
-	// Penalty per stagnazione
+	// Penalty più graduale per stagnazione
 	if sa.game.Steps > 100 {
-		reward *= 0.95 // Decay graduale del reward
+		reward *= 0.98 // Decay più leggero
 	}
 
 	return reward

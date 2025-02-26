@@ -8,6 +8,14 @@ import (
 
 const borderPadding = 10 // Padding around game area
 
+// Colori personalizzati per le statistiche
+var (
+	scoreColor       = rl.Color{R: 0, G: 180, B: 0, A: 255}     // Verde scuro
+	avgScoreColor    = rl.Color{R: 144, G: 238, B: 144, A: 255} // Verde chiaro
+	durationColor    = rl.Color{R: 128, G: 0, B: 128, A: 255}   // Viola scuro
+	avgDurationColor = rl.Color{R: 216, G: 191, B: 216, A: 255} // Viola chiaro
+)
+
 type Renderer struct {
 	cellSize        int32
 	screenWidth     int32
@@ -153,12 +161,12 @@ func (r *Renderer) Draw(g *Game) {
 		fontSize, rl.White)
 	xOffset += spacing
 
-	// Average score (using most granular data)
-	avgScore := r.stats.GetAverageScore(0)
-	rl.DrawText(fmt.Sprintf("Avg Score: %.1f", avgScore),
+	// Running average score (verde chiaro)
+	runningAvgScore := float64(r.stats.TotalScore) / float64(r.stats.TotalGames)
+	rl.DrawText(fmt.Sprintf("Avg Score: %.1f", runningAvgScore),
 		xOffset,
 		yOffset,
-		fontSize, rl.Green)
+		fontSize, avgScoreColor)
 	xOffset += spacing
 
 	// Max score (using absolute maximum across all compression levels)
@@ -166,15 +174,15 @@ func (r *Renderer) Draw(g *Game) {
 	rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
 		xOffset,
 		yOffset,
-		fontSize, rl.Green)
+		fontSize, scoreColor)
 	xOffset += spacing
 
-	// Average duration (using most granular data)
-	avgDuration := r.stats.GetAverageDuration(0)
-	rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", avgDuration),
+	// Running average duration (viola chiaro)
+	runningAvgDuration := r.stats.TotalTime / float64(r.stats.TotalGames)
+	rl.DrawText(fmt.Sprintf("Avg Duration: %.1fs", runningAvgDuration),
 		xOffset,
 		yOffset,
-		fontSize, rl.Purple)
+		fontSize, avgDurationColor)
 
 	// Draw food
 	food := g.GetFood()
@@ -256,9 +264,9 @@ func (r *Renderer) drawStatsGraph() {
 				int32(scoreY),
 				int32(barWidth),
 				int32(float32(graphY+graphHeight)-scoreY),
-				rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
+				scoreColor)
 		} else {
-			scoreY = float32(graphY+graphHeight) - float32(game.AverageScore)*scaleY
+			scoreY = float32(graphY+graphHeight) - float32(game.CompressedAverageScore)*scaleY
 			minScoreY := float32(graphY+graphHeight) - float32(game.MinScore)*scaleY
 			maxScoreY := float32(graphY+graphHeight) - float32(game.MaxScore)*scaleY
 
@@ -268,16 +276,24 @@ func (r *Renderer) drawStatsGraph() {
 				int32(maxScoreY),
 				int32(barWidth),
 				int32(minScoreY-maxScoreY),
-				rl.Color{R: 0, G: barAlpha, B: 0, A: barAlpha})
+				scoreColor)
 
-			// Draw average score marker
+			// Draw compressed average score marker
 			rl.DrawRectangle(
 				int32(scoreX-barWidth/2),
 				int32(scoreY),
 				int32(barWidth),
 				int32(2),
-				rl.Green)
+				scoreColor)
 		}
+
+		// Draw running average score point and line (verde chiaro)
+		runningScoreY := float32(graphY+graphHeight) - float32(game.RunningAverageScore)*scaleY
+		rl.DrawCircle(
+			int32(scoreX),
+			int32(runningScoreY),
+			2,
+			avgScoreColor)
 
 		// Draw duration bar and point (purple)
 		var durationY float32
@@ -290,9 +306,9 @@ func (r *Renderer) drawStatsGraph() {
 				int32(durationY),
 				int32(barWidth),
 				int32(float32(graphY+graphHeight)-durationY),
-				rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
+				durationColor)
 		} else {
-			durationY = float32(graphY+graphHeight) - float32(game.AverageDuration)*durationScaleY
+			durationY = float32(graphY+graphHeight) - float32(game.CompressedAverageDuration)*durationScaleY
 			minDurationY := float32(graphY+graphHeight) - float32(game.MinDuration)*durationScaleY
 			maxDurationY := float32(graphY+graphHeight) - float32(game.MaxDuration)*durationScaleY
 
@@ -302,45 +318,70 @@ func (r *Renderer) drawStatsGraph() {
 				int32(maxDurationY),
 				int32(barWidth),
 				int32(minDurationY-maxDurationY),
-				rl.Color{R: barAlpha, G: 0, B: barAlpha, A: barAlpha})
+				durationColor)
 
-			// Draw average duration marker
+			// Draw compressed average duration marker
 			rl.DrawRectangle(
 				int32(durationX-barWidth/2),
 				int32(durationY),
 				int32(barWidth),
 				int32(2),
-				rl.Purple)
+				durationColor)
 		}
+
+		// Draw running average duration point and line (viola chiaro)
+		runningDurationY := float32(graphY+graphHeight) - float32(game.RunningAverageDuration)*durationScaleY
+		rl.DrawCircle(
+			int32(durationX),
+			int32(runningDurationY),
+			2,
+			avgDurationColor)
 
 		// Draw connecting lines to next point if not the last point
 		if i < len(sortedStats)-1 {
 			nextX := currentX + pointSpacing
-			var nextScoreY, nextDurationY float32
 			nextGame := sortedStats[i+1]
 
+			// Draw connecting lines for compressed scores and durations
+			var nextScoreY, nextDurationY float32
 			if nextGame.CompressionIndex == 0 {
 				nextScoreY = float32(graphY+graphHeight) - float32(nextGame.Score)*scaleY
 				nextDuration := float32(nextGame.EndTime.Sub(nextGame.StartTime).Seconds())
 				nextDurationY = float32(graphY+graphHeight) - nextDuration*durationScaleY
 			} else {
-				nextScoreY = float32(graphY+graphHeight) - float32(nextGame.AverageScore)*scaleY
-				nextDurationY = float32(graphY+graphHeight) - float32(nextGame.AverageDuration)*durationScaleY
+				nextScoreY = float32(graphY+graphHeight) - float32(nextGame.CompressedAverageScore)*scaleY
+				nextDurationY = float32(graphY+graphHeight) - float32(nextGame.CompressedAverageDuration)*durationScaleY
 			}
 
-			// Draw connecting lines for scores and durations
 			rl.DrawLine(
 				int32(scoreX),
 				int32(scoreY),
 				int32(nextX-barSpacing/2),
 				int32(nextScoreY),
-				rl.Green)
+				scoreColor)
 			rl.DrawLine(
 				int32(durationX),
 				int32(durationY),
 				int32(nextX+barSpacing/2),
 				int32(nextDurationY),
-				rl.Purple)
+				durationColor)
+
+			// Draw connecting lines for running averages
+			nextRunningScoreY := float32(graphY+graphHeight) - float32(nextGame.RunningAverageScore)*scaleY
+			nextRunningDurationY := float32(graphY+graphHeight) - float32(nextGame.RunningAverageDuration)*durationScaleY
+
+			rl.DrawLine(
+				int32(scoreX),
+				int32(runningScoreY),
+				int32(nextX-barSpacing/2),
+				int32(nextRunningScoreY),
+				avgScoreColor)
+			rl.DrawLine(
+				int32(durationX),
+				int32(runningDurationY),
+				int32(nextX+barSpacing/2),
+				int32(nextRunningDurationY),
+				avgDurationColor)
 		}
 
 		currentX += pointSpacing

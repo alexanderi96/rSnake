@@ -19,23 +19,23 @@ func init() {
 
 const (
 	// Learning parameters
-	LearningRate   = 0.01 // Increased for faster learning
-	Gamma          = 0.95 // Slightly reduced to focus more on immediate rewards
+	LearningRate   = 0.005 // Ridotto per un apprendimento più stabile
+	Gamma          = 0.98  // Aumentato per considerare meglio le ricompense future
 	InitialEpsilon = 1.0
-	EpsilonDecay   = 0.999 // Slower decay for better exploration
-	MinEpsilon     = 0.05  // Higher minimum exploration
+	EpsilonDecay   = 0.9995 // Decay più lento per mantenere l'esplorazione più a lungo
+	MinEpsilon     = 0.1    // Minimo più alto per garantire sempre un po' di esplorazione
 
 	DataDir     = "data"
 	WeightsFile = DataDir + "/dqn_weights.gob"
 
 	// DQN hyperparameters
-	BatchSize        = 64     // Increased batch size
-	ReplayBufferSize = 100000 // Larger buffer
-	TargetUpdateFreq = 1000   // More frequent target updates
-	HiddenLayerSize  = 128    // Larger hidden layer
-	MinReplaySize    = 1000
-	InputFeatures    = 10 // Current dir, food dir, distances (3), food dist, length, dangers (3)
-	OutputActions    = 3  // left, forward, right
+	BatchSize        = 128    // Batch size aumentato per training più stabile
+	ReplayBufferSize = 100000 // Manteniamo buffer grande
+	TargetUpdateFreq = 500    // Update più frequenti del target network
+	HiddenLayerSize  = 256    // Layer nascosto più grande per catturare pattern più complessi
+	MinReplaySize    = 2000   // Più esperienza prima di iniziare il training
+	InputFeatures    = 10     // Current dir, food dir, distances (3), food dist, length, dangers (3)
+	OutputActions    = 3      // left, forward, right
 )
 
 // Transition represents a single step in the environment

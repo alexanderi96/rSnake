@@ -26,7 +26,7 @@ func main() {
 	speed := flag.Int("speed", 1, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
-	rl.InitWindow(600, 600, "Snake Game")
+	rl.InitWindow(900, 600, "Snake Game")
 	rl.SetWindowMinSize(600, 600)
 	rl.SetWindowState(rl.FlagWindowResizable)
 	defer rl.CloseWindow()

@@ -20,22 +20,26 @@ const (
 type GameStats struct {
 	Games      []GameRecord `json:"games"`      // Array di record di partita (sia singole che raggruppate)
 	TotalGames int          `json:"totalGames"` // Contatore totale delle partite giocate
+	TotalScore int          `json:"totalScore"` // Somma di tutti i punteggi
+	TotalTime  float64      `json:"totalTime"`  // Somma di tutte le durate
 	mutex      sync.RWMutex `json:"-"`          // Non salvare il mutex in JSON
 }
 
 // GameRecord rappresenta i dati di una partita (singola o raggruppata).
 type GameRecord struct {
-	StartTime        time.Time `json:"startTime"`
-	EndTime          time.Time `json:"endTime"`
-	Score            int       `json:"score"`            // Per partite singole
-	CompressionIndex int       `json:"compressionIndex"` // 0 per partite singole, >0 per gruppi
-	GamesCount       int       `json:"gamesCount"`       // 1 per partite singole, >1 per gruppi
-	AverageScore     float64   `json:"averageScore"`     // Per gruppi
-	MaxScore         int       `json:"maxScore"`         // Per gruppi
-	MinScore         int       `json:"minScore"`         // Per gruppi
-	AverageDuration  float64   `json:"averageDuration"`  // Per gruppi
-	MaxDuration      float64   `json:"maxDuration"`      // Per gruppi
-	MinDuration      float64   `json:"minDuration"`      // Per gruppi
+	StartTime                 time.Time `json:"startTime"`
+	EndTime                   time.Time `json:"endTime"`
+	Score                     int       `json:"score"`                     // Per partite singole
+	CompressionIndex          int       `json:"compressionIndex"`          // 0 per partite singole, >0 per gruppi
+	GamesCount                int       `json:"gamesCount"`                // 1 per partite singole, >1 per gruppi
+	CompressedAverageScore    float64   `json:"compressedAverageScore"`    // Media del gruppo compresso
+	MaxScore                  int       `json:"maxScore"`                  // Per gruppi
+	MinScore                  int       `json:"minScore"`                  // Per gruppi
+	CompressedAverageDuration float64   `json:"compressedAverageDuration"` // Media del gruppo compresso
+	MaxDuration               float64   `json:"maxDuration"`               // Per gruppi
+	MinDuration               float64   `json:"minDuration"`               // Per gruppi
+	RunningAverageScore       float64   `json:"runningAverageScore"`       // Media di tutte le partite fino a questo punto
+	RunningAverageDuration    float64   `json:"runningAverageDuration"`    // Media di tutte le durate fino a questo punto
 }
 
 // NewGameStats crea una nuova istanza di GameStats e tenta di caricare i dati dal file.
@@ -43,6 +47,8 @@ func NewGameStats() *GameStats {
 	stats := &GameStats{
 		Games:      make([]GameRecord, 0),
 		TotalGames: 0,
+		TotalScore: 0,
+		TotalTime:  0,
 	}
 	stats.loadFromFile()
 	return stats
@@ -53,21 +59,26 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	// Incrementa il contatore totale delle partite
+	// Incrementa i contatori totali
 	s.TotalGames++
+	s.TotalScore += score
+	duration := endTime.Sub(startTime).Seconds()
+	s.TotalTime += duration
 
 	game := GameRecord{
-		StartTime:        startTime,
-		EndTime:          endTime,
-		Score:            score,
-		CompressionIndex: 0, // Partita singola
-		GamesCount:       1,
-		AverageScore:     float64(score),
-		MaxScore:         score,
-		MinScore:         score,
-		AverageDuration:  endTime.Sub(startTime).Seconds(),
-		MaxDuration:      endTime.Sub(startTime).Seconds(),
-		MinDuration:      endTime.Sub(startTime).Seconds(),
+		StartTime:                 startTime,
+		EndTime:                   endTime,
+		Score:                     score,
+		CompressionIndex:          0, // Partita singola
+		GamesCount:                1,
+		CompressedAverageScore:    float64(score),
+		MaxScore:                  score,
+		MinScore:                  score,
+		CompressedAverageDuration: duration,
+		MaxDuration:               duration,
+		MinDuration:               duration,
+		RunningAverageScore:       float64(s.TotalScore) / float64(s.TotalGames),
+		RunningAverageDuration:    s.TotalTime / float64(s.TotalGames),
 	}
 	s.Games = append(s.Games, game)
 
@@ -165,7 +176,7 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	totalGames := compressed.GamesCount + 1
 
 	// Calcola le nuove statistiche
-	newAvgScore := (compressed.AverageScore*float64(compressed.GamesCount) + float64(newRecord.Score)) / float64(totalGames)
+	newCompressedAvgScore := (compressed.CompressedAverageScore*float64(compressed.GamesCount) + float64(newRecord.Score)) / float64(totalGames)
 
 	// Per il record compresso, usa i valori esistenti
 	newMaxScore := compressed.MaxScore
@@ -194,11 +205,11 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	if newRecord.GamesCount == 1 {
 		newDuration = newRecord.EndTime.Sub(newRecord.StartTime).Seconds()
 	} else {
-		// Se il nuovo record è già compresso, usa la sua durata media
-		newDuration = newRecord.AverageDuration
+		// Se il nuovo record è già compresso, usa la sua durata media compressa
+		newDuration = newRecord.CompressedAverageDuration
 	}
 
-	newAvgDuration := (compressed.AverageDuration*float64(compressed.GamesCount) + newDuration) / float64(totalGames)
+	newCompressedAvgDuration := (compressed.CompressedAverageDuration*float64(compressed.GamesCount) + newDuration) / float64(totalGames)
 
 	// Aggiorna max/min duration considerando se il record è già compresso
 	newMaxDuration := compressed.MaxDuration
@@ -222,12 +233,14 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 
 	// Aggiorna il record compresso
 	compressed.GamesCount = totalGames
-	compressed.AverageScore = newAvgScore
+	compressed.CompressedAverageScore = newCompressedAvgScore
 	compressed.MaxScore = newMaxScore
 	compressed.MinScore = newMinScore
-	compressed.AverageDuration = newAvgDuration
+	compressed.CompressedAverageDuration = newCompressedAvgDuration
 	compressed.MaxDuration = newMaxDuration
 	compressed.MinDuration = newMinDuration
+	compressed.RunningAverageScore = float64(s.TotalScore) / float64(s.TotalGames)
+	compressed.RunningAverageDuration = s.TotalTime / float64(s.TotalGames)
 	if newRecord.EndTime.After(compressed.EndTime) {
 		compressed.EndTime = newRecord.EndTime
 	}
@@ -275,8 +288,13 @@ func (s *GameStats) GetAverageScore(compressionLevel int) float64 {
 	var totalGames int
 
 	for _, game := range records {
-		totalScore += game.AverageScore * float64(game.GamesCount)
-		totalGames += game.GamesCount
+		if game.CompressionIndex == 0 {
+			totalScore += float64(game.Score)
+			totalGames++
+		} else {
+			totalScore += game.CompressedAverageScore * float64(game.GamesCount)
+			totalGames += game.GamesCount
+		}
 	}
 
 	return totalScore / float64(totalGames)
@@ -362,8 +380,13 @@ func (s *GameStats) GetAverageDuration(compressionLevel int) float64 {
 	var totalGames int
 
 	for _, game := range records {
-		totalDuration += game.AverageDuration * float64(game.GamesCount)
-		totalGames += game.GamesCount
+		if game.CompressionIndex == 0 {
+			totalDuration += game.EndTime.Sub(game.StartTime).Seconds()
+			totalGames++
+		} else {
+			totalDuration += game.CompressedAverageDuration * float64(game.GamesCount)
+			totalGames += game.GamesCount
+		}
 	}
 
 	return totalDuration / float64(totalGames)
