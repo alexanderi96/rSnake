@@ -69,8 +69,12 @@ func NewGame(width, height int) *Game {
 		Height: height,
 	}
 
-	// Create initial snake
-	startPos := Point{X: width / 4, Y: height / 2}
+	// Create initial snake with random position
+	margin := 2 // Mantieni una distanza minima dai bordi
+	startPos := Point{
+		X: rand.Intn(width-2*margin) + margin,  // Posizione casuale tra margin e width-margin
+		Y: rand.Intn(height-2*margin) + margin, // Posizione casuale tra margin e height-margin
+	}
 	color := Color{
 		R: uint8(rand.Intn(200) + 55),
 		G: uint8(rand.Intn(200) + 55),
@@ -207,13 +211,45 @@ func (g *Game) isAdjacent(pos Point) bool {
 	return (dx == 1 && dy == 0) || (dx == 0 && dy == 1)
 }
 
+// minInt returns the smaller of two integers
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// maxInt returns the larger of two integers
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (g *Game) generateFood() Point {
+	// Calcola l'area di spawn basata sulla lunghezza del serpente
+	snakeLength := len(g.snake.Body)
+	areaSize := 1 + (2 * (snakeLength - 1)) // 1x1 a len 1, 3x3 a len 2, 5x5 a len 3
+
+	// Trova il centro della griglia
+	centerX := g.Grid.Width / 2
+	centerY := g.Grid.Height / 2
+
 	for {
+		// Calcola i limiti dell'area di spawn
+		minX := maxInt(0, centerX-areaSize/2)
+		maxX := minInt(g.Grid.Width-1, centerX+areaSize/2)
+		minY := maxInt(0, centerY-areaSize/2)
+		maxY := minInt(g.Grid.Height-1, centerY+areaSize/2)
+
+		// Genera posizione casuale nell'area consentita
 		food := Point{
-			X: rand.Intn(g.Grid.Width),
-			Y: rand.Intn(g.Grid.Height),
+			X: minX + rand.Intn(maxX-minX+1),
+			Y: minY + rand.Intn(maxY-minY+1),
 		}
-		// Check if food position is valid (not on snake)
+
+		// Verifica che la posizione non sia occupata dal serpente
 		valid := true
 		for _, part := range g.snake.Body {
 			if food == part {

@@ -112,21 +112,28 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 		return -10.0
 	}
 
-	// Reward per aver mangiato il cibo
+	// Reward fortemente aumentato per aver mangiato il cibo
 	if snake.Score > oldScore {
 		sa.previousDistance = currentDistance // Reset della distanza dopo aver mangiato
-		return 1.0
+		return 10.0                           // Aumentato da 5.0 a 10.0
 	}
 
-	// Reward shaping basato sulla direzione
+	// Reward shaping basato sulla direzione e distanza
 	reward := -0.01 // Piccola penalità base per ogni step
 
-	// Aggiusta il reward in base alla direzione
+	// Aggiusta il reward in base alla direzione con penalità aumentata
 	if currentDistance < sa.previousDistance {
-		reward += 0.1 // Bonus per avvicinamento al cibo
+		reward += 0.3 // Bonus per avvicinamento al cibo
 	} else if currentDistance > sa.previousDistance {
-		reward -= 0.1 // Penalità per allontanamento dal cibo
+		reward -= 0.3 // Penalità aumentata per allontanamento dal cibo (da -0.1 a -0.3)
 	}
+
+	// Aggiungi reward basato sulla distanza assoluta
+	// Usa una funzione inversamente proporzionale alla distanza
+	// Normalizzata rispetto alla dimensione della griglia per mantenere i valori in scala
+	gridSize := float64(sa.game.Grid.Width + sa.game.Grid.Height)
+	distanceReward := 0.2 * (1.0 - float64(currentDistance)/gridSize)
+	reward += distanceReward
 
 	sa.previousDistance = currentDistance
 	return reward

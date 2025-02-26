@@ -18,24 +18,20 @@ func init() {
 }
 
 const (
-	// Parametri di apprendimento
-	LearningRate   = 0.005 // Increased for faster learning
-	Gamma          = 0.95  // Reduced to focus more on immediate rewards
-	InitialEpsilon = 1.0
-	EpsilonDecay   = 0.99 // More aggressive decay
-	MinEpsilon     = 0.01
-
 	// Parametri DQN
 	BatchSize        = 32
-	ReplayBufferSize = 5000 // Further reduced
-	HiddenLayerSize  = 12   // Increased for more complex state
-	InputFeatures    = 7    // 4 per food direction one-hot + 3 per danger flags
+	ReplayBufferSize = 5000
+	HiddenLayerSize  = 12
+	InputFeatures    = 7 // 4 per food direction one-hot + 3 per danger flags
 	OutputActions    = 3
-	GradientClip     = 0.5 // Reduced for more stable learning
+	GradientClip     = 0.5
 
 	// File paths
 	DataDir     = "data"
 	WeightsFile = DataDir + "/dqn_weights.gob"
+
+	// Parametri di apprendimento continuo
+	MinEpsilon = 0.01 // Epsilon minimo per mantenere sempre un po' di esplorazione
 )
 
 // Transition rappresenta un singolo step nell'ambiente
@@ -67,16 +63,12 @@ type DQN struct {
 
 // Agent rappresenta l'agente DQN
 type Agent struct {
-	dqn             *DQN
-	targetDQN       *DQN
-	replayBuffer    *ReplayBuffer
-	LearningRate    float64
-	Discount        float64
-	Epsilon         float64
-	InitialEpsilon  float64
-	MinEpsilon      float64
-	EpsilonDecay    float64
-	TrainingEpisode int
+	dqn          *DQN
+	targetDQN    *DQN
+	replayBuffer *ReplayBuffer
+	LearningRate float64
+	Discount     float64
+	Epsilon      float64
 }
 
 // NewReplayBuffer crea un nuovo buffer di replay
@@ -212,35 +204,20 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 // NewAgent crea un nuovo agente DQN
 func NewAgent(learningRate, discount, epsilon float64) *Agent {
 	agent := &Agent{
-		dqn:             NewDQN(),
-		targetDQN:       NewDQN(),
-		replayBuffer:    NewReplayBuffer(ReplayBufferSize),
-		LearningRate:    learningRate,
-		Discount:        discount,
-		Epsilon:         InitialEpsilon,
-		InitialEpsilon:  InitialEpsilon,
-		MinEpsilon:      MinEpsilon,
-		EpsilonDecay:    EpsilonDecay,
-		TrainingEpisode: 0,
+		dqn:          NewDQN(),
+		targetDQN:    NewDQN(),
+		replayBuffer: NewReplayBuffer(ReplayBufferSize),
+		LearningRate: learningRate,
+		Discount:     discount,
+		Epsilon:      epsilon,
 	}
 
-	if err := agent.LoadWeights(WeightsFile); err == nil {
-		agent.LearningRate = learningRate
-		agent.Discount = discount
-	}
-
+	agent.LoadWeights(WeightsFile)
 	return agent
 }
 
 // GetAction seleziona un'azione usando la policy epsilon-greedy
 func (a *Agent) GetAction(state []float64, numActions int) int {
-	if a.Epsilon > a.MinEpsilon {
-		a.Epsilon = a.InitialEpsilon * math.Pow(a.EpsilonDecay, float64(a.TrainingEpisode))
-		if a.Epsilon < a.MinEpsilon {
-			a.Epsilon = a.MinEpsilon
-		}
-	}
-
 	if rand.Float64() < a.Epsilon {
 		return rand.Intn(numActions)
 	}
@@ -380,14 +357,10 @@ func copyTensor(target, source *tensor.Dense, tau float64) {
 	}
 }
 
-// IncrementEpisode incrementa il contatore degli episodi
+// IncrementEpisode aggiorna l'epsilon usando una strategia di decadimento più graduale
 func (a *Agent) IncrementEpisode() {
-	a.TrainingEpisode++
-	if a.TrainingEpisode < 1000 {
-		a.Epsilon = math.Max(0.1, a.InitialEpsilon*math.Exp(-float64(a.TrainingEpisode)/500))
-	} else {
-		a.Epsilon = math.Max(0.05, a.InitialEpsilon*math.Exp(-float64(a.TrainingEpisode)/1000))
-	}
+	// Decadimento più lento che mantiene un minimo di esplorazione
+	a.Epsilon = math.Max(MinEpsilon, a.Epsilon*0.9999)
 }
 
 // SaveWeights salva i pesi del DQN su file
