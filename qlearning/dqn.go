@@ -386,11 +386,28 @@ func copyTensor(target, source *tensor.Dense, tau float64) {
 	}
 }
 
+// Cleanup releases resources used by the Agent
+func (a *Agent) Cleanup() {
+	if a.dqn != nil {
+		a.dqn.Cleanup()
+	}
+	if a.targetDQN != nil {
+		a.targetDQN.Cleanup()
+	}
+}
+
 // IncrementEpisode aggiorna l'epsilon usando una strategia ciclica
 func (a *Agent) IncrementEpisode() {
 	a.episodeCount++
 	// Epsilon oscilla tra (baseline-amplitude) e (baseline+amplitude)
 	a.Epsilon = EpsilonBaseline + EpsilonAmplitude*math.Sin(2*math.Pi*float64(a.episodeCount)/EpsilonPeriod)
+}
+
+// Cleanup releases resources used by the DQN
+func (dqn *DQN) Cleanup() {
+	if dqn.vm != nil {
+		dqn.vm.Close()
+	}
 }
 
 // SaveWeights salva i pesi del DQN su file

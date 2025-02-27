@@ -189,9 +189,26 @@ func (sa *SnakeAgent) Reset() {
 	width := sa.game.Grid.Width
 	height := sa.game.Grid.Height
 
+	// Cleanup existing game resources
+	if sa.game != nil {
+		sa.game = nil
+	}
+
+	// Create new game
 	sa.game = NewGame(width, height)
 	sa.game.Stats = existingStats
 	sa.agent.IncrementEpisode()
+}
+
+// Cleanup releases all resources used by the agent
+func (sa *SnakeAgent) Cleanup() {
+	if sa.agent != nil {
+		sa.agent.Cleanup()
+		sa.agent = nil
+	}
+	if sa.game != nil {
+		sa.game = nil
+	}
 }
 
 // SaveWeights salva i pesi della rete neurale su file.
