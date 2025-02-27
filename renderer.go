@@ -89,6 +89,17 @@ func (r *Renderer) Draw(g *Game) {
 		)
 	}
 
+	// Draw playable area
+	minX, maxX, minY, maxY := g.getPlayableArea()
+	playableAreaColor := rl.Color{R: 0, G: 255, B: 0, A: 30} // Verde semi-trasparente
+	rl.DrawRectangle(
+		r.offsetX+int32(minX*int(r.cellSize)),
+		r.offsetY+int32(minY*int(r.cellSize)),
+		int32((maxX-minX+1)*int(r.cellSize)),
+		int32((maxY-minY+1)*int(r.cellSize)),
+		playableAreaColor,
+	)
+
 	// Draw snake
 	snake := g.GetSnake()
 	snake.Mutex.RLock()

@@ -100,38 +100,68 @@ func (sa *SnakeAgent) Update() {
 	sa.agent.Update(currentState, action, reward, newState, 3)
 }
 
+// isFoodInDangerDirection verifica se il cibo è in una direzione pericolosa
+func isFoodInDangerDirection(foodAhead, foodLeft, foodRight float64,
+	dangerAhead, dangerLeft, dangerRight bool) bool {
+	return (foodAhead == 1.0 && dangerAhead) ||
+		(foodLeft == 1.0 && dangerLeft) ||
+		(foodRight == 1.0 && dangerRight)
+}
+
 func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
 
+	// Morte
 	if snake.Dead {
-		return -1.0 // Penalità fissa per morte
+		return -2.0 // Aumentiamo la penalità per la morte
 	}
+
+	// Cibo mangiato
 	if snake.Score > oldScore {
-		return 1.0 // Reward fisso per cibo
+		return 2.0 // Aumentiamo il reward per il cibo
 	}
 
-	// Ottiene i valori dettagliati della direzione del cibo per la direzione scelta
+	// Ottiene informazioni sulla direzione del cibo e sui pericoli
 	foodAhead, foodLeft, foodRight := sa.game.GetDetailedFoodDirections()
+	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
 
-	// Determina quale direzione è stata scelta basandosi sull'azione relativa
-	var chosenDirection float64
+	// Determina la direzione scelta e il relativo pericolo
+	var chosenFoodDir float64
+	var chosenDanger bool
+
 	switch action := sa.game.GetLastAction(); action {
-	case 1: // vai avanti
-		chosenDirection = foodAhead
-	case 0: // ruota a sinistra
-		chosenDirection = foodLeft
-	case 2: // ruota a destra
-		chosenDirection = foodRight
+	case 1: // avanti
+		chosenFoodDir = foodAhead
+		chosenDanger = dangerAhead
+	case 0: // sinistra
+		chosenFoodDir = foodLeft
+		chosenDanger = dangerLeft
+	case 2: // destra
+		chosenFoodDir = foodRight
+		chosenDanger = dangerRight
 	}
 
-	// Reward basato sulla direzione scelta
-	switch chosenDirection {
-	case 1.0:
-		return 0.1 // Premio piccolo per aver scelto la via più breve
-	case 0.0:
-		return 0.0 // Neutrale per una direzione valida ma non ottimale
-	default:
-		return -0.1 // Penalità piccola per aver scelto una direzione sbagliata
+	// Caso speciale: il cibo è nella stessa direzione di un pericolo
+	if isFoodInDangerDirection(foodAhead, foodLeft, foodRight, dangerAhead, dangerLeft, dangerRight) {
+		// Se abbiamo scelto una direzione sicura, premiamo
+		if !chosenDanger {
+			return 0.5 // Premio per aver evitato il pericolo
+		}
+	}
+
+	// Penalità per aver scelto una direzione pericolosa
+	if chosenDanger {
+		return -1.0
+	}
+
+	// Reward basato sulla direzione del cibo scelta
+	switch chosenFoodDir {
+	case 1.0: // Direzione ottimale verso il cibo
+		return 0.8
+	case 0.0: // Direzione neutra
+		return 0.0
+	default: // Direzione che allontana dal cibo
+		return -0.3
 	}
 }
 

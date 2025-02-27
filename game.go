@@ -303,6 +303,26 @@ func maxInt(a, b int) int {
 }
 
 func (g *Game) generateFood() Point {
-	// Food is always at center
-	return Point{X: g.Grid.Width / 2, Y: g.Grid.Height / 2}
+	minX, maxX, minY, maxY := g.getPlayableArea()
+
+	for {
+		// Generate random position within playable area
+		newFood := Point{
+			X: minX + rand.Intn(maxX-minX+1),
+			Y: minY + rand.Intn(maxY-minY+1),
+		}
+
+		// Check if position is occupied by snake
+		occupied := false
+		for _, part := range g.snake.Body {
+			if part == newFood {
+				occupied = true
+				break
+			}
+		}
+
+		if !occupied {
+			return newFood
+		}
+	}
 }
