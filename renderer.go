@@ -6,7 +6,7 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
-const borderPadding = 10 // Padding around game area
+const borderPadding = 0 // No padding
 
 // Colori personalizzati per le statistiche
 var (
@@ -48,16 +48,13 @@ func min(a, b int32) int32 {
 func (r *Renderer) Draw(g *Game) {
 	r.UpdateDimensions()
 	rl.BeginDrawing()
-	rl.ClearBackground(rl.Black)
+	rl.ClearBackground(rl.Gray)
 
 	fontSize := int32(r.screenHeight / 45) // Dynamic font size
 
-	// Calculate graph height
-	graphHeight := int32(150)
-
-	// Calculate available space for grid after border padding and graph
-	availableWidth := r.screenWidth - (borderPadding * 2)
-	availableHeight := r.screenHeight - (borderPadding * 3) - graphHeight // Extra padding for graph separation
+	// Use full screen for grid
+	availableWidth := r.screenWidth
+	availableHeight := r.screenHeight
 
 	// Calculate cell size based on available space and grid dimensions
 	cellW := availableWidth / int32(g.Grid.Width)
@@ -68,102 +65,24 @@ func (r *Renderer) Draw(g *Game) {
 	r.totalGridWidth = r.cellSize * int32(g.Grid.Width)
 	r.totalGridHeight = r.cellSize * int32(g.Grid.Height)
 
-	// Position grid at the top with padding
-	r.offsetX = borderPadding
-	r.offsetY = borderPadding
+	// Position grid at the top left corner
+	r.offsetX = 0
+	r.offsetY = 0
 
-	// Draw grid background with border
-	rl.DrawRectangle(r.offsetX-1, r.offsetY-1, r.totalGridWidth+2, r.totalGridHeight+2, rl.DarkGray)
-	rl.DrawRectangleLinesEx(
-		rl.Rectangle{
-			X:      float32(r.offsetX - 1),
-			Y:      float32(r.offsetY - 1),
-			Width:  float32(r.totalGridWidth + 2),
-			Height: float32(r.totalGridHeight + 2),
-		},
-		2,
-		rl.Red,
-	)
-
-	// Get playable area boundaries
-	minX, maxX, minY, maxY := g.getPlayableArea()
-
-	// Draw non-playable area with semi-transparent overlay
-	nonPlayableColor := rl.Color{R: 40, G: 40, B: 40, A: 200}
-
-	// Left non-playable area
-	if minX > 0 {
-		rl.DrawRectangle(
-			r.offsetX,
-			r.offsetY,
-			int32(minX)*r.cellSize,
-			r.totalGridHeight,
-			nonPlayableColor,
+	// Draw grid
+	gridColor := rl.Color{R: 100, G: 100, B: 100, A: 100} // Colore grigio chiaro semi-trasparente
+	for x := int32(0); x <= int32(g.Grid.Width); x++ {
+		rl.DrawLineV(
+			rl.Vector2{X: float32(r.offsetX + x*r.cellSize), Y: float32(r.offsetY)},
+			rl.Vector2{X: float32(r.offsetX + x*r.cellSize), Y: float32(r.offsetY + r.totalGridHeight)},
+			gridColor,
 		)
 	}
-
-	// Right non-playable area
-	if maxX < g.Grid.Width-1 {
-		rl.DrawRectangle(
-			r.offsetX+int32(maxX+1)*r.cellSize,
-			r.offsetY,
-			r.totalGridWidth-int32(maxX+1)*r.cellSize,
-			r.totalGridHeight,
-			nonPlayableColor,
-		)
-	}
-
-	// Top non-playable area
-	if minY > 0 {
-		rl.DrawRectangle(
-			r.offsetX+int32(minX)*r.cellSize,
-			r.offsetY,
-			int32(maxX-minX+1)*r.cellSize,
-			int32(minY)*r.cellSize,
-			nonPlayableColor,
-		)
-	}
-
-	// Bottom non-playable area
-	if maxY < g.Grid.Height-1 {
-		rl.DrawRectangle(
-			r.offsetX+int32(minX)*r.cellSize,
-			r.offsetY+int32(maxY+1)*r.cellSize,
-			int32(maxX-minX+1)*r.cellSize,
-			r.totalGridHeight-int32(maxY+1)*r.cellSize,
-			nonPlayableColor,
-		)
-	}
-
-	// Draw playable area border
-	rl.DrawRectangleLinesEx(
-		rl.Rectangle{
-			X:      float32(r.offsetX + int32(minX)*r.cellSize),
-			Y:      float32(r.offsetY + int32(minY)*r.cellSize),
-			Width:  float32((maxX - minX + 1) * int(r.cellSize)),
-			Height: float32((maxY - minY + 1) * int(r.cellSize)),
-		},
-		2,
-		rl.Yellow,
-	)
-
-	// Draw grid lines
-	for x := 0; x <= g.Grid.Width; x++ {
-		rl.DrawLine(
-			r.offsetX+int32(x*int(r.cellSize)),
-			r.offsetY,
-			r.offsetX+int32(x*int(r.cellSize)),
-			r.offsetY+r.totalGridHeight,
-			rl.Color{R: 50, G: 50, B: 50, A: 255},
-		)
-	}
-	for y := 0; y <= g.Grid.Height; y++ {
-		rl.DrawLine(
-			r.offsetX,
-			r.offsetY+int32(y*int(r.cellSize)),
-			r.offsetX+r.totalGridWidth,
-			r.offsetY+int32(y*int(r.cellSize)),
-			rl.Color{R: 50, G: 50, B: 50, A: 255},
+	for y := int32(0); y <= int32(g.Grid.Height); y++ {
+		rl.DrawLineV(
+			rl.Vector2{X: float32(r.offsetX), Y: float32(r.offsetY + y*r.cellSize)},
+			rl.Vector2{X: float32(r.offsetX + r.totalGridWidth), Y: float32(r.offsetY + y*r.cellSize)},
+			gridColor,
 		)
 	}
 
@@ -236,22 +155,26 @@ func (r *Renderer) Draw(g *Game) {
 		return
 	}
 
-	// Draw stats with fixed spacing
-	yOffset := r.offsetY + r.totalGridHeight + borderPadding
-	xOffset := r.offsetX + 10
-	spacing := int32(180) // Fixed spacing between stats
+	// Define graph dimensions
+	graphHeight := int32(150)
+	graphY := r.screenHeight - graphHeight
+
+	// Draw stats vertically above the graph
+	yOffset := graphY - int32(fontSize*6) // Space for 5 lines of stats plus padding
+	xOffset := r.offsetX + int32(10)      // Small left padding
+	lineSpacing := fontSize + 5           // Space between lines
 
 	// Score
 	scoreLabel := fmt.Sprintf("Score: %d", score)
 	rl.DrawText(scoreLabel, xOffset, yOffset, fontSize, rl.White)
-	xOffset += spacing
+	yOffset += lineSpacing
 
 	// Total games
 	rl.DrawText(fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
 		xOffset,
 		yOffset,
 		fontSize, rl.White)
-	xOffset += spacing
+	yOffset += lineSpacing
 
 	// Max score and its average (verde)
 	maxScore := r.stats.GetAbsoluteMaxScore()
@@ -259,7 +182,7 @@ func (r *Renderer) Draw(g *Game) {
 		xOffset,
 		yOffset,
 		fontSize, scoreColor)
-	xOffset += spacing
+	yOffset += lineSpacing
 
 	// Get the latest game record for averages
 	latestGame := stats[len(stats)-1]
@@ -269,7 +192,7 @@ func (r *Renderer) Draw(g *Game) {
 		xOffset,
 		yOffset,
 		fontSize, avgScoreColor)
-	xOffset += spacing
+	yOffset += lineSpacing
 
 	// Average max duration (viola chiaro)
 	rl.DrawText(fmt.Sprintf("Avg Max Time: %.1fs", latestGame.AverageMaxDuration),
@@ -291,12 +214,10 @@ func (r *Renderer) Draw(g *Game) {
 }
 
 func (r *Renderer) drawStatsGraph() {
+	// Graph dimensions are now defined in Draw()
 	graphHeight := int32(150)
-	graphWidth := r.screenWidth - (borderPadding * 2)
-	graphY := r.screenHeight - graphHeight - borderPadding
-
-	// Draw graph background
-	rl.DrawRectangle(borderPadding, graphY, graphWidth, graphHeight, rl.DarkGray)
+	graphWidth := r.screenWidth
+	graphY := r.screenHeight - graphHeight
 
 	// Get stats data
 	stats := r.stats.GetStats()

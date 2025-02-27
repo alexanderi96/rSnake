@@ -34,8 +34,8 @@ func main() {
 	rl.SetTargetFPS(999)
 
 	// Calculate initial grid dimensions
-	width := (rl.GetScreenWidth() - 20) / 20
-	height := (rl.GetScreenHeight() - 190) / 20
+	width := rl.GetScreenWidth() / 20
+	height := rl.GetScreenHeight() / 20
 	game := NewGame(width, height)
 	agent := NewSnakeAgent(game)
 	renderer := NewRenderer()
