@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
@@ -10,11 +11,12 @@ const borderPadding = 0 // No padding
 
 // Colori personalizzati per le statistiche
 var (
-	scoreColor       = rl.Color{R: 0, G: 180, B: 0, A: 255}     // Verde scuro
-	avgScoreColor    = rl.Color{R: 144, G: 238, B: 144, A: 255} // Verde chiaro
-	durationColor    = rl.Color{R: 128, G: 0, B: 128, A: 255}   // Viola scuro
-	avgDurationColor = rl.Color{R: 216, G: 191, B: 216, A: 255} // Viola chiaro
-	epsilonColor     = rl.Color{R: 255, G: 165, B: 0, A: 255}   // Arancione
+	scoreColor          = rl.Color{R: 0, G: 180, B: 0, A: 255}     // Verde scuro
+	avgScoreColor       = rl.Color{R: 144, G: 238, B: 144, A: 255} // Verde chiaro
+	durationColor       = rl.Color{R: 128, G: 0, B: 128, A: 255}   // Viola scuro
+	avgDurationColor    = rl.Color{R: 216, G: 191, B: 216, A: 255} // Viola chiaro
+	epsilonColor        = rl.Color{R: 255, G: 165, B: 0, A: 255}   // Arancione
+	compressionIndColor = rl.Color{R: 255, G: 0, B: 0, A: 255}     // Rosso per indicatori di compressione
 )
 
 type Renderer struct {
@@ -221,6 +223,37 @@ func (r *Renderer) Draw(g *Game) {
 	rl.EndDrawing()
 }
 
+// drawCompressionIndicator disegna una barra verticale rossa con l'indicatore del livello di compressione
+func (r *Renderer) drawCompressionIndicator(x float32, graphY, graphHeight int32, compressionIndex int) {
+	const (
+		indicatorWidth = 2 // Larghezza della barra verticale
+		textPadding    = 5 // Padding sopra il grafico per il testo
+	)
+
+	// Disegna la barra verticale
+	rl.DrawRectangle(
+		int32(x-indicatorWidth/2),
+		graphY,
+		indicatorWidth,
+		graphHeight,
+		compressionIndColor,
+	)
+
+	// Calcola e disegna il testo dell'indicatore (x10, x100, ecc.)
+	compressionText := fmt.Sprintf("x%d", int(math.Pow10(compressionIndex)))
+	fontSize := int32(20)
+	textWidth := rl.MeasureText(compressionText, fontSize)
+
+	// Posiziona il testo centrato sopra la barra
+	rl.DrawText(
+		compressionText,
+		int32(x)-textWidth/2,
+		graphY-fontSize-textPadding,
+		fontSize,
+		compressionIndColor,
+	)
+}
+
 func (r *Renderer) drawStatsGraph() {
 	// Graph dimensions are now defined in Draw()
 	graphHeight := int32(150)
@@ -269,6 +302,27 @@ func (r *Renderer) drawStatsGraph() {
 		barSpacing = float32(6) // Space between score and duration bars
 		barAlpha   = uint8(180) // Standard alpha for bars
 	)
+
+	// Draw compression indicators first (so they appear behind the data)
+	for i, game := range sortedStats {
+		if game.CompressionIndex > 0 {
+			// Verifica se è l'ultimo elemento del suo livello di compressione
+			isLast := true
+			if i < len(sortedStats)-1 {
+				isLast = sortedStats[i+1].CompressionIndex != game.CompressionIndex
+			}
+
+			// Se è l'ultimo elemento, disegna l'indicatore alla posizione dell'elemento successivo
+			if isLast && i < len(sortedStats)-1 {
+				nextX := currentX + pointSpacing
+				r.drawCompressionIndicator(nextX, graphY, graphHeight, game.CompressionIndex)
+			}
+		}
+		currentX += pointSpacing
+	}
+
+	// Reset currentX for drawing the data
+	currentX = float32(borderPadding)
 
 	// Draw all records chronologically
 	for i, game := range sortedStats {

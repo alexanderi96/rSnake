@@ -28,15 +28,15 @@ func (sa *SnakeAgent) getManhattanDistance() int {
 
 // getState restituisce il vettore di stato semplificato come []float64
 func (sa *SnakeAgent) getState() []float64 {
-	// One-hot encoding per la direzione del cibo
-	foodDir := sa.game.GetRelativeFoodDirection()
-	foodDirOneHot := make([]float64, 4)
-	foodDirOneHot[foodDir] = 1.0
+	// Ottiene i valori dettagliati della direzione del cibo (-1, 0, 1)
+	foodAhead, foodLeft, foodRight := sa.game.GetDetailedFoodDirections()
+
+	// Aggiunge un valore extra per mantenere la dimensione dello stato a 7
+	// (questo valore sarà sempre 0 e serve solo per compatibilità con la rete esistente)
+	foodDirs := []float64{foodAhead, foodLeft, foodRight, 0.0}
 
 	// Flag di pericolo immediato
 	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
-
-	// Converte i bool in float64
 	dangers := []float64{
 		boolToFloat64(dangerAhead),
 		boolToFloat64(dangerLeft),
@@ -44,7 +44,7 @@ func (sa *SnakeAgent) getState() []float64 {
 	}
 
 	// Combina i vettori
-	return append(foodDirOneHot, dangers...)
+	return append(foodDirs, dangers...)
 }
 
 // boolToFloat64 converte un bool in float64
@@ -89,6 +89,7 @@ func (sa *SnakeAgent) Update() {
 
 	// Applica l'azione e calcola il reward
 	oldScore := sa.game.GetSnake().Score
+	sa.game.SetLastAction(action) // Salva l'azione eseguita
 	sa.game.GetSnake().SetDirection(newDir)
 	sa.game.Update()
 
@@ -109,7 +110,30 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	if snake.Score > oldScore {
 		return 1.0 // Reward fisso per cibo
 	}
-	return 0.0 // Nessuna penalità per movimento
+
+	// Ottiene i valori dettagliati della direzione del cibo per la direzione scelta
+	foodAhead, foodLeft, foodRight := sa.game.GetDetailedFoodDirections()
+
+	// Determina quale direzione è stata scelta basandosi sull'azione relativa
+	var chosenDirection float64
+	switch action := sa.game.GetLastAction(); action {
+	case 1: // vai avanti
+		chosenDirection = foodAhead
+	case 0: // ruota a sinistra
+		chosenDirection = foodLeft
+	case 2: // ruota a destra
+		chosenDirection = foodRight
+	}
+
+	// Reward basato sulla direzione scelta
+	switch chosenDirection {
+	case 1.0:
+		return 0.1 // Premio piccolo per aver scelto la via più breve
+	case 0.0:
+		return 0.0 // Neutrale per una direzione valida ma non ottimale
+	default:
+		return -0.1 // Penalità piccola per aver scelto una direzione sbagliata
+	}
 }
 
 // GetEpsilon returns the current epsilon value

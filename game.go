@@ -42,12 +42,13 @@ const (
 )
 
 type Game struct {
-	Grid      Grid
-	snake     *Snake
-	food      Point
-	Steps     int
-	StartTime time.Time
-	Stats     *GameStats
+	Grid       Grid
+	snake      *Snake
+	food       Point
+	Steps      int
+	StartTime  time.Time
+	Stats      *GameStats
+	lastAction int // 0: sinistra, 1: avanti, 2: destra
 }
 
 func NewSnake(startPos Point, color Color) *Snake {
@@ -89,11 +90,12 @@ func NewGame(width, height int) *Game {
 			Width:  width,
 			Height: height,
 		},
-		snake:     &Snake{},
-		food:      Point{X: width / 2, Y: height / 2}, // Food starts at center
-		Steps:     0,
-		StartTime: time.Now(),
-		Stats:     NewGameStats(),
+		snake:      &Snake{},
+		food:       Point{X: width / 2, Y: height / 2}, // Food starts at center
+		Steps:      0,
+		StartTime:  time.Now(),
+		Stats:      NewGameStats(),
+		lastAction: 1, // Inizia andando avanti
 	}
 
 	// Get initial playable area
@@ -193,6 +195,16 @@ func (g *Game) validatePositions() {
 	} else if g.food.Y < 0 {
 		g.food.Y = 0
 	}
+}
+
+// GetLastAction restituisce l'ultima azione eseguita
+func (g *Game) GetLastAction() int {
+	return g.lastAction
+}
+
+// SetLastAction imposta l'ultima azione eseguita
+func (g *Game) SetLastAction(action int) {
+	g.lastAction = action
 }
 
 func (g *Game) Update() {
