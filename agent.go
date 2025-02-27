@@ -110,15 +110,18 @@ func isFoodInDangerDirection(foodAhead, foodLeft, foodRight float64,
 
 func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
+	reward := -0.01 // Piccola penalità per ogni step per incentivare percorsi più brevi
 
 	// Morte
 	if snake.Dead {
-		return -2.0 // Aumentiamo la penalità per la morte
+		return -3.0 // Aumentata penalità per la morte
 	}
 
-	// Cibo mangiato
+	// Cibo mangiato (reward proporzionale alla lunghezza)
 	if snake.Score > oldScore {
-		return 2.0 // Aumentiamo il reward per il cibo
+		baseReward := 2.0
+		lengthBonus := float64(snake.Score) * 0.1 // Bonus crescente con la lunghezza
+		return baseReward + lengthBonus
 	}
 
 	// Ottiene informazioni sulla direzione del cibo e sui pericoli
@@ -141,28 +144,38 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 		chosenDanger = dangerRight
 	}
 
-	// Caso speciale: il cibo è nella stessa direzione di un pericolo
+	// Caso speciale: il cibo è in una direzione pericolosa
 	if isFoodInDangerDirection(foodAhead, foodLeft, foodRight, dangerAhead, dangerLeft, dangerRight) {
-		// Se abbiamo scelto una direzione sicura, premiamo
 		if !chosenDanger {
-			return 0.5 // Premio per aver evitato il pericolo
+			reward += 0.8 // Aumentato premio per aver evitato il pericolo
 		}
 	}
 
 	// Penalità per aver scelto una direzione pericolosa
 	if chosenDanger {
-		return -1.0
+		reward -= 1.5 // Aumentata penalità per scelte pericolose
 	}
 
 	// Reward basato sulla direzione del cibo scelta
 	switch chosenFoodDir {
 	case 1.0: // Direzione ottimale verso il cibo
-		return 0.8
+		reward += 1.0
 	case 0.0: // Direzione neutra
-		return 0.0
+		reward += 0.0
 	default: // Direzione che allontana dal cibo
-		return -0.3
+		reward -= 0.5
 	}
+
+	// Reward basato sulla distanza dal cibo
+	oldDist := sa.getManhattanDistance()
+	newDist := abs(snake.Body[0].X-sa.game.food.X) + abs(snake.Body[0].Y-sa.game.food.Y)
+	if newDist < oldDist {
+		reward += 0.3 // Premio per avvicinarsi al cibo
+	} else if newDist > oldDist {
+		reward -= 0.2 // Penalità per allontanarsi dal cibo
+	}
+
+	return reward
 }
 
 // GetEpsilon returns the current epsilon value

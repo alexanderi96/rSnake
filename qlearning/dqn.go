@@ -19,12 +19,15 @@ func init() {
 
 const (
 	// Parametri DQN
-	BatchSize        = 32
-	ReplayBufferSize = 5000
-	HiddenLayerSize  = 24 // Aumentato da 12 a 24 per dare più capacità alla rete
-	InputFeatures    = 6  // 3 per food direction + 3 per danger flags
+	BatchSize        = 64    // Aumentato da 32 a 64
+	ReplayBufferSize = 10000 // Aumentato da 5000 a 10000
+	HiddenLayer1Size = 64    // Primo hidden layer più grande
+	HiddenLayer2Size = 32    // Secondo hidden layer aggiunto
+	InputFeatures    = 6     // 3 per food direction + 3 per danger flags
 	OutputActions    = 3
 	GradientClip     = 0.5
+	DropoutRate      = 0.2  // Aggiunto dropout per migliorare generalizzazione
+	TauUpdate        = 0.01 // Aumentato da 0.001 a 0.01 per aggiornamenti più rapidi del target network
 
 	// File paths
 	DataDir     = "data"
@@ -32,8 +35,8 @@ const (
 
 	// Parametri epsilon ciclico
 	EpsilonBaseline  = 0.2    // Valore base dell'epsilon
-	EpsilonAmplitude = 0.15   // Ampiezza dell'oscillazione
-	EpsilonPeriod    = 1000.0 // Periodo del ciclo in episodi
+	EpsilonAmplitude = 0.1    // Ridotto da 0.15 a 0.1
+	EpsilonPeriod    = 5000.0 // Aumentato da 1000 a 5000 episodi
 )
 
 // Transition rappresenta un singolo step nell'ambiente
@@ -55,12 +58,12 @@ type ReplayBuffer struct {
 
 // DQN rappresenta la rete neurale
 type DQN struct {
-	g      *gorgonia.ExprGraph
-	w1, w2 *gorgonia.Node
-	b1, b2 *gorgonia.Node
-	pred   *gorgonia.Node
-	vm     gorgonia.VM
-	solver gorgonia.Solver
+	g          *gorgonia.ExprGraph
+	w1, w2, w3 *gorgonia.Node
+	b1, b2, b3 *gorgonia.Node
+	pred       *gorgonia.Node
+	vm         gorgonia.VM
+	solver     gorgonia.Solver
 }
 
 // Agent rappresenta l'agente DQN
@@ -71,7 +74,7 @@ type Agent struct {
 	LearningRate float64
 	Discount     float64
 	Epsilon      float64
-	episodeCount int // Contatore per l'epsilon ciclico
+	episodeCount int
 }
 
 // NewReplayBuffer crea un nuovo buffer di replay
@@ -111,24 +114,35 @@ func (b *ReplayBuffer) Sample(batchSize int) []Transition {
 func NewDQN() *DQN {
 	g := gorgonia.NewGraph()
 
-	// Input layer -> Hidden layer
+	// Input layer -> First Hidden layer
 	w1 := gorgonia.NewMatrix(g,
 		tensor.Float64,
-		gorgonia.WithShape(InputFeatures, HiddenLayerSize),
+		gorgonia.WithShape(InputFeatures, HiddenLayer1Size),
 		gorgonia.WithInit(gorgonia.GlorotU(1.0)))
 
 	b1 := gorgonia.NewMatrix(g,
 		tensor.Float64,
-		gorgonia.WithShape(1, HiddenLayerSize),
+		gorgonia.WithShape(1, HiddenLayer1Size),
 		gorgonia.WithInit(gorgonia.Zeroes()))
 
-	// Hidden layer -> Output layer
+	// First Hidden layer -> Second Hidden layer
 	w2 := gorgonia.NewMatrix(g,
 		tensor.Float64,
-		gorgonia.WithShape(HiddenLayerSize, OutputActions),
+		gorgonia.WithShape(HiddenLayer1Size, HiddenLayer2Size),
 		gorgonia.WithInit(gorgonia.GlorotU(1.0)))
 
 	b2 := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(1, HiddenLayer2Size),
+		gorgonia.WithInit(gorgonia.Zeroes()))
+
+	// Second Hidden layer -> Output layer
+	w3 := gorgonia.NewMatrix(g,
+		tensor.Float64,
+		gorgonia.WithShape(HiddenLayer2Size, OutputActions),
+		gorgonia.WithInit(gorgonia.GlorotU(1.0)))
+
+	b3 := gorgonia.NewMatrix(g,
 		tensor.Float64,
 		gorgonia.WithShape(1, OutputActions),
 		gorgonia.WithInit(gorgonia.Zeroes()))
@@ -137,9 +151,11 @@ func NewDQN() *DQN {
 		g:      g,
 		w1:     w1,
 		w2:     w2,
+		w3:     w3,
 		b1:     b1,
 		b2:     b2,
-		solver: gorgonia.NewAdamSolver(gorgonia.WithL2Reg(1e-6)),
+		b3:     b3,
+		solver: gorgonia.NewAdamSolver(gorgonia.WithL2Reg(1e-6), gorgonia.WithLearnRate(0.01)), // Ridotto learning rate
 	}
 
 	dqn.vm = gorgonia.NewTapeMachine(g)
@@ -172,16 +188,24 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 		return gorgonia.Mul(onesNode, bias)
 	}
 
-	// Hidden layer con ReLU
+	// First Hidden layer con ReLU e Dropout
 	h1 := gorgonia.Must(gorgonia.Mul(statesNode, dqn.w1))
 	expandedBias1 := gorgonia.Must(expandBias(dqn.b1, batchSize))
 	h1 = gorgonia.Must(gorgonia.Add(h1, expandedBias1))
 	h1 = gorgonia.Must(gorgonia.Rectify(h1))
+	h1 = gorgonia.Must(gorgonia.Dropout(h1, DropoutRate))
+
+	// Second Hidden layer con ReLU e Dropout
+	h2 := gorgonia.Must(gorgonia.Mul(h1, dqn.w2))
+	expandedBias2 := gorgonia.Must(expandBias(dqn.b2, batchSize))
+	h2 = gorgonia.Must(gorgonia.Add(h2, expandedBias2))
+	h2 = gorgonia.Must(gorgonia.Rectify(h2))
+	h2 = gorgonia.Must(gorgonia.Dropout(h2, DropoutRate))
 
 	// Output layer
-	output := gorgonia.Must(gorgonia.Mul(h1, dqn.w2))
-	expandedBias2 := gorgonia.Must(expandBias(dqn.b2, batchSize))
-	pred := gorgonia.Must(gorgonia.Add(output, expandedBias2))
+	output := gorgonia.Must(gorgonia.Mul(h2, dqn.w3))
+	expandedBias3 := gorgonia.Must(expandBias(dqn.b3, batchSize))
+	pred := gorgonia.Must(gorgonia.Add(output, expandedBias3))
 
 	if err := dqn.vm.RunAll(); err != nil {
 		return nil, fmt.Errorf("forward pass error: %v", err)
@@ -311,7 +335,7 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 	loss := gorgonia.Must(gorgonia.Mean(gorgonia.Must(gorgonia.Square(diff))))
 
 	// Backpropagation con gradient clipping
-	nodes := gorgonia.Nodes{a.dqn.w1, a.dqn.w2, a.dqn.b1, a.dqn.b2}
+	nodes := gorgonia.Nodes{a.dqn.w1, a.dqn.w2, a.dqn.w3, a.dqn.b1, a.dqn.b2, a.dqn.b3}
 	gorgonia.Grad(loss, nodes...)
 
 	if err := a.dqn.vm.RunAll(); err != nil {
@@ -339,17 +363,18 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 	a.dqn.solver.Step(grads)
 	a.dqn.vm.Reset()
 
-	// Soft update del target network
+	// Soft update del target network con tau aumentato
 	copyWeights(a.targetDQN, a.dqn)
 }
 
 // copyWeights copia i pesi dal DQN principale al target network
 func copyWeights(target, source *DQN) {
-	tau := 0.001 // Soft update rate
-	copyTensor(target.w1.Value().(*tensor.Dense), source.w1.Value().(*tensor.Dense), tau)
-	copyTensor(target.w2.Value().(*tensor.Dense), source.w2.Value().(*tensor.Dense), tau)
-	copyTensor(target.b1.Value().(*tensor.Dense), source.b1.Value().(*tensor.Dense), tau)
-	copyTensor(target.b2.Value().(*tensor.Dense), source.b2.Value().(*tensor.Dense), tau)
+	copyTensor(target.w1.Value().(*tensor.Dense), source.w1.Value().(*tensor.Dense), TauUpdate)
+	copyTensor(target.w2.Value().(*tensor.Dense), source.w2.Value().(*tensor.Dense), TauUpdate)
+	copyTensor(target.w3.Value().(*tensor.Dense), source.w3.Value().(*tensor.Dense), TauUpdate)
+	copyTensor(target.b1.Value().(*tensor.Dense), source.b1.Value().(*tensor.Dense), TauUpdate)
+	copyTensor(target.b2.Value().(*tensor.Dense), source.b2.Value().(*tensor.Dense), TauUpdate)
+	copyTensor(target.b3.Value().(*tensor.Dense), source.b3.Value().(*tensor.Dense), TauUpdate)
 }
 
 // copyTensor esegue un soft update dei pesi
@@ -384,8 +409,10 @@ func (a *Agent) SaveWeights(filename string) error {
 	weights := map[string]*tensor.Dense{
 		"w1": a.dqn.w1.Value().(*tensor.Dense),
 		"w2": a.dqn.w2.Value().(*tensor.Dense),
+		"w3": a.dqn.w3.Value().(*tensor.Dense),
 		"b1": a.dqn.b1.Value().(*tensor.Dense),
 		"b2": a.dqn.b2.Value().(*tensor.Dense),
+		"b3": a.dqn.b3.Value().(*tensor.Dense),
 	}
 
 	if err := enc.Encode(weights); err != nil {
@@ -420,6 +447,10 @@ func (a *Agent) LoadWeights(filename string) error {
 		tensor.Copy(a.dqn.w2.Value().(*tensor.Dense), w2)
 		tensor.Copy(a.targetDQN.w2.Value().(*tensor.Dense), w2)
 	}
+	if w3, ok := weights["w3"]; ok {
+		tensor.Copy(a.dqn.w3.Value().(*tensor.Dense), w3)
+		tensor.Copy(a.targetDQN.w3.Value().(*tensor.Dense), w3)
+	}
 	if b1, ok := weights["b1"]; ok {
 		tensor.Copy(a.dqn.b1.Value().(*tensor.Dense), b1)
 		tensor.Copy(a.targetDQN.b1.Value().(*tensor.Dense), b1)
@@ -427,6 +458,10 @@ func (a *Agent) LoadWeights(filename string) error {
 	if b2, ok := weights["b2"]; ok {
 		tensor.Copy(a.dqn.b2.Value().(*tensor.Dense), b2)
 		tensor.Copy(a.targetDQN.b2.Value().(*tensor.Dense), b2)
+	}
+	if b3, ok := weights["b3"]; ok {
+		tensor.Copy(a.dqn.b3.Value().(*tensor.Dense), b3)
+		tensor.Copy(a.targetDQN.b3.Value().(*tensor.Dense), b3)
 	}
 
 	return nil
