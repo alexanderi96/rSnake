@@ -14,6 +14,7 @@ var (
 	avgScoreColor    = rl.Color{R: 144, G: 238, B: 144, A: 255} // Verde chiaro
 	durationColor    = rl.Color{R: 128, G: 0, B: 128, A: 255}   // Viola scuro
 	avgDurationColor = rl.Color{R: 216, G: 191, B: 216, A: 255} // Viola chiaro
+	epsilonColor     = rl.Color{R: 255, G: 165, B: 0, A: 255}   // Arancione
 )
 
 type Renderer struct {
@@ -199,6 +200,13 @@ func (r *Renderer) Draw(g *Game) {
 		xOffset,
 		yOffset,
 		fontSize, avgDurationColor)
+	yOffset += lineSpacing
+
+	// Current epsilon value (arancione)
+	rl.DrawText(fmt.Sprintf("Epsilon: %.3f", latestGame.Epsilon),
+		xOffset,
+		yOffset,
+		fontSize, epsilonColor)
 
 	// Draw food
 	food := g.GetFood()
@@ -396,6 +404,22 @@ func (r *Renderer) drawStatsGraph() {
 				int32(nextX+barSpacing/2),
 				int32(nextAvgMaxDurationY),
 				avgDurationColor)
+
+			// Draw epsilon line
+			epsilonY := float32(graphY+graphHeight) - float32(game.Epsilon)*float32(graphHeight-40)
+			nextEpsilonY := float32(graphY+graphHeight) - float32(nextGame.Epsilon)*float32(graphHeight-40)
+			rl.DrawLine(
+				int32(currentX),
+				int32(epsilonY),
+				int32(nextX),
+				int32(nextEpsilonY),
+				epsilonColor)
+			// Draw epsilon point
+			rl.DrawCircle(
+				int32(currentX),
+				int32(epsilonY),
+				3,
+				epsilonColor)
 		}
 
 		currentX += pointSpacing

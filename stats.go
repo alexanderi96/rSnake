@@ -42,6 +42,7 @@ type GameRecord struct {
 	AverageMinScore           float64   `json:"averageMinScore"`           // Media dei punteggi minimi
 	AverageMaxDuration        float64   `json:"averageMaxDuration"`        // Media delle durate massime
 	AverageMinDuration        float64   `json:"averageMinDuration"`        // Media delle durate minime
+	Epsilon                   float64   `json:"epsilon"`                   // Valore epsilon al momento della partita
 }
 
 // NewGameStats crea una nuova istanza di GameStats e tenta di caricare i dati dal file.
@@ -57,7 +58,7 @@ func NewGameStats() *GameStats {
 }
 
 // AddGame aggiunge una nuova partita alle statistiche.
-func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
+func (s *GameStats) AddGame(score int, startTime, endTime time.Time, epsilon float64) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -83,6 +84,7 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time) {
 		AverageMinScore:           float64(score),
 		AverageMaxDuration:        duration,
 		AverageMinDuration:        duration,
+		Epsilon:                   epsilon,
 	}
 	s.Games = append(s.Games, game)
 
@@ -248,6 +250,8 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	compressed.AverageMinScore = (compressed.AverageMinScore*float64(compressed.GamesCount-1) + float64(newMinScore)) / float64(totalGames)
 	compressed.AverageMaxDuration = (compressed.AverageMaxDuration*float64(compressed.GamesCount-1) + newMaxDuration) / float64(totalGames)
 	compressed.AverageMinDuration = (compressed.AverageMinDuration*float64(compressed.GamesCount-1) + newMinDuration) / float64(totalGames)
+	// Calcola la media dell'epsilon
+	compressed.Epsilon = (compressed.Epsilon*float64(compressed.GamesCount-1) + newRecord.Epsilon) / float64(totalGames)
 
 	if newRecord.EndTime.After(compressed.EndTime) {
 		compressed.EndTime = newRecord.EndTime

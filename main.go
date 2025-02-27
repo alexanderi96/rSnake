@@ -57,7 +57,7 @@ func main() {
 		// Check if snake is dead and needs to be reset
 		if snake.Dead {
 			// Save stats before reset
-			renderer.stats.AddGame(snake.Score, gameStartTime, time.Now())
+			renderer.stats.AddGame(snake.Score, gameStartTime, time.Now(), agent.GetEpsilon())
 			gameStartTime = time.Time{} // Reset start time
 
 			// Reset agent with new game

@@ -30,8 +30,10 @@ const (
 	DataDir     = "data"
 	WeightsFile = DataDir + "/dqn_weights.gob"
 
-	// Parametri di apprendimento continuo
-	MinEpsilon = 0.01 // Epsilon minimo per mantenere sempre un po' di esplorazione
+	// Parametri epsilon ciclico
+	EpsilonBaseline  = 0.2    // Valore base dell'epsilon
+	EpsilonAmplitude = 0.15   // Ampiezza dell'oscillazione
+	EpsilonPeriod    = 1000.0 // Periodo del ciclo in episodi
 )
 
 // Transition rappresenta un singolo step nell'ambiente
@@ -69,6 +71,7 @@ type Agent struct {
 	LearningRate float64
 	Discount     float64
 	Epsilon      float64
+	episodeCount int // Contatore per l'epsilon ciclico
 }
 
 // NewReplayBuffer crea un nuovo buffer di replay
@@ -210,6 +213,7 @@ func NewAgent(learningRate, discount, epsilon float64) *Agent {
 		LearningRate: learningRate,
 		Discount:     discount,
 		Epsilon:      epsilon,
+		episodeCount: 0,
 	}
 
 	agent.LoadWeights(WeightsFile)
@@ -357,10 +361,11 @@ func copyTensor(target, source *tensor.Dense, tau float64) {
 	}
 }
 
-// IncrementEpisode aggiorna l'epsilon usando una strategia di decadimento più graduale
+// IncrementEpisode aggiorna l'epsilon usando una strategia ciclica
 func (a *Agent) IncrementEpisode() {
-	// Decadimento più lento che mantiene un minimo di esplorazione
-	a.Epsilon = math.Max(MinEpsilon, a.Epsilon*0.9999)
+	a.episodeCount++
+	// Epsilon oscilla tra (baseline-amplitude) e (baseline+amplitude)
+	a.Epsilon = EpsilonBaseline + EpsilonAmplitude*math.Sin(2*math.Pi*float64(a.episodeCount)/EpsilonPeriod)
 }
 
 // SaveWeights salva i pesi del DQN su file
