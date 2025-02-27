@@ -22,7 +22,7 @@ const (
 	BatchSize        = 32
 	ReplayBufferSize = 5000
 	HiddenLayerSize  = 24 // Aumentato da 12 a 24 per dare più capacità alla rete
-	InputFeatures    = 7  // 4 per food direction one-hot + 3 per danger flags
+	InputFeatures    = 6  // 3 per food direction + 3 per danger flags
 	OutputActions    = 3
 	GradientClip     = 0.5
 

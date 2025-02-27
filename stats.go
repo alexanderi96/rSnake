@@ -349,6 +349,53 @@ func (s *GameStats) GetMaxScore(compressionLevel int) int {
 	return maxScore
 }
 
+// GetEpisodesSinceLastMaxScore calcola il numero di episodi trascorsi dall'ultima volta che si è ottenuto un nuovo punteggio massimo
+func (s *GameStats) GetEpisodesSinceLastMaxScore() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	if len(s.Games) == 0 {
+		return 0
+	}
+
+	maxScore := 0
+	episodesSinceMax := 0
+
+	// Prima troviamo il punteggio massimo
+	for _, game := range s.Games {
+		currentScore := 0
+		if game.GamesCount == 1 {
+			currentScore = game.Score
+		} else {
+			currentScore = game.MaxScore
+		}
+		if currentScore > maxScore {
+			maxScore = currentScore
+		}
+	}
+
+	// Ora contiamo gli episodi dopo la prima volta che abbiamo raggiunto il massimo
+	foundMax := false
+	for _, game := range s.Games {
+		currentScore := 0
+		if game.GamesCount == 1 {
+			currentScore = game.Score
+		} else {
+			currentScore = game.MaxScore
+		}
+
+		if !foundMax {
+			if currentScore == maxScore {
+				foundMax = true
+			}
+		} else {
+			episodesSinceMax += game.GamesCount
+		}
+	}
+
+	return episodesSinceMax
+}
+
 // GetAbsoluteMaxScore restituisce il punteggio massimo mai registrato tra tutti i livelli di compressione.
 func (s *GameStats) GetAbsoluteMaxScore() int {
 	s.mutex.RLock()

@@ -190,18 +190,12 @@ func (r *Renderer) Draw(g *Game) {
 	// Get the latest game record for averages
 	latestGame := stats[len(stats)-1]
 
-	// Average max score (verde chiaro)
-	rl.DrawText(fmt.Sprintf("Avg Max: %.1f", latestGame.AverageMaxScore),
+	// Episodes since last max score (verde chiaro)
+	episodesSinceMax := r.stats.GetEpisodesSinceLastMaxScore()
+	rl.DrawText(fmt.Sprintf("Episodes Since Max: %d", episodesSinceMax),
 		xOffset,
 		yOffset,
 		fontSize, avgScoreColor)
-	yOffset += lineSpacing
-
-	// Average max duration (viola chiaro)
-	rl.DrawText(fmt.Sprintf("Avg Max Time: %.1fs", latestGame.AverageMaxDuration),
-		xOffset,
-		yOffset,
-		fontSize, avgDurationColor)
 	yOffset += lineSpacing
 
 	// Current epsilon value (arancione)

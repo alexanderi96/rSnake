@@ -69,8 +69,8 @@ func main() {
 		// Handle window resize
 		if rl.IsWindowResized() {
 			renderer.UpdateDimensions()
-			newWidth := (rl.GetScreenWidth() - 20) / 20
-			newHeight := (rl.GetScreenHeight() - 190) / 20
+			newWidth := rl.GetScreenWidth() / 20
+			newHeight := rl.GetScreenHeight() / 20
 
 			// Verifica e correggi la posizione del serpente e del cibo prima di ridimensionare
 			snake := game.GetSnake()

@@ -31,9 +31,8 @@ func (sa *SnakeAgent) getState() []float64 {
 	// Ottiene i valori dettagliati della direzione del cibo (-1, 0, 1)
 	foodAhead, foodLeft, foodRight := sa.game.GetDetailedFoodDirections()
 
-	// Aggiunge un valore extra per mantenere la dimensione dello stato a 7
-	// (questo valore sarà sempre 0 e serve solo per compatibilità con la rete esistente)
-	foodDirs := []float64{foodAhead, foodLeft, foodRight, 0.0}
+	// Vettore delle direzioni del cibo
+	foodDirs := []float64{foodAhead, foodLeft, foodRight}
 
 	// Flag di pericolo immediato
 	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
