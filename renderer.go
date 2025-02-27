@@ -48,6 +48,26 @@ func min(a, b int32) int32 {
 	return b
 }
 
+// drawPlayableArea disegna un rettangolo che evidenzia l'area giocabile corrente
+func (r *Renderer) drawPlayableArea(g *Game) {
+	// Ottieni i limiti dell'area giocabile
+	minX, maxX, minY, maxY := g.getPlayableArea()
+
+	// Calcola le coordinate sullo schermo
+	screenMinX := r.offsetX + int32(minX*int(r.cellSize))
+	screenMinY := r.offsetY + int32(minY*int(r.cellSize))
+	screenWidth := int32((maxX - minX + 1) * int(r.cellSize))
+	screenHeight := int32((maxY - minY + 1) * int(r.cellSize))
+
+	// Disegna un rettangolo semi-trasparente per evidenziare l'area
+	areaColor := rl.Color{R: 255, G: 255, B: 255, A: 30} // Bianco semi-trasparente
+	rl.DrawRectangle(screenMinX, screenMinY, screenWidth, screenHeight, areaColor)
+
+	// Disegna il bordo dell'area
+	borderColor := rl.Color{R: 255, G: 255, B: 255, A: 100} // Bianco più visibile per il bordo
+	rl.DrawRectangleLines(screenMinX, screenMinY, screenWidth, screenHeight, borderColor)
+}
+
 func (r *Renderer) Draw(g *Game) {
 	r.UpdateDimensions()
 	rl.BeginDrawing()
@@ -74,6 +94,9 @@ func (r *Renderer) Draw(g *Game) {
 
 	// Draw grid
 	gridColor := rl.Color{R: 100, G: 100, B: 100, A: 100} // Colore grigio chiaro semi-trasparente
+
+	// Draw playable area
+	r.drawPlayableArea(g)
 	for x := int32(0); x <= int32(g.Grid.Width); x++ {
 		rl.DrawLineV(
 			rl.Vector2{X: float32(r.offsetX + x*r.cellSize), Y: float32(r.offsetY)},
