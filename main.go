@@ -23,7 +23,7 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	speed := flag.Int("speed", 100, "Game speed in milliseconds (lower = faster)")
+	speed := flag.Int("speed", 1, "Game speed in milliseconds (lower = faster)")
 	flag.Parse()
 
 	rl.InitWindow(900, 600, "Snake Game")
