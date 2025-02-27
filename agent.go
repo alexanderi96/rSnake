@@ -6,20 +6,17 @@ import (
 
 // SnakeAgent rappresenta l'agente che gioca a Snake usando Q-learning.
 type SnakeAgent struct {
-	agent            *qlearning.Agent
-	game             *Game
-	previousDistance int // Per il reward shaping basato sulla direzione
+	agent *qlearning.Agent
+	game  *Game
 }
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
 	agent := qlearning.NewAgent(0.5, 0.8, 0.95)
-	sa := &SnakeAgent{
+	return &SnakeAgent{
 		agent: agent,
 		game:  game,
 	}
-	sa.previousDistance = sa.getManhattanDistance() // Inizializza la distanza iniziale
-	return sa
 }
 
 // getManhattanDistance calcola la distanza Manhattan tra la testa del serpente e il cibo
@@ -105,38 +102,14 @@ func (sa *SnakeAgent) Update() {
 
 func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
-	currentDistance := sa.getManhattanDistance()
 
-	// Penalità forte per morte
 	if snake.Dead {
-		return -10.0
+		return -1.0 // Penalità fissa per morte
 	}
-
-	// Reward fortemente aumentato per aver mangiato il cibo
 	if snake.Score > oldScore {
-		sa.previousDistance = currentDistance // Reset della distanza dopo aver mangiato
-		return 10.0                           // Aumentato da 5.0 a 10.0
+		return 1.0 // Reward fisso per cibo
 	}
-
-	// Reward shaping basato sulla direzione e distanza
-	reward := -0.01 // Piccola penalità base per ogni step
-
-	// Aggiusta il reward in base alla direzione con penalità aumentata
-	if currentDistance < sa.previousDistance {
-		reward += 0.3 // Bonus per avvicinamento al cibo
-	} else if currentDistance > sa.previousDistance {
-		reward -= 0.3 // Penalità aumentata per allontanamento dal cibo (da -0.1 a -0.3)
-	}
-
-	// Aggiungi reward basato sulla distanza assoluta
-	// Usa una funzione inversamente proporzionale alla distanza
-	// Normalizzata rispetto alla dimensione della griglia per mantenere i valori in scala
-	gridSize := float64(sa.game.Grid.Width + sa.game.Grid.Height)
-	distanceReward := 0.2 * (1.0 - float64(currentDistance)/gridSize)
-	reward += distanceReward
-
-	sa.previousDistance = currentDistance
-	return reward
+	return 0.0 // Nessuna penalità per movimento
 }
 
 // GetEpsilon returns the current epsilon value
@@ -152,7 +125,6 @@ func (sa *SnakeAgent) Reset() {
 
 	sa.game = NewGame(width, height)
 	sa.game.Stats = existingStats
-	sa.previousDistance = sa.getManhattanDistance() // Inizializza la distanza per il nuovo episodio
 	sa.agent.IncrementEpisode()
 }
 
