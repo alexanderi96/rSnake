@@ -303,16 +303,27 @@ func maxInt(a, b int) int {
 }
 
 func (g *Game) generateFood() Point {
-	minX, maxX, minY, maxY := g.getPlayableArea()
+	// If snake length is 1, food spawns only at center
+	if len(g.snake.Body) == 1 {
+		return Point{X: g.Grid.Width / 2, Y: g.Grid.Height / 2}
+	}
+
+	// For length > 1, calculate area size based on length
+	// length 2 -> 3x3 area (radius 1 from center)
+	// length 3 -> 5x5 area (radius 2 from center)
+	// length 4 -> 7x7 area (radius 3 from center)
+	radius := len(g.snake.Body) - 1
+	centerX := g.Grid.Width / 2
+	centerY := g.Grid.Height / 2
 
 	for {
-		// Generate random position within playable area
+		// Generate random position within the NxN area
 		newFood := Point{
-			X: minX + rand.Intn(maxX-minX+1),
-			Y: minY + rand.Intn(maxY-minY+1),
+			X: centerX - radius + rand.Intn(2*radius+1),
+			Y: centerY - radius + rand.Intn(2*radius+1),
 		}
 
-		// Check if position is occupied by snake
+		// Ensure food doesn't spawn on snake
 		occupied := false
 		for _, part := range g.snake.Body {
 			if part == newFood {
