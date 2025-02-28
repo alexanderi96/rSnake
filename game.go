@@ -250,22 +250,62 @@ func (g *Game) calculateNewPosition() Point {
 	return Point{X: newX, Y: newY}
 }
 
-func (g *Game) checkCollision(pos Point) CollisionType {
-	// Get current playable area boundaries
-	minX, maxX, minY, maxY := g.getPlayableArea()
+// CollisionInfo contiene informazioni sulla collisione e la distanza
+type CollisionInfo struct {
+	Type     CollisionType
+	Distance int // Distanza Manhattan dall'ostacolo più vicino
+}
 
-	// Check wall collision against dynamic boundaries
+func (g *Game) checkCollision(pos Point) CollisionType {
+	_, collision := g.getCollisionInfo(pos)
+	return collision.Type
+}
+
+// getCollisionInfo restituisce informazioni dettagliate sulla collisione più vicina
+func (g *Game) getCollisionInfo(pos Point) (Point, CollisionInfo) {
+	minX, maxX, minY, maxY := g.getPlayableArea()
+	info := CollisionInfo{Type: NoCollision, Distance: g.Grid.Width + g.Grid.Height} // Distanza massima possibile
+	var collisionPoint Point
+
+	// Check wall collision
 	if pos.X < minX || pos.X > maxX || pos.Y < minY || pos.Y > maxY {
-		return WallCollision
+		info.Type = WallCollision
+		// Calcola la distanza dal muro più vicino
+		distX := minInt(abs(pos.X-minX), abs(pos.X-maxX))
+		distY := minInt(abs(pos.Y-minY), abs(pos.Y-maxY))
+		info.Distance = minInt(distX, distY)
+		if pos.X < minX {
+			collisionPoint = Point{X: minX, Y: pos.Y}
+		} else if pos.X > maxX {
+			collisionPoint = Point{X: maxX, Y: pos.Y}
+		} else if pos.Y < minY {
+			collisionPoint = Point{X: pos.X, Y: minY}
+		} else {
+			collisionPoint = Point{X: pos.X, Y: maxY}
+		}
+		return collisionPoint, info
 	}
 
 	// Check self collision
 	for _, part := range g.snake.Body[:len(g.snake.Body)-1] {
-		if pos == part {
-			return SelfCollision
+		dist := g.getManhattanDistance(pos, part)
+		if dist < info.Distance {
+			info.Distance = dist
+			collisionPoint = part
+			if dist == 0 {
+				info.Type = SelfCollision
+				return collisionPoint, info
+			}
 		}
 	}
-	return NoCollision
+
+	if info.Distance < g.Grid.Width+g.Grid.Height {
+		if info.Distance == 0 {
+			info.Type = SelfCollision
+		}
+	}
+
+	return collisionPoint, info
 }
 
 // isAdjacent controlla se un punto è adiacente alla testa del serpente

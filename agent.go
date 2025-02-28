@@ -28,30 +28,11 @@ func (sa *SnakeAgent) getManhattanDistance() int {
 
 // getState restituisce il vettore di stato semplificato come []float64
 func (sa *SnakeAgent) getState() []float64 {
-	// Ottiene i valori dettagliati della direzione del cibo (-1, 0, 1)
-	foodAhead, foodLeft, foodRight := sa.game.GetDetailedFoodDirections()
+	// Ottiene i valori combinati per le 5 direzioni
+	front, left, right, frontLeft, frontRight := sa.game.GetStateInfo()
 
-	// Vettore delle direzioni del cibo
-	foodDirs := []float64{foodAhead, foodLeft, foodRight}
-
-	// Flag di pericolo immediato
-	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
-	dangers := []float64{
-		boolToFloat64(dangerAhead),
-		boolToFloat64(dangerLeft),
-		boolToFloat64(dangerRight),
-	}
-
-	// Combina i vettori
-	return append(foodDirs, dangers...)
-}
-
-// boolToFloat64 converte un bool in float64
-func boolToFloat64(b bool) float64 {
-	if b {
-		return 1.0
-	}
-	return 0.0
+	// Restituisce il vettore di stato
+	return []float64{front, left, right, frontLeft, frontRight}
 }
 
 // relativeActionToAbsolute converte un'azione relativa in una direzione assoluta.
@@ -100,70 +81,56 @@ func (sa *SnakeAgent) Update() {
 	sa.agent.Update(currentState, action, reward, newState, 3)
 }
 
-// isFoodInDangerDirection verifica se il cibo è in una direzione pericolosa
-func isFoodInDangerDirection(foodAhead, foodLeft, foodRight float64,
-	dangerAhead, dangerLeft, dangerRight bool) bool {
-	return (foodAhead == 1.0 && dangerAhead) ||
-		(foodLeft == 1.0 && dangerLeft) ||
-		(foodRight == 1.0 && dangerRight)
-}
-
 func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	snake := sa.game.GetSnake()
 	reward := -0.01 // Piccola penalità per ogni step per incentivare percorsi più brevi
 
 	// Morte
 	if snake.Dead {
-		return -3.0 // Aumentata penalità per la morte
+		return -3.0
 	}
 
 	// Cibo mangiato (reward proporzionale alla lunghezza)
 	if snake.Score > oldScore {
 		baseReward := 2.0
-		lengthBonus := float64(snake.Score) * 0.1 // Bonus crescente con la lunghezza
+		lengthBonus := float64(snake.Score) * 0.1
 		return baseReward + lengthBonus
 	}
 
-	// Ottiene informazioni sulla direzione del cibo e sui pericoli
-	foodAhead, foodLeft, foodRight := sa.game.GetDetailedFoodDirections()
-	dangerAhead, dangerLeft, dangerRight := sa.game.GetDangers()
+	// Ottiene i valori dello stato corrente
+	front, left, right, frontLeft, frontRight := sa.game.GetStateInfo()
 
-	// Determina la direzione scelta e il relativo pericolo
-	var chosenFoodDir float64
-	var chosenDanger bool
-
+	// Determina la direzione scelta e le diagonali associate
+	var chosenValue, diagLeft, diagRight float64
 	switch action := sa.game.GetLastAction(); action {
 	case 1: // avanti
-		chosenFoodDir = foodAhead
-		chosenDanger = dangerAhead
+		chosenValue = front
+		diagLeft = frontLeft
+		diagRight = frontRight
 	case 0: // sinistra
-		chosenFoodDir = foodLeft
-		chosenDanger = dangerLeft
+		chosenValue = left
+		diagLeft = frontLeft
 	case 2: // destra
-		chosenFoodDir = foodRight
-		chosenDanger = dangerRight
+		chosenValue = right
+		diagRight = frontRight
 	}
 
-	// Caso speciale: il cibo è in una direzione pericolosa
-	if isFoodInDangerDirection(foodAhead, foodLeft, foodRight, dangerAhead, dangerLeft, dangerRight) {
-		if !chosenDanger {
-			reward += 0.8 // Aumentato premio per aver evitato il pericolo
-		}
-	}
-
-	// Penalità per aver scelto una direzione pericolosa
-	if chosenDanger {
-		reward -= 1.5 // Aumentata penalità per scelte pericolose
-	}
-
-	// Reward basato sulla direzione del cibo scelta
-	switch chosenFoodDir {
-	case 1.0: // Direzione ottimale verso il cibo
+	// Reward basato sul valore della direzione scelta
+	if chosenValue == 1.0 { // Ha scelto una direzione con cibo
 		reward += 1.0
-	case 0.0: // Direzione neutra
-		reward += 0.0
-	default: // Direzione che allontana dal cibo
-		reward -= 0.5
+	} else if chosenValue == -1.0 { // Ha scelto una direzione pericolosa
+		reward -= 1.5
+	} else if chosenValue > 0 { // Ha scelto una direzione che avvicina al cibo
+		reward += 0.5
+	} else if chosenValue < 0 { // Ha scelto una direzione che allontana dal cibo
+		reward -= 0.3
+	}
+
+	// Reward aggiuntivo basato sulle diagonali
+	if diagLeft == -1.0 || diagRight == -1.0 {
+		reward -= 0.5 // Penalità se ci sono pericoli nelle diagonali
+	} else if diagLeft == 1.0 || diagRight == 1.0 {
+		reward += 0.3 // Bonus se c'è cibo nelle diagonali
 	}
 
 	// Reward basato sulla distanza dal cibo

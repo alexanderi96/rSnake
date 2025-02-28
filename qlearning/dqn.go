@@ -23,7 +23,7 @@ const (
 	ReplayBufferSize = 10000 // Aumentato da 5000 a 10000
 	HiddenLayer1Size = 64    // Primo hidden layer più grande
 	HiddenLayer2Size = 32    // Secondo hidden layer aggiunto
-	InputFeatures    = 6     // 3 per food direction + 3 per danger flags
+	InputFeatures    = 5     // Combined food/danger values for 5 directions
 	OutputActions    = 3
 	GradientClip     = 0.5
 	DropoutRate      = 0.2  // Aggiunto dropout per migliorare generalizzazione

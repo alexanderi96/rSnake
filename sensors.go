@@ -59,99 +59,99 @@ func (d Direction) TurnRight() Direction {
 	}
 }
 
-// GetDangers restituisce i flag di pericolo immediato rispetto alla direzione corrente dello snake.
-// Vengono restituiti:
-//   - dangerAhead, dangerLeft, dangerRight: true se c'è un pericolo nella cella adiacente
-//     in quella direzione, false altrimenti
-func (g *Game) GetDangers() (dangerAhead, dangerLeft, dangerRight bool) {
-	snake := g.snake
-	head := snake.GetHead()
-	currentDir := g.GetCurrentDirection()
+// GetCombinedDirectionalInfo restituisce un valore combinato tra -1 e 1 per una data direzione,
+// considerando sia la presenza di cibo che di pericoli, con scaling basato sulla distanza
+func (g *Game) GetCombinedDirectionalInfo(dir Point) float64 {
+	head := g.snake.GetHead()
 
-	// Funzione helper per verificare il pericolo immediato in una direzione
-	checkImmediateDanger := func(dir Direction) bool {
-		vector := dir.ToPoint()
-		nextPos := Point{
-			X: head.X + vector.X,
-			Y: head.Y + vector.Y,
-		}
-		return g.checkCollision(nextPos) != NoCollision
+	// Calcola la posizione nella direzione specificata
+	nextPos := Point{
+		X: (head.X + dir.X + g.Grid.Width) % g.Grid.Width,
+		Y: (head.Y + dir.Y + g.Grid.Height) % g.Grid.Height,
 	}
 
-	// Verifica i pericoli immediati in ogni direzione
-	dangerAhead = checkImmediateDanger(currentDir)
-	dangerLeft = checkImmediateDanger(currentDir.TurnLeft())
-	dangerRight = checkImmediateDanger(currentDir.TurnRight())
+	// Ottiene informazioni dettagliate sulla collisione
+	_, collisionInfo := g.getCollisionInfo(nextPos)
 
-	return
+	// Calcola il valore di pericolo basato sulla distanza
+	var dangerValue float64
+	if collisionInfo.Type != NoCollision {
+		if collisionInfo.Distance == 0 {
+			return -1.0 // Collisione immediata
+		}
+		// Scala il pericolo in base alla distanza (più vicino = più pericoloso)
+		dangerValue = -1.0 / float64(collisionInfo.Distance)
+	}
+
+	// Calcola la distanza dal cibo
+	foodDist := g.getManhattanDistance(nextPos, g.food)
+	currentDist := g.getManhattanDistance(head, g.food)
+
+	// Se la nuova posizione è il cibo
+	if nextPos == g.food {
+		return 1.0 // Cibo presente
+	}
+
+	// Se ci stiamo avvicinando al cibo
+	if foodDist < currentDist {
+		foodValue := 0.5 // Base value per direzione favorevole
+		// Se non c'è pericolo, mantiene il valore positivo
+		if dangerValue == 0 {
+			return foodValue
+		}
+		// Altrimenti combina il valore del cibo con il pericolo
+		return maxFloat64(dangerValue, foodValue)
+	}
+
+	// Se ci stiamo allontanando dal cibo
+	if foodDist > currentDist {
+		foodValue := -0.3 // Base value per direzione sfavorevole
+		// Combina con il valore di pericolo
+		return minFloat64(dangerValue, foodValue)
+	}
+
+	// Se non c'è cibo, ritorna solo il valore di pericolo
+	return dangerValue
 }
 
-// GetFoodDirection restituisce la direzione assoluta principale in cui si trova il cibo rispetto alla testa dello snake.
-func (g *Game) GetFoodDirection() Direction {
-	head := g.snake.GetHead()
-	food := g.food
-
-	// Calcola la differenza considerando il wrapping della griglia
-	dx := food.X - head.X
-	if dx > g.Grid.Width/2 {
-		dx -= g.Grid.Width
-	} else if dx < -g.Grid.Width/2 {
-		dx += g.Grid.Width
+// maxFloat64 returns the larger of two float64s
+func maxFloat64(a, b float64) float64 {
+	if a > b {
+		return a
 	}
-
-	dy := food.Y - head.Y
-	if dy > g.Grid.Height/2 {
-		dy -= g.Grid.Height
-	} else if dy < -g.Grid.Height/2 {
-		dy += g.Grid.Height
-	}
-
-	// Restituisce la direzione predominante (se il cibo è in diagonale, sceglie l'asse con la distanza maggiore)
-	if abs(dx) > abs(dy) {
-		if dx > 0 {
-			return RIGHT
-		}
-		return LEFT
-	} else {
-		if dy > 0 {
-			return DOWN
-		}
-		return UP
-	}
+	return b
 }
 
-// GetDetailedFoodDirections calcola i valori di direzione del cibo (-1, 0, 1) per ogni direzione relativa
-func (g *Game) GetDetailedFoodDirections() (ahead, left, right float64) {
-	head := g.snake.GetHead()
-	food := g.food
+// minFloat64 returns the smaller of two float64s
+func minFloat64(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// GetStateInfo restituisce i valori combinati per le 5 direzioni principali
+func (g *Game) GetStateInfo() (front, left, right, frontLeft, frontRight float64) {
 	currentDir := g.GetCurrentDirection()
 	leftDir := currentDir.TurnLeft()
 	rightDir := currentDir.TurnRight()
 
-	// Calcola le posizioni dopo ogni possibile mossa
-	aheadPos := Point{X: (head.X + currentDir.ToPoint().X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + currentDir.ToPoint().Y + g.Grid.Height) % g.Grid.Height}
-	leftPos := Point{X: (head.X + leftDir.ToPoint().X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + leftDir.ToPoint().Y + g.Grid.Height) % g.Grid.Height}
-	rightPos := Point{X: (head.X + rightDir.ToPoint().X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + rightDir.ToPoint().Y + g.Grid.Height) % g.Grid.Height}
+	// Calcola i vettori per le direzioni diagonali
+	frontLeftVec := Point{
+		X: currentDir.ToPoint().X + leftDir.ToPoint().X,
+		Y: currentDir.ToPoint().Y + leftDir.ToPoint().Y,
+	}
+	frontRightVec := Point{
+		X: currentDir.ToPoint().X + rightDir.ToPoint().X,
+		Y: currentDir.ToPoint().Y + rightDir.ToPoint().Y,
+	}
 
-	// Calcola le distanze Manhattan per ogni direzione
-	currentDist := g.getManhattanDistance(head, food)
-	aheadDist := g.getManhattanDistance(aheadPos, food)
-	leftDist := g.getManhattanDistance(leftPos, food)
-	rightDist := g.getManhattanDistance(rightPos, food)
-
-	// Trova la distanza minima tra le possibili mosse
-	aheadDistInt32 := int32(aheadDist)
-	leftDistInt32 := int32(leftDist)
-	rightDistInt32 := int32(rightDist)
-	minDist := minInt32(aheadDistInt32, minInt32(leftDistInt32, rightDistInt32))
-
-	// Imposta i valori per ogni direzione
-	ahead = g.evaluateDirection(aheadDist, currentDist, int(minDist))
-	left = g.evaluateDirection(leftDist, currentDist, int(minDist))
-	right = g.evaluateDirection(rightDist, currentDist, int(minDist))
+	// Ottiene i valori combinati per ogni direzione
+	front = g.GetCombinedDirectionalInfo(currentDir.ToPoint())
+	left = g.GetCombinedDirectionalInfo(leftDir.ToPoint())
+	right = g.GetCombinedDirectionalInfo(rightDir.ToPoint())
+	frontLeft = g.GetCombinedDirectionalInfo(frontLeftVec)
+	frontRight = g.GetCombinedDirectionalInfo(frontRightVec)
 
 	return
 }
@@ -181,15 +181,6 @@ func (g *Game) evaluateDirection(dirDist, currentDist, minDist int) float64 {
 		return 1.0 // È una delle direzioni ottimali
 	}
 	return 0.0 // È una direzione valida ma non ottimale
-}
-
-// GetRelativeFoodDirection restituisce la direzione relativa del cibo rispetto allo snake.
-func (g *Game) GetRelativeFoodDirection() Direction {
-	absoluteFoodDir := g.GetFoodDirection()
-	snakeDir := g.GetCurrentDirection()
-
-	// Converte la direzione assoluta del cibo in relativa rispetto alla direzione dello snake
-	return Direction((absoluteFoodDir - snakeDir + 4) % 4)
 }
 
 // GetCurrentDirection restituisce la direzione assoluta corrente dello snake,
