@@ -215,17 +215,20 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	}
 
 	// Calcola il nuovo numero totale di giochi
-	totalGames := compressed.GamesCount + 1
+	totalGames := compressed.GamesCount + newRecord.GamesCount
 
 	// Calcola le nuove statistiche
-	newCompressedAvgScore := (compressed.CompressedAverageScore*float64(compressed.GamesCount) + float64(newRecord.Score)) / float64(totalGames)
+	// Punteggio medio compresso considerando il peso corretto dei record
+	newCompressedAvgScore := (compressed.CompressedAverageScore*float64(compressed.GamesCount) +
+		newRecord.CompressedAverageScore*float64(newRecord.GamesCount)) / float64(totalGames)
 
-	// Per il record compresso, usa i valori esistenti
+	// Per il record compresso, usa i valori esistenti come base per max/min
 	newMaxScore := compressed.MaxScore
 	newMinScore := compressed.MinScore
 
-	// Per il nuovo record, confronta con Score
+	// Confronta con il nuovo record per aggiornare max/min assoluti
 	if newRecord.GamesCount == 1 {
+		// Se il nuovo record è una partita singola
 		if newRecord.Score > newMaxScore {
 			newMaxScore = newRecord.Score
 		}
@@ -251,13 +254,16 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 		newDuration = newRecord.CompressedAverageDuration
 	}
 
-	newCompressedAvgDuration := (compressed.CompressedAverageDuration*float64(compressed.GamesCount) + newDuration) / float64(totalGames)
+	// Calcola la nuova media di durata ponderata correttamente
+	newCompressedAvgDuration := (compressed.CompressedAverageDuration*float64(compressed.GamesCount) +
+		newDuration*float64(newRecord.GamesCount)) / float64(totalGames)
 
-	// Aggiorna max/min duration considerando se il record è già compresso
+	// Aggiorna max/min duration
 	newMaxDuration := compressed.MaxDuration
 	newMinDuration := compressed.MinDuration
 
 	if newRecord.GamesCount == 1 {
+		// Per record singoli, usa la durata calcolata
 		if newDuration > newMaxDuration {
 			newMaxDuration = newDuration
 		}
@@ -265,6 +271,7 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 			newMinDuration = newDuration
 		}
 	} else {
+		// Per record compressi, usa i valori max/min esistenti
 		if newRecord.MaxDuration > newMaxDuration {
 			newMaxDuration = newRecord.MaxDuration
 		}
@@ -273,7 +280,43 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 		}
 	}
 
-	// Aggiorna il record compresso
+	// Calcola correttamente le medie dei massimi e minimi considerando il peso degli elementi
+	var newAverageMaxScore, newAverageMinScore float64
+	var newAverageMaxDuration, newAverageMinDuration float64
+
+	if newRecord.GamesCount == 1 {
+		// Se è un record singolo, usa il valore del record stesso per le medie
+		newAverageMaxScore = (compressed.AverageMaxScore*float64(compressed.GamesCount) +
+			float64(newRecord.Score)) / float64(totalGames)
+
+		newAverageMinScore = (compressed.AverageMinScore*float64(compressed.GamesCount) +
+			float64(newRecord.Score)) / float64(totalGames)
+
+		newAverageMaxDuration = (compressed.AverageMaxDuration*float64(compressed.GamesCount) +
+			newDuration) / float64(totalGames)
+
+		newAverageMinDuration = (compressed.AverageMinDuration*float64(compressed.GamesCount) +
+			newDuration) / float64(totalGames)
+	} else {
+		// Se è un record già compresso, usa le sue medie pesate per il numero di giochi
+		newAverageMaxScore = (compressed.AverageMaxScore*float64(compressed.GamesCount) +
+			newRecord.AverageMaxScore*float64(newRecord.GamesCount)) / float64(totalGames)
+
+		newAverageMinScore = (compressed.AverageMinScore*float64(compressed.GamesCount) +
+			newRecord.AverageMinScore*float64(newRecord.GamesCount)) / float64(totalGames)
+
+		newAverageMaxDuration = (compressed.AverageMaxDuration*float64(compressed.GamesCount) +
+			newRecord.AverageMaxDuration*float64(newRecord.GamesCount)) / float64(totalGames)
+
+		newAverageMinDuration = (compressed.AverageMinDuration*float64(compressed.GamesCount) +
+			newRecord.AverageMinDuration*float64(newRecord.GamesCount)) / float64(totalGames)
+	}
+
+	// Calcola la media dell'epsilon ponderata correttamente
+	newEpsilon := (compressed.Epsilon*float64(compressed.GamesCount) +
+		newRecord.Epsilon*float64(newRecord.GamesCount)) / float64(totalGames)
+
+	// Aggiorna il record compresso con i nuovi valori calcolati
 	compressed.GamesCount = totalGames
 	compressed.CompressedAverageScore = newCompressedAvgScore
 	compressed.MaxScore = newMaxScore
@@ -281,14 +324,13 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	compressed.CompressedAverageDuration = newCompressedAvgDuration
 	compressed.MaxDuration = newMaxDuration
 	compressed.MinDuration = newMinDuration
-	// Calcola le medie dei massimi e minimi
-	compressed.AverageMaxScore = (compressed.AverageMaxScore*float64(compressed.GamesCount-1) + float64(newMaxScore)) / float64(totalGames)
-	compressed.AverageMinScore = (compressed.AverageMinScore*float64(compressed.GamesCount-1) + float64(newMinScore)) / float64(totalGames)
-	compressed.AverageMaxDuration = (compressed.AverageMaxDuration*float64(compressed.GamesCount-1) + newMaxDuration) / float64(totalGames)
-	compressed.AverageMinDuration = (compressed.AverageMinDuration*float64(compressed.GamesCount-1) + newMinDuration) / float64(totalGames)
-	// Calcola la media dell'epsilon
-	compressed.Epsilon = (compressed.Epsilon*float64(compressed.GamesCount-1) + newRecord.Epsilon) / float64(totalGames)
+	compressed.AverageMaxScore = newAverageMaxScore
+	compressed.AverageMinScore = newAverageMinScore
+	compressed.AverageMaxDuration = newAverageMaxDuration
+	compressed.AverageMinDuration = newAverageMinDuration
+	compressed.Epsilon = newEpsilon
 
+	// Aggiorna la data di fine se il nuovo record è più recente
 	if newRecord.EndTime.After(compressed.EndTime) {
 		compressed.EndTime = newRecord.EndTime
 	}
@@ -297,6 +339,7 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	newGames := make([]GameRecord, 0, len(s.Games)-1)
 	newGames = append(newGames, s.Games[:compressedIdx]...)
 	newGames = append(newGames, compressed)
+	newGames = append(newGames, s.Games[compressedIdx+1:newIdx]...)
 	newGames = append(newGames, s.Games[newIdx+1:]...)
 	s.Games = newGames
 
