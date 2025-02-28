@@ -28,11 +28,11 @@ func (sa *SnakeAgent) getManhattanDistance() int {
 
 // getState restituisce il vettore di stato semplificato come []float64
 func (sa *SnakeAgent) getState() []float64 {
-	// Ottiene i valori combinati per le 5 direzioni
-	front, left, right, frontLeft, frontRight := sa.game.GetStateInfo()
+	// Ottiene i valori combinati per le 7 direzioni
+	front, left, right, frontLeft, frontRight, backLeft, backRight := sa.game.GetStateInfo()
 
 	// Restituisce il vettore di stato
-	return []float64{front, left, right, frontLeft, frontRight}
+	return []float64{front, left, right, frontLeft, frontRight, backLeft, backRight}
 }
 
 // relativeActionToAbsolute converte un'azione relativa in una direzione assoluta.
@@ -98,21 +98,24 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 	}
 
 	// Ottiene i valori dello stato corrente
-	front, left, right, frontLeft, frontRight := sa.game.GetStateInfo()
+	front, left, right, frontLeft, frontRight, backLeft, backRight := sa.game.GetStateInfo()
 
-	// Determina la direzione scelta e le diagonali associate
-	var chosenValue, diagLeft, diagRight float64
+	// Determina la direzione scelta e le diagonali/retro associate
+	var chosenValue, diagLeft, diagRight, backValue float64
 	switch action := sa.game.GetLastAction(); action {
 	case 1: // avanti
 		chosenValue = front
 		diagLeft = frontLeft
 		diagRight = frontRight
+		backValue = (backLeft + backRight) / 2 // media dei valori posteriori
 	case 0: // sinistra
 		chosenValue = left
 		diagLeft = frontLeft
+		backValue = backLeft
 	case 2: // destra
 		chosenValue = right
 		diagRight = frontRight
+		backValue = backRight
 	}
 
 	// Reward basato sul valore della direzione scelta
@@ -126,11 +129,11 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 		reward -= 0.3
 	}
 
-	// Reward aggiuntivo basato sulle diagonali
-	if diagLeft == -1.0 || diagRight == -1.0 {
-		reward -= 0.5 // Penalità se ci sono pericoli nelle diagonali
-	} else if diagLeft == 1.0 || diagRight == 1.0 {
-		reward += 0.3 // Bonus se c'è cibo nelle diagonali
+	// Reward aggiuntivo basato sulle diagonali e direzioni posteriori
+	if diagLeft == -1.0 || diagRight == -1.0 || backValue == -1.0 {
+		reward -= 0.5 // Penalità se ci sono pericoli nelle diagonali o dietro
+	} else if diagLeft == 1.0 || diagRight == 1.0 || backValue == 1.0 {
+		reward += 0.3 // Bonus se c'è cibo nelle diagonali o dietro
 	}
 
 	// Reward basato sulla distanza dal cibo

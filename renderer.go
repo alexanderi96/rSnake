@@ -187,7 +187,6 @@ func (r *Renderer) Draw(g *Game) {
 
 	// Get all stats values first
 	maxScore := r.stats.GetAbsoluteMaxScore()
-	episodesSinceMax := r.stats.GetEpisodesSinceLastMaxScore()
 	latestGame := stats[len(stats)-1]
 	gamesPerSecond := r.stats.GetGamesPerSecond()
 
@@ -197,7 +196,6 @@ func (r *Renderer) Draw(g *Game) {
 		fmt.Sprintf("Score: %d", score),
 		fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
 		fmt.Sprintf("Max Score: %d", maxScore),
-		fmt.Sprintf("Episodes Since Max: %d", episodesSinceMax),
 		fmt.Sprintf("Epsilon: %.3f", latestGame.Epsilon),
 		fmt.Sprintf("Games/s: %d", gamesPerSecond),
 	}
@@ -211,7 +209,7 @@ func (r *Renderer) Draw(g *Game) {
 
 	// Add padding to width and height
 	statsWidth += 20                      // 10px padding on each side
-	statsHeight := int32(fontSize*6 + 20) // Height for stats area plus padding
+	statsHeight := int32(fontSize*5 + 20) // Height for stats area plus padding
 
 	// Draw dark overlay for stats at the top
 	rl.DrawRectangle(0, 0, statsWidth, statsHeight, rl.Color{R: 0, G: 0, B: 0, A: 100})
@@ -238,13 +236,6 @@ func (r *Renderer) Draw(g *Game) {
 		xOffset,
 		yOffset,
 		fontSize, scoreColor)
-	yOffset += lineSpacing
-
-	// Episodes since last max score (verde chiaro)
-	rl.DrawText(fmt.Sprintf("Episodes Since Max: %d", episodesSinceMax),
-		xOffset,
-		yOffset,
-		fontSize, avgScoreColor)
 	yOffset += lineSpacing
 
 	// Current epsilon value (arancione)

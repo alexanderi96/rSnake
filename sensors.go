@@ -1,5 +1,7 @@
 package main
 
+import "math"
+
 // Direction rappresenta una direzione cardinale
 type Direction int
 
@@ -83,35 +85,84 @@ func (g *Game) GetCombinedDirectionalInfo(dir Point) float64 {
 		dangerValue = -1.0 / float64(collisionInfo.Distance)
 	}
 
-	// Calcola la distanza dal cibo
-	foodDist := g.getManhattanDistance(nextPos, g.food)
-	currentDist := g.getManhattanDistance(head, g.food)
+	// Calcola la direzione relativa del cibo rispetto alla testa
+	foodDir := Point{
+		X: g.food.X - head.X,
+		Y: g.food.Y - head.Y,
+	}
+
+	// Considera il wrapping della griglia
+	if foodDir.X > g.Grid.Width/2 {
+		foodDir.X -= g.Grid.Width
+	} else if foodDir.X < -g.Grid.Width/2 {
+		foodDir.X += g.Grid.Width
+	}
+	if foodDir.Y > g.Grid.Height/2 {
+		foodDir.Y -= g.Grid.Height
+	} else if foodDir.Y < -g.Grid.Height/2 {
+		foodDir.Y += g.Grid.Height
+	}
 
 	// Se la nuova posizione è il cibo
 	if nextPos == g.food {
-		return 1.0 // Cibo presente
+		return 1.0 // 100% positivo - cibo presente
 	}
 
-	// Se ci stiamo avvicinando al cibo
-	if foodDist < currentDist {
-		foodValue := 0.5 // Base value per direzione favorevole
-		// Se non c'è pericolo, mantiene il valore positivo
-		if dangerValue == 0 {
-			return foodValue
+	// Calcola il valore percentuale del cibo basato sulla direzione
+	var foodValue float64
+
+	// Normalizza le direzioni per il confronto
+	normalizedDir := Point{
+		X: dir.X,
+		Y: dir.Y,
+	}
+	if normalizedDir.X != 0 && normalizedDir.Y != 0 {
+		// Per direzioni diagonali, normalizziamo a lunghezza 1
+		normalizedDir.X /= 2
+		normalizedDir.Y /= 2
+	}
+
+	// Calcola quanto la direzione corrente è allineata con la direzione del cibo
+	if foodDir.X == 0 && foodDir.Y == 0 {
+		foodValue = 0 // Siamo sulla stessa cella del cibo
+	} else {
+		// Converti le direzioni in float64 per i calcoli
+		dirX, dirY := float64(normalizedDir.X), float64(normalizedDir.Y)
+		foodX, foodY := float64(foodDir.X), float64(foodDir.Y)
+
+		// Normalizza la direzione del cibo
+		length := math.Abs(foodX) + math.Abs(foodY)
+		if length > 0 {
+			foodX /= length
+			foodY /= length
 		}
-		// Altrimenti combina il valore del cibo con il pericolo
+
+		// Se il cibo è in diagonale, avrà componenti di 0.5, 0.5
+		// Se è in una direzione cardinale, avrà una componente di 1.0 e l'altra 0
+
+		// Calcola il prodotto scalare tra la direzione normalizzata e la direzione del cibo
+		dotProduct := dirX*foodX + dirY*foodY
+
+		// Il prodotto scalare darà:
+		// 1.0 se le direzioni sono identiche
+		// 0.5 se la direzione è una delle componenti di una diagonale
+		// 0.0 se le direzioni sono perpendicolari
+		// -0.5 o -1.0 se le direzioni sono opposte
+		foodValue = dotProduct
+	}
+
+	// Se non c'è pericolo, ritorna il valore del cibo
+	if dangerValue == 0 {
+		return foodValue
+	}
+
+	// Combina il valore del cibo con il pericolo
+	// Se il cibo è in una direzione favorevole (foodValue > 0)
+	if foodValue > 0 {
 		return maxFloat64(dangerValue, foodValue)
 	}
-
-	// Se ci stiamo allontanando dal cibo
-	if foodDist > currentDist {
-		foodValue := -0.3 // Base value per direzione sfavorevole
-		// Combina con il valore di pericolo
-		return minFloat64(dangerValue, foodValue)
-	}
-
-	// Se non c'è cibo, ritorna solo il valore di pericolo
-	return dangerValue
+	// Se il cibo è in una direzione sfavorevole (foodValue <= 0)
+	return minFloat64(dangerValue, foodValue)
 }
 
 // maxFloat64 returns the larger of two float64s
@@ -130,13 +181,13 @@ func minFloat64(a, b float64) float64 {
 	return b
 }
 
-// GetStateInfo restituisce i valori combinati per le 5 direzioni principali
-func (g *Game) GetStateInfo() (front, left, right, frontLeft, frontRight float64) {
+// GetStateInfo restituisce i valori combinati per le 7 direzioni principali
+func (g *Game) GetStateInfo() (front, left, right, frontLeft, frontRight, backLeft, backRight float64) {
 	currentDir := g.GetCurrentDirection()
 	leftDir := currentDir.TurnLeft()
 	rightDir := currentDir.TurnRight()
 
-	// Calcola i vettori per le direzioni diagonali
+	// Calcola i vettori per le direzioni diagonali frontali
 	frontLeftVec := Point{
 		X: currentDir.ToPoint().X + leftDir.ToPoint().X,
 		Y: currentDir.ToPoint().Y + leftDir.ToPoint().Y,
@@ -146,12 +197,24 @@ func (g *Game) GetStateInfo() (front, left, right, frontLeft, frontRight float64
 		Y: currentDir.ToPoint().Y + rightDir.ToPoint().Y,
 	}
 
+	// Calcola i vettori per le direzioni posteriori
+	backLeftVec := Point{
+		X: -currentDir.ToPoint().X + leftDir.ToPoint().X,
+		Y: -currentDir.ToPoint().Y + leftDir.ToPoint().Y,
+	}
+	backRightVec := Point{
+		X: -currentDir.ToPoint().X + rightDir.ToPoint().X,
+		Y: -currentDir.ToPoint().Y + rightDir.ToPoint().Y,
+	}
+
 	// Ottiene i valori combinati per ogni direzione
 	front = g.GetCombinedDirectionalInfo(currentDir.ToPoint())
 	left = g.GetCombinedDirectionalInfo(leftDir.ToPoint())
 	right = g.GetCombinedDirectionalInfo(rightDir.ToPoint())
 	frontLeft = g.GetCombinedDirectionalInfo(frontLeftVec)
 	frontRight = g.GetCombinedDirectionalInfo(frontRightVec)
+	backLeft = g.GetCombinedDirectionalInfo(backLeftVec)
+	backRight = g.GetCombinedDirectionalInfo(backRightVec)
 
 	return
 }
