@@ -18,11 +18,12 @@ const (
 // GameStats contiene tutte le partite registrate e fornisce metodi per
 // ottenere statistiche come punteggio medio, durata media, ecc.
 type GameStats struct {
-	Games      []GameRecord `json:"games"`      // Array di record di partita (sia singole che raggruppate)
-	TotalGames int          `json:"totalGames"` // Contatore totale delle partite giocate
-	TotalScore int          `json:"totalScore"` // Somma di tutti i punteggi
-	TotalTime  float64      `json:"totalTime"`  // Somma di tutte le durate
-	mutex      sync.RWMutex `json:"-"`          // Non salvare il mutex in JSON
+	Games         []GameRecord `json:"games"`      // Array di record di partita (sia singole che raggruppate)
+	TotalGames    int          `json:"totalGames"` // Contatore totale delle partite giocate
+	TotalScore    int          `json:"totalScore"` // Somma di tutti i punteggi
+	TotalTime     float64      `json:"totalTime"`  // Somma di tutte le durate
+	mutex         sync.RWMutex `json:"-"`          // Non salvare il mutex in JSON
+	lastGameTimes []time.Time  `json:"-"`          // Timestamps delle ultime partite per calcolare il rate
 }
 
 // GameRecord rappresenta i dati di una partita (singola o raggruppata).
@@ -48,13 +49,35 @@ type GameRecord struct {
 // NewGameStats crea una nuova istanza di GameStats e tenta di caricare i dati dal file.
 func NewGameStats() *GameStats {
 	stats := &GameStats{
-		Games:      make([]GameRecord, 0),
-		TotalGames: 0,
-		TotalScore: 0,
-		TotalTime:  0,
+		Games:         make([]GameRecord, 0),
+		TotalGames:    0,
+		TotalScore:    0,
+		TotalTime:     0,
+		lastGameTimes: make([]time.Time, 0, 1000),
 	}
 	stats.loadFromFile()
 	return stats
+}
+
+// GetGamesPerSecond calcola il rate attuale di partite al secondo
+func (s *GameStats) GetGamesPerSecond() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	now := time.Now()
+	cutoff := now.Add(-time.Second)
+
+	// Rimuovi i timestamp più vecchi di 1 secondo
+	validTimes := 0
+	for i := len(s.lastGameTimes) - 1; i >= 0; i-- {
+		if s.lastGameTimes[i].After(cutoff) {
+			validTimes++
+		} else {
+			break
+		}
+	}
+
+	return validTimes
 }
 
 // AddGame aggiunge una nuova partita alle statistiche.
@@ -64,6 +87,19 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time, epsilon flo
 
 	// Incrementa i contatori totali
 	s.TotalGames++
+
+	// Aggiungi il timestamp per il calcolo del rate
+	now := time.Now()
+	s.lastGameTimes = append(s.lastGameTimes, now)
+
+	// Mantieni solo i timestamp dell'ultimo secondo
+	cutoff := now.Add(-time.Second)
+	for i := 0; i < len(s.lastGameTimes); i++ {
+		if s.lastGameTimes[i].After(cutoff) {
+			s.lastGameTimes = s.lastGameTimes[i:]
+			break
+		}
+	}
 	s.TotalScore += score
 	duration := endTime.Sub(startTime).Seconds()
 	s.TotalTime += duration

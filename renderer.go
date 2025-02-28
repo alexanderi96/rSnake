@@ -185,10 +185,41 @@ func (r *Renderer) Draw(g *Game) {
 	graphHeight := int32(150)
 	graphY := r.screenHeight - graphHeight
 
-	// Draw stats vertically above the graph
-	yOffset := graphY - int32(fontSize*6) // Space for 5 lines of stats plus padding
-	xOffset := r.offsetX + int32(10)      // Small left padding
-	lineSpacing := fontSize + 5           // Space between lines
+	// Get all stats values first
+	maxScore := r.stats.GetAbsoluteMaxScore()
+	episodesSinceMax := r.stats.GetEpisodesSinceLastMaxScore()
+	latestGame := stats[len(stats)-1]
+	gamesPerSecond := r.stats.GetGamesPerSecond()
+
+	// Calculate max width needed for stats
+	statsWidth := int32(0)
+	statsTexts := []string{
+		fmt.Sprintf("Score: %d", score),
+		fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
+		fmt.Sprintf("Max Score: %d", maxScore),
+		fmt.Sprintf("Episodes Since Max: %d", episodesSinceMax),
+		fmt.Sprintf("Epsilon: %.3f", latestGame.Epsilon),
+		fmt.Sprintf("Games/s: %d", gamesPerSecond),
+	}
+
+	for _, text := range statsTexts {
+		width := rl.MeasureText(text, fontSize)
+		if width > statsWidth {
+			statsWidth = width
+		}
+	}
+
+	// Add padding to width and height
+	statsWidth += 20                      // 10px padding on each side
+	statsHeight := int32(fontSize*6 + 20) // Height for stats area plus padding
+
+	// Draw dark overlay for stats at the top
+	rl.DrawRectangle(0, 0, statsWidth, statsHeight, rl.Color{R: 0, G: 0, B: 0, A: 100})
+
+	// Draw stats at the top of the screen
+	yOffset := int32(10)             // Start from top with padding
+	xOffset := r.offsetX + int32(10) // Small left padding
+	lineSpacing := fontSize + 5      // Space between lines
 
 	// Score
 	scoreLabel := fmt.Sprintf("Score: %d", score)
@@ -203,18 +234,13 @@ func (r *Renderer) Draw(g *Game) {
 	yOffset += lineSpacing
 
 	// Max score and its average (verde)
-	maxScore := r.stats.GetAbsoluteMaxScore()
 	rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
 		xOffset,
 		yOffset,
 		fontSize, scoreColor)
 	yOffset += lineSpacing
 
-	// Get the latest game record for averages
-	latestGame := stats[len(stats)-1]
-
 	// Episodes since last max score (verde chiaro)
-	episodesSinceMax := r.stats.GetEpisodesSinceLastMaxScore()
 	rl.DrawText(fmt.Sprintf("Episodes Since Max: %d", episodesSinceMax),
 		xOffset,
 		yOffset,
@@ -226,6 +252,13 @@ func (r *Renderer) Draw(g *Game) {
 		xOffset,
 		yOffset,
 		fontSize, epsilonColor)
+	yOffset += lineSpacing
+
+	// Games per second (bianco)
+	rl.DrawText(fmt.Sprintf("Games/s: %d", gamesPerSecond),
+		xOffset,
+		yOffset,
+		fontSize, rl.White)
 
 	// Draw food
 	food := g.GetFood()
@@ -233,6 +266,9 @@ func (r *Renderer) Draw(g *Game) {
 		r.offsetX+int32(food.X*int(r.cellSize)),
 		r.offsetY+int32(food.Y*int(r.cellSize)),
 		r.cellSize, r.cellSize, rl.Red)
+
+	// Draw dark overlay for graph
+	rl.DrawRectangle(0, graphY, r.screenWidth, graphHeight, rl.Color{R: 0, G: 0, B: 0, A: 100})
 
 	// Draw statistics graph
 	r.drawStatsGraph()
