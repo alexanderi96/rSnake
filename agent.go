@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"math/rand"
 	"snake-game/qlearning"
 )
 
@@ -61,7 +63,18 @@ func (sa *SnakeAgent) Update() {
 	}
 
 	currentState := sa.getState()
-	action := sa.agent.GetAction(currentState, 3)
+	// Get Q-values for all actions before choosing one
+	qValues, err := sa.agent.GetQValues(currentState)
+	var action int
+
+	if err != nil {
+		// Se c'è un errore nel calcolo dei Q-values, fai una scelta casuale
+		action = rand.Intn(3)
+		qValues = make([]float64, 3) // Q-values nulli per scaling reward
+		fmt.Printf("Errore nel calcolo Q-values: %v. Usando azione casuale: %d\n", err, action)
+	} else {
+		action = sa.agent.GetAction(currentState, 3)
+	}
 	newDir := sa.relativeActionToAbsolute(action)
 
 	// Applica l'azione e calcola il reward
@@ -70,108 +83,91 @@ func (sa *SnakeAgent) Update() {
 	sa.game.GetSnake().SetDirection(newDir)
 	sa.game.Update()
 
-	// Sistema di reward semplificato
-	reward := sa.calculateReward(oldScore)
+	// Sistema di reward con scaling basato sulla qualità dell'azione
+	reward := sa.calculateReward(oldScore, action, qValues)
 
 	// Aggiorna i Q-values
 	newState := sa.getState()
 	sa.agent.Update(currentState, action, reward, newState, 3)
 }
 
-func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
+func (sa *SnakeAgent) calculateReward(oldScore int, chosenAction int, qValues []float64) float64 {
 	snake := sa.game.GetSnake()
-	reward := -0.01 // Piccola penalità per ogni step per incentivare percorsi più brevi
+	baseReward := -0.005 // Penalità minima per step
 
-	// Morte
+	// Morte - penalità significativa ma non eccessiva
 	if snake.Dead {
-		return -3.0
+		return -2.0
 	}
 
-	// Cibo mangiato (reward proporzionale alla lunghezza)
+	// Cibo mangiato - premio base più contenuto ma con bonus per lunghezza
 	if snake.Score > oldScore {
-		baseReward := 10.0
-		lengthBonus := float64(snake.Score) * 0.1
-		return baseReward + lengthBonus
+		baseReward = 5.0
+		baseReward += float64(snake.Score) * 0.2
 	}
 
-	// Ottiene la matrice di stato
+	// Analisi stato
 	state := sa.game.GetStateInfo()
 	walls := state[0:8]  // Primi 8 valori: muri
 	body := state[8:16]  // Secondi 8 valori: corpo
 	food := state[16:24] // Ultimi 8 valori: cibo
 
-	// Determina gli indici per la direzione scelta e le direzioni associate
-	var mainIndex, diagLeftIndex, diagRightIndex, backIndex int
-	switch action := sa.game.GetLastAction(); action {
-	case 1: // avanti
-		mainIndex = 3      // front
-		diagLeftIndex = 2  // frontLeft
-		diagRightIndex = 4 // frontRight
-		backIndex = 7      // back
+	// Indici per la direzione scelta
+	directionIndex := 3 // front
+	switch chosenAction {
 	case 0: // sinistra
-		mainIndex = 1     // left
-		diagLeftIndex = 2 // frontLeft
-		backIndex = 0     // backLeft
+		directionIndex = 1
 	case 2: // destra
-		mainIndex = 5      // right
-		diagRightIndex = 4 // frontRight
-		backIndex = 6      // backRight
+		directionIndex = 5
 	}
 
-	// Reward basato sulla direzione scelta
-	if food[mainIndex] > 0 { // Ha scelto una direzione con cibo
-		reward += 1.0
-	} else if walls[mainIndex] > 0 || body[mainIndex] > 0 { // Ha scelto una direzione pericolosa
-		reward -= 1.5
-	}
+	// 1. Vicinanza al cibo (0.0 - 1.0) * 1.5
+	foodReward := food[directionIndex] * 1.5
 
-	// Reward aggiuntivo basato sulle diagonali e direzione posteriore
-	dangerNearby := false
-	foodNearby := false
+	// 2. Pericoli (-2.0 - 0.0)
+	wallDanger := walls[directionIndex] * -1.0
+	bodyDanger := body[directionIndex] * -1.0
+	dangerPenalty := wallDanger + bodyDanger
 
-	// Controlla le diagonali
-	if diagLeftIndex >= 0 {
-		if walls[diagLeftIndex] > 0 || body[diagLeftIndex] > 0 {
-			dangerNearby = true
-		}
-		if food[diagLeftIndex] > 0 {
-			foodNearby = true
-		}
-	}
-	if diagRightIndex >= 0 {
-		if walls[diagRightIndex] > 0 || body[diagRightIndex] > 0 {
-			dangerNearby = true
-		}
-		if food[diagRightIndex] > 0 {
-			foodNearby = true
+	// 3. Spazio libero circostante (bonus per aree aperte)
+	freeSpace := 0.0
+	for i := 0; i < 8; i++ {
+		if walls[i] == 0 && body[i] == 0 {
+			freeSpace += 0.1
 		}
 	}
 
-	// Controlla la direzione posteriore
-	if walls[backIndex] > 0 || body[backIndex] > 0 {
-		dangerNearby = true
-	}
-	if food[backIndex] > 0 {
-		foodNearby = true
+	// Calcola il reward base
+	baseReward += foodReward + dangerPenalty + freeSpace
+
+	// Scala il reward basato sulla qualità dell'azione
+	bestQValue := qValues[0]
+	worstQValue := qValues[0]
+	for _, qValue := range qValues {
+		if qValue > bestQValue {
+			bestQValue = qValue
+		}
+		if qValue < worstQValue {
+			worstQValue = qValue
+		}
 	}
 
-	if dangerNearby {
-		reward -= 0.5 // Penalità se ci sono pericoli nelle vicinanze
-	}
-	if foodNearby {
-		reward += 0.3 // Bonus se c'è cibo nelle vicinanze
+	chosenQValue := qValues[chosenAction]
+
+	// Se c'è una differenza significativa tra le azioni
+	if bestQValue != worstQValue {
+		// Normalizza il Q-value dell'azione scelta
+		normalizedQValue := (chosenQValue - worstQValue) / (bestQValue - worstQValue)
+
+		// Scala il reward:
+		// - Se è la migliore azione (normalizedQValue = 1): moltiplica per 1.2
+		// - Se è la peggiore azione (normalizedQValue = 0): moltiplica per 0.8
+		// - Per azioni intermedie: scala proporzionalmente
+		scaleFactor := 0.8 + (0.4 * normalizedQValue)
+		baseReward *= scaleFactor
 	}
 
-	// Reward basato sulla distanza dal cibo
-	oldDist := sa.getManhattanDistance()
-	newDist := abs(snake.Body[0].X-sa.game.food.X) + abs(snake.Body[0].Y-sa.game.food.Y)
-	if newDist < oldDist {
-		reward += 0.3 // Premio per avvicinarsi al cibo
-	} else if newDist > oldDist {
-		reward -= 0.2 // Penalità per allontanarsi dal cibo
-	}
-
-	return reward
+	return baseReward
 }
 
 // GetEpsilon returns the current epsilon value

@@ -164,19 +164,40 @@ func NewDQN() *DQN {
 
 // Forward esegue un forward pass attraverso la rete
 func (dqn *DQN) Forward(states []float64) ([]float64, error) {
+	if len(states) == 0 {
+		return nil, fmt.Errorf("empty states input")
+	}
+
+	// Reset VM and graph before forward pass
+	dqn.vm.Reset()
+	g := dqn.g
+
 	batchSize := len(states) / InputFeatures
 	if batchSize == 0 {
 		batchSize = 1
+		// Pad states to match input features if needed
+		if len(states) < InputFeatures {
+			paddedStates := make([]float64, InputFeatures)
+			copy(paddedStates, states)
+			states = paddedStates
+		}
 	}
 
-	g := dqn.g
+	// Ensure states length matches expected input size
+	if len(states) != batchSize*InputFeatures {
+		return nil, fmt.Errorf("invalid input shape: got %d values, expected %d", len(states), batchSize*InputFeatures)
+	}
 
-	// Gli input sono già normalizzati (one-hot e booleani)
-	normalizedStates := make([]float64, len(states))
-	copy(normalizedStates, states)
+	// Create input tensor with proper shape
+	statesTensor := tensor.New(tensor.WithBacking(states), tensor.WithShape(batchSize, InputFeatures))
+	if statesTensor == nil {
+		return nil, fmt.Errorf("failed to create input tensor")
+	}
 
-	statesTensor := tensor.New(tensor.WithBacking(normalizedStates), tensor.WithShape(batchSize, InputFeatures))
 	statesNode := gorgonia.NodeFromAny(g, statesTensor)
+	if statesNode == nil {
+		return nil, fmt.Errorf("failed to create input node")
+	}
 
 	// Helper function per il broadcasting del bias
 	expandBias := func(bias *gorgonia.Node, size int) (*gorgonia.Node, error) {
@@ -244,17 +265,58 @@ func NewAgent(learningRate, discount, epsilon float64) *Agent {
 	return agent
 }
 
-// GetAction seleziona un'azione usando la policy epsilon-greedy
-func (a *Agent) GetAction(state []float64, numActions int) int {
-	if rand.Float64() < a.Epsilon {
-		return rand.Intn(numActions)
+// GetQValues returns Q-values for all actions in the given state
+func (a *Agent) GetQValues(state []float64) ([]float64, error) {
+	if a.dqn == nil {
+		return nil, fmt.Errorf("DQN not initialized")
+	}
+
+	if len(state) == 0 {
+		return nil, fmt.Errorf("empty state input")
+	}
+
+	if len(state) != InputFeatures {
+		return nil, fmt.Errorf("invalid state length: got %d, expected %d", len(state), InputFeatures)
 	}
 
 	qValues, err := a.dqn.Forward(state)
 	if err != nil {
-		return rand.Intn(numActions)
+		return nil, fmt.Errorf("forward pass failed: %v", err)
 	}
 
+	if len(qValues) != OutputActions {
+		return nil, fmt.Errorf("invalid Q-values length: got %d, expected %d", len(qValues), OutputActions)
+	}
+
+	return qValues, nil
+}
+
+// GetAction seleziona un'azione usando la policy epsilon-greedy
+func (a *Agent) GetAction(state []float64, numActions int) int {
+	// Exploration: scegli un'azione casuale con probabilità epsilon
+	if rand.Float64() < a.Epsilon {
+		action := rand.Intn(numActions)
+		log.Printf("Choosing random action (epsilon): %d", action)
+		return action
+	}
+
+	// Exploitation: usa la rete per predire i Q-values
+	qValues, err := a.GetQValues(state)
+	if err != nil {
+		action := rand.Intn(numActions)
+		log.Printf("Error getting Q-values (%v). Using random action: %d", err, action)
+		return action
+	}
+
+	// Verifica che abbiamo il numero corretto di Q-values
+	if len(qValues) != numActions {
+		action := rand.Intn(numActions)
+		log.Printf("Invalid number of Q-values (got %d, expected %d). Using random action: %d",
+			len(qValues), numActions, action)
+		return action
+	}
+
+	// Scegli l'azione con il Q-value più alto
 	maxQ := math.Inf(-1)
 	bestAction := 0
 	for action, qValue := range qValues {
@@ -264,6 +326,7 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		}
 	}
 
+	log.Printf("Choosing best action from Q-values: %d (Q-value: %.4f)", bestAction, maxQ)
 	return bestAction
 }
 

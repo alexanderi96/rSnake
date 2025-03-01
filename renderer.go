@@ -60,80 +60,83 @@ func (r *Renderer) getStateColor(value float64) rl.Color {
 
 // drawStateGrids draws both the state matrix and directional values grid
 func (r *Renderer) drawStateGrid(g *Game) {
-	if g == nil {
+	if g == nil || r.stats == nil {
 		return
 	}
 
 	// Get state matrix (3x8)
 	state := g.GetStateInfo()
 
-	// Calculate grid positions
-	gridSize := int32(25)                    // Size of each cell in the grid
-	gridX := r.screenWidth - gridSize*8 - 10 // Position from right edge accounting for 8 cells width
-	gridY := int32(5)                        // Same Y as stats start
+	// Calculate grid positions and sizes
+	cellSize := int32(25)                    // Size of each cell in the grid
+	rowSpacing := int32(35)                  // Space between rows
+	gridX := r.screenWidth - cellSize*8 - 10 // Position from right edge
+	gridY := int32(30)                       // Start Y position
 
 	// Calculate position for directional grid (3x3)
-	dirGridSize := int32(30)                                    // Slightly larger for better visibility
-	dirGridX := r.screenWidth - gridSize*8 - dirGridSize*3 - 30 // Position to the left of state grid
+	dirGridSize := int32(25)                                    // Same size as state cells
+	dirGridX := r.screenWidth - cellSize*8 - dirGridSize*3 - 30 // Position to the left of state grid
 	dirGridY := gridY                                           // Same Y as state grid
 
-	// Draw backgrounds
-	// For state grid
-	rl.DrawRectangle(
-		gridX-5,
-		gridY-5,
-		gridSize*8+10, // Width for 8 cells
-		gridSize*3+10, // Height for 3 cells
-		rl.Color{R: 0, G: 0, B: 0, A: 100},
-	)
+	// Draw backgrounds for each row with spacing
+	for row := int32(0); row < 3; row++ {
+		rl.DrawRectangle(
+			gridX-5,
+			gridY+row*rowSpacing-5,
+			cellSize*8+10,
+			cellSize+10,
+			rl.Color{R: 0, G: 0, B: 0, A: 100},
+		)
+	}
 
 	// For directional grid
 	rl.DrawRectangle(
 		dirGridX-5,
 		dirGridY-5,
-		dirGridSize*3+10, // Width for 3 cells
-		dirGridSize*3+10, // Height for 3 cells
+		dirGridSize*3+10,
+		dirGridSize*3+10,
 		rl.Color{R: 0, G: 0, B: 0, A: 100},
 	)
 
 	// Draw labels
-	fontSize := int32(12)
+	fontSize := int32(14) // Slightly larger font
 
-	// For state grid
+	// Direction labels
 	labels := []string{"BL", "L", "FL", "F", "FR", "R", "BR", "B"}
 	rowLabels := []string{"Wall", "Body", "Food"}
 
-	// Draw state grid column labels
-	for i, label := range labels {
-		labelWidth := rl.MeasureText(label, fontSize)
-		labelX := gridX + int32(i)*gridSize + (gridSize-labelWidth)/2
-		labelY := gridY - fontSize - 2
-		rl.DrawText(label, labelX, labelY, fontSize, rl.White)
-	}
-
-	// Draw state grid row labels
+	// Draw row labels with new spacing
 	for i, label := range rowLabels {
 		labelWidth := rl.MeasureText(label, fontSize)
-		labelX := gridX - labelWidth - 5
-		labelY := gridY + int32(i)*gridSize + (gridSize-fontSize)/2
+		labelX := gridX - labelWidth - 10
+		labelY := gridY + int32(i)*rowSpacing + (cellSize-fontSize)/2
 		rl.DrawText(label, labelX, labelY, fontSize, rl.White)
 	}
 
-	// Draw "Combined Values" label for directional grid
+	// Draw "Combined Values" label
 	dirLabel := "Combined Values"
 	labelWidth := rl.MeasureText(dirLabel, fontSize)
 	labelX := dirGridX + (dirGridSize*3-labelWidth)/2
 	labelY := dirGridY - fontSize - 2
 	rl.DrawText(dirLabel, labelX, labelY, fontSize, rl.White)
 
-	// Draw the state grid cells
-	for row := 0; row < 3; row++ {
-		for col := 0; col < 8; col++ {
-			value := state[row*8+col]
-			cellX := gridX + int32(col)*gridSize
-			cellY := gridY + int32(row)*gridSize
+	// Draw the state grid cells with directional indicators
+	for row := int32(0); row < 3; row++ {
+		rowY := gridY + row*rowSpacing
 
-			// Choose color based on the type of information and value
+		// Draw direction labels for this row
+		for i, label := range labels {
+			labelWidth := rl.MeasureText(label, fontSize)
+			labelX := gridX + int32(i)*cellSize + (cellSize-labelWidth)/2
+			labelY := rowY - fontSize - 2
+			rl.DrawText(label, labelX, labelY, fontSize, rl.White)
+		}
+
+		for col := int32(0); col < 8; col++ {
+			value := state[int(row)*8+int(col)]
+			cellX := gridX + col*cellSize
+
+			// Choose color based on the type of information
 			var color rl.Color
 			switch row {
 			case 0: // Walls
@@ -156,9 +159,38 @@ func (r *Renderer) drawStateGrid(g *Game) {
 				}
 			}
 
-			// Draw cell
-			rl.DrawRectangle(cellX, cellY, gridSize, gridSize, color)
-			rl.DrawRectangleLines(cellX, cellY, gridSize, gridSize, rl.White)
+			// Draw cell background
+			rl.DrawRectangle(cellX, rowY, cellSize, cellSize, color)
+			rl.DrawRectangleLines(cellX, rowY, cellSize, cellSize, rl.White)
+
+			// Draw directional indicator triangle
+			if value > 0 {
+				halfCell := cellSize / 2
+				triangleSize := cellSize / 3
+
+				// Calculate triangle points based on direction
+				var p1, p2, p3 rl.Vector2
+				switch {
+				case col == 3: // Front
+					p1 = rl.Vector2{X: float32(cellX + halfCell), Y: float32(rowY)}
+					p2 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + triangleSize)}
+					p3 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + triangleSize)}
+				case col == 7: // Back
+					p1 = rl.Vector2{X: float32(cellX + halfCell), Y: float32(rowY + cellSize)}
+					p2 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + cellSize - triangleSize)}
+					p3 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + cellSize - triangleSize)}
+				case col < 3: // Left side
+					p1 = rl.Vector2{X: float32(cellX), Y: float32(rowY + halfCell)}
+					p2 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + triangleSize)}
+					p3 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + cellSize - triangleSize)}
+				case col > 3 && col < 7: // Right side
+					p1 = rl.Vector2{X: float32(cellX + cellSize), Y: float32(rowY + halfCell)}
+					p2 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + triangleSize)}
+					p3 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + cellSize - triangleSize)}
+				}
+
+				rl.DrawTriangle(p1, p2, p3, rl.Yellow)
+			}
 		}
 	}
 
@@ -261,6 +293,10 @@ func (r *Renderer) drawPlayableArea(g *Game) {
 }
 
 func (r *Renderer) Draw(g *Game) {
+	if g == nil {
+		return
+	}
+
 	r.game = g // Store game reference
 	r.UpdateDimensions()
 	rl.BeginDrawing()
@@ -369,81 +405,6 @@ func (r *Renderer) Draw(g *Game) {
 		snake.Mutex.RUnlock()
 	}
 
-	stats := r.stats.GetStats()
-	if len(stats) == 0 {
-		return
-	}
-
-	// Define graph dimensions
-	graphHeight := int32(150)
-	graphY := r.screenHeight - graphHeight
-
-	// Get all stats values first
-	maxScore := r.stats.GetAbsoluteMaxScore()
-	latestGame := stats[len(stats)-1]
-	gamesPerSecond := r.stats.GetGamesPerSecond()
-
-	// Calculate max width needed for stats
-	statsWidth := int32(0)
-	statsTexts := []string{
-		fmt.Sprintf("Score: %d", score),
-		fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
-		fmt.Sprintf("Max Score: %d", maxScore),
-		fmt.Sprintf("Epsilon: %.3f", latestGame.Epsilon),
-		fmt.Sprintf("Games/s: %d", gamesPerSecond),
-	}
-
-	for _, text := range statsTexts {
-		width := rl.MeasureText(text, fontSize)
-		if width > statsWidth {
-			statsWidth = width
-		}
-	}
-
-	// Add padding to width and height
-	statsWidth += 20                      // 10px padding on each side
-	statsHeight := int32(fontSize*5 + 20) // Height for stats area plus padding
-
-	// Draw dark overlay for stats at the top
-	rl.DrawRectangle(0, 0, statsWidth, statsHeight, rl.Color{R: 0, G: 0, B: 0, A: 100})
-
-	// Draw stats at the top of the screen
-	yOffset := int32(10)             // Start from top with padding
-	xOffset := r.offsetX + int32(10) // Small left padding
-	lineSpacing := fontSize + 5      // Space between lines
-
-	// Score
-	scoreLabel := fmt.Sprintf("Score: %d", score)
-	rl.DrawText(scoreLabel, xOffset, yOffset, fontSize, rl.White)
-	yOffset += lineSpacing
-
-	// Total games
-	rl.DrawText(fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
-		xOffset,
-		yOffset,
-		fontSize, rl.White)
-	yOffset += lineSpacing
-
-	// Max score and its average (verde)
-	rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
-		xOffset,
-		yOffset,
-		fontSize, scoreColor)
-	yOffset += lineSpacing
-
-	// Current epsilon value (arancione)
-	rl.DrawText(fmt.Sprintf("Epsilon: %.3f", latestGame.Epsilon),
-		xOffset,
-		yOffset,
-		fontSize, epsilonColor)
-	yOffset += lineSpacing
-
-	// Games per second (bianco)
-	rl.DrawText(fmt.Sprintf("Games/s: %d", gamesPerSecond),
-		xOffset,
-		yOffset,
-		fontSize, rl.White)
-
 	// Draw food
 	food := g.GetFood()
 	rl.DrawRectangle(
@@ -451,14 +412,91 @@ func (r *Renderer) Draw(g *Game) {
 		r.offsetY+int32(food.Y*int(r.cellSize)),
 		r.cellSize, r.cellSize, rl.Red)
 
-	// Draw dark overlay for graph
-	rl.DrawRectangle(0, graphY, r.screenWidth, graphHeight, rl.Color{R: 0, G: 0, B: 0, A: 100})
+	// Only draw stats and state grid if stats are initialized
+	if r.stats != nil {
+		stats := r.stats.GetStats()
+		if len(stats) > 0 {
+			// Define graph dimensions
+			graphHeight := int32(150)
+			graphY := r.screenHeight - graphHeight
 
-	// Draw statistics graph
-	r.drawStatsGraph()
+			// Get all stats values first
+			maxScore := r.stats.GetAbsoluteMaxScore()
+			latestGame := stats[len(stats)-1]
+			gamesPerSecond := r.stats.GetGamesPerSecond()
 
-	// Draw state grid after stats but before ending drawing
-	r.drawStateGrid(g)
+			// Calculate max width needed for stats
+			statsWidth := int32(0)
+			statsTexts := []string{
+				fmt.Sprintf("Score: %d", score),
+				fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
+				fmt.Sprintf("Max Score: %d", maxScore),
+				fmt.Sprintf("Epsilon: %.3f", latestGame.Epsilon),
+				fmt.Sprintf("Games/s: %d", gamesPerSecond),
+			}
+
+			for _, text := range statsTexts {
+				width := rl.MeasureText(text, fontSize)
+				if width > statsWidth {
+					statsWidth = width
+				}
+			}
+
+			// Add padding to width and height
+			statsWidth += 20                      // 10px padding on each side
+			statsHeight := int32(fontSize*5 + 20) // Height for stats area plus padding
+
+			// Draw dark overlay for stats at the top
+			rl.DrawRectangle(0, 0, statsWidth, statsHeight, rl.Color{R: 0, G: 0, B: 0, A: 100})
+
+			// Draw stats at the top of the screen
+			yOffset := int32(10)             // Start from top with padding
+			xOffset := r.offsetX + int32(10) // Small left padding
+			lineSpacing := fontSize + 5      // Space between lines
+
+			// Score
+			scoreLabel := fmt.Sprintf("Score: %d", score)
+			rl.DrawText(scoreLabel, xOffset, yOffset, fontSize, rl.White)
+			yOffset += lineSpacing
+
+			// Total games
+			rl.DrawText(fmt.Sprintf("Total Games: %d", r.stats.TotalGames),
+				xOffset,
+				yOffset,
+				fontSize, rl.White)
+			yOffset += lineSpacing
+
+			// Max score and its average (verde)
+			rl.DrawText(fmt.Sprintf("Max Score: %d", maxScore),
+				xOffset,
+				yOffset,
+				fontSize, scoreColor)
+			yOffset += lineSpacing
+
+			// Current epsilon value (arancione)
+			rl.DrawText(fmt.Sprintf("Epsilon: %.3f", latestGame.Epsilon),
+				xOffset,
+				yOffset,
+				fontSize, epsilonColor)
+			yOffset += lineSpacing
+
+			// Games per second (bianco)
+			rl.DrawText(fmt.Sprintf("Games/s: %d", gamesPerSecond),
+				xOffset,
+				yOffset,
+				fontSize, rl.White)
+
+			// Draw dark overlay for graph
+			rl.DrawRectangle(0, graphY, r.screenWidth, graphHeight, rl.Color{R: 0, G: 0, B: 0, A: 100})
+
+			// Draw statistics graph
+			r.drawStatsGraph()
+
+			// Draw state grid
+			r.drawStateGrid(g)
+		}
+	}
+
 	rl.EndDrawing()
 }
 
