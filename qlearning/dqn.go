@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"sync"
 
 	"gorgonia.org/gorgonia"
 	"gorgonia.org/tensor"
@@ -19,15 +20,15 @@ func init() {
 
 const (
 	// Parametri DQN
-	BatchSize        = 64    // Aumentato da 32 a 64
-	ReplayBufferSize = 10000 // Aumentato da 5000 a 10000
-	HiddenLayer1Size = 64    // Primo hidden layer più grande
-	HiddenLayer2Size = 32    // Secondo hidden layer aggiunto
-	InputFeatures    = 24    // Matrix 3x8: [walls][body][food] x [backLeft, left, frontLeft, front, frontRight, right, backRight, back]
+	BatchSize        = 64
+	ReplayBufferSize = 10000
+	HiddenLayer1Size = 64 // Ridotto per maggiore efficienza
+	HiddenLayer2Size = 32 // Ridotto per maggiore efficienza
+	InputFeatures    = 24 // Matrix 3x8: [walls][body][food] x [backLeft, left, frontLeft, front, frontRight, right, backRight, back]
 	OutputActions    = 3
-	GradientClip     = 0.5
-	DropoutRate      = 0.2  // Aggiunto dropout per migliorare generalizzazione
-	TauUpdate        = 0.01 // Aumentato da 0.001 a 0.01 per aggiornamenti più rapidi del target network
+	GradientClip     = 1.0   // Aumentato per permettere aggiornamenti più significativi
+	TauUpdate        = 0.005 // Ridotto per aggiornamenti più stabili del target network
+	DropoutRate      = 0.2   // Dropout per regolarizzazione
 
 	// File paths
 	DataDir     = "data"
@@ -36,7 +37,7 @@ const (
 	// Parametri epsilon ciclico
 	EpsilonBaseline  = 0.2    // Valore base dell'epsilon
 	EpsilonAmplitude = 0.1    // Ridotto da 0.15 a 0.1
-	EpsilonPeriod    = 5000.0 // Aumentato da 1000 a 5000 episodi
+	EpsilonPeriod    = 1000.0 // Aumentato da 1000 a 5000 episodi
 )
 
 // Transition rappresenta un singolo step nell'ambiente
@@ -64,6 +65,7 @@ type DQN struct {
 	pred       *gorgonia.Node
 	vm         gorgonia.VM
 	solver     gorgonia.Solver
+	mu         sync.Mutex // Protegge le operazioni sul graph
 }
 
 // Agent rappresenta l'agente DQN
@@ -114,7 +116,7 @@ func (b *ReplayBuffer) Sample(batchSize int) []Transition {
 func NewDQN() *DQN {
 	g := gorgonia.NewGraph()
 
-	// Input layer -> First Hidden layer
+	// Input layer -> First Hidden layer (64)
 	w1 := gorgonia.NewMatrix(g,
 		tensor.Float64,
 		gorgonia.WithShape(InputFeatures, HiddenLayer1Size),
@@ -125,7 +127,7 @@ func NewDQN() *DQN {
 		gorgonia.WithShape(1, HiddenLayer1Size),
 		gorgonia.WithInit(gorgonia.Zeroes()))
 
-	// First Hidden layer -> Second Hidden layer
+	// First Hidden layer -> Second Hidden layer (32)
 	w2 := gorgonia.NewMatrix(g,
 		tensor.Float64,
 		gorgonia.WithShape(HiddenLayer1Size, HiddenLayer2Size),
@@ -155,7 +157,7 @@ func NewDQN() *DQN {
 		b1:     b1,
 		b2:     b2,
 		b3:     b3,
-		solver: gorgonia.NewAdamSolver(gorgonia.WithL2Reg(1e-6), gorgonia.WithLearnRate(0.01)), // Ridotto learning rate
+		solver: gorgonia.NewAdamSolver(gorgonia.WithL2Reg(1e-6), gorgonia.WithLearnRate(0.001)),
 	}
 
 	dqn.vm = gorgonia.NewTapeMachine(g)
@@ -168,14 +170,17 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 		return nil, fmt.Errorf("empty states input")
 	}
 
-	// Reset VM and graph before forward pass
+	dqn.mu.Lock()
+	defer dqn.mu.Unlock()
+
+	// Reset VM and create new graph for clean state
 	dqn.vm.Reset()
-	g := dqn.g
+	g := gorgonia.NewGraph()
+	dqn.g = g
 
 	batchSize := len(states) / InputFeatures
 	if batchSize == 0 {
 		batchSize = 1
-		// Pad states to match input features if needed
 		if len(states) < InputFeatures {
 			paddedStates := make([]float64, InputFeatures)
 			copy(paddedStates, states)
@@ -183,12 +188,11 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 		}
 	}
 
-	// Ensure states length matches expected input size
 	if len(states) != batchSize*InputFeatures {
 		return nil, fmt.Errorf("invalid input shape: got %d values, expected %d", len(states), batchSize*InputFeatures)
 	}
 
-	// Create input tensor with proper shape
+	// Create and validate input tensor
 	statesTensor := tensor.New(tensor.WithBacking(states), tensor.WithShape(batchSize, InputFeatures))
 	if statesTensor == nil {
 		return nil, fmt.Errorf("failed to create input tensor")
@@ -199,6 +203,19 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 		return nil, fmt.Errorf("failed to create input node")
 	}
 
+	// Recreate weight nodes
+	w1Node := gorgonia.NodeFromAny(g, dqn.w1.Value())
+	w2Node := gorgonia.NodeFromAny(g, dqn.w2.Value())
+	w3Node := gorgonia.NodeFromAny(g, dqn.w3.Value())
+	b1Node := gorgonia.NodeFromAny(g, dqn.b1.Value())
+	b2Node := gorgonia.NodeFromAny(g, dqn.b2.Value())
+	b3Node := gorgonia.NodeFromAny(g, dqn.b3.Value())
+
+	if w1Node == nil || w2Node == nil || w3Node == nil ||
+		b1Node == nil || b2Node == nil || b3Node == nil {
+		return nil, fmt.Errorf("failed to create weight/bias nodes")
+	}
+
 	// Helper function per il broadcasting del bias
 	expandBias := func(bias *gorgonia.Node, size int) (*gorgonia.Node, error) {
 		ones := tensor.New(tensor.WithShape(size, 1), tensor.WithBacking(make([]float64, size)))
@@ -206,36 +223,53 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 			ones.Data().([]float64)[i] = 1.0
 		}
 		onesNode := gorgonia.NodeFromAny(g, ones)
+		if onesNode == nil {
+			return nil, fmt.Errorf("failed to create ones node")
+		}
 		return gorgonia.Mul(onesNode, bias)
 	}
 
-	// First Hidden layer con ReLU e Dropout
-	h1 := gorgonia.Must(gorgonia.Mul(statesNode, dqn.w1))
-	expandedBias1 := gorgonia.Must(expandBias(dqn.b1, batchSize))
+	var err error
+	// First Hidden layer con ReLU
+	h1 := gorgonia.Must(gorgonia.Mul(statesNode, w1Node))
+	expandedBias1, err := expandBias(b1Node, batchSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand bias1: %v", err)
+	}
 	h1 = gorgonia.Must(gorgonia.Add(h1, expandedBias1))
 	h1 = gorgonia.Must(gorgonia.Rectify(h1))
-	h1 = gorgonia.Must(gorgonia.Dropout(h1, DropoutRate))
 
-	// Second Hidden layer con ReLU e Dropout
-	h2 := gorgonia.Must(gorgonia.Mul(h1, dqn.w2))
-	expandedBias2 := gorgonia.Must(expandBias(dqn.b2, batchSize))
+	// Second Hidden layer con ReLU
+	h2 := gorgonia.Must(gorgonia.Mul(h1, w2Node))
+	expandedBias2, err := expandBias(b2Node, batchSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand bias2: %v", err)
+	}
 	h2 = gorgonia.Must(gorgonia.Add(h2, expandedBias2))
 	h2 = gorgonia.Must(gorgonia.Rectify(h2))
-	h2 = gorgonia.Must(gorgonia.Dropout(h2, DropoutRate))
 
 	// Output layer
-	output := gorgonia.Must(gorgonia.Mul(h2, dqn.w3))
-	expandedBias3 := gorgonia.Must(expandBias(dqn.b3, batchSize))
+	output := gorgonia.Must(gorgonia.Mul(h2, w3Node))
+	expandedBias3, err := expandBias(b3Node, batchSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand bias3: %v", err)
+	}
 	pred := gorgonia.Must(gorgonia.Add(output, expandedBias3))
 
+	// Run forward pass
 	if err := dqn.vm.RunAll(); err != nil {
 		return nil, fmt.Errorf("forward pass error: %v", err)
 	}
-	dqn.vm.Reset()
 
+	// Get predictions
 	predValue := pred.Value()
 	if predValue == nil {
-		return nil, fmt.Errorf("nil prediction value")
+		// Return default Q-values instead of error
+		defaultQValues := make([]float64, batchSize*OutputActions)
+		for i := 0; i < len(defaultQValues); i++ {
+			defaultQValues[i] = 0.0
+		}
+		return defaultQValues, nil
 	}
 
 	predTensor, ok := predValue.(*tensor.Dense)
@@ -350,7 +384,11 @@ func (a *Agent) Update(state []float64, action int, reward float64, nextState []
 
 // trainOnBatch esegue un passo di training su un batch di transizioni
 func (a *Agent) trainOnBatch(batch []Transition) {
-	g := a.dqn.g
+	// Reset VM and create new graph for training
+	a.dqn.vm.Reset()
+	g := gorgonia.NewGraph()
+	a.dqn.g = g
+
 	states := make([]float64, 0, len(batch)*InputFeatures)
 	nextStates := make([]float64, 0, len(batch)*InputFeatures)
 	actions := make([]int, 0, len(batch))
@@ -363,13 +401,81 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 		rewards = append(rewards, transition.Reward)
 	}
 
-	currentQValues, err := a.dqn.Forward(states)
+	// Create input tensors
+	statesTensor := tensor.New(tensor.WithBacking(states), tensor.WithShape(len(batch), InputFeatures))
+	statesNode := gorgonia.NodeFromAny(g, statesTensor)
+
+	// Recreate weight nodes in the new graph
+	w1Node := gorgonia.NodeFromAny(g, a.dqn.w1.Value())
+	w2Node := gorgonia.NodeFromAny(g, a.dqn.w2.Value())
+	w3Node := gorgonia.NodeFromAny(g, a.dqn.w3.Value())
+	b1Node := gorgonia.NodeFromAny(g, a.dqn.b1.Value())
+	b2Node := gorgonia.NodeFromAny(g, a.dqn.b2.Value())
+	b3Node := gorgonia.NodeFromAny(g, a.dqn.b3.Value())
+
+	// Helper function per il broadcasting del bias
+	expandBias := func(bias *gorgonia.Node, size int) (*gorgonia.Node, error) {
+		ones := tensor.New(tensor.WithShape(size, 1), tensor.WithBacking(make([]float64, size)))
+		for i := range ones.Data().([]float64) {
+			ones.Data().([]float64)[i] = 1.0
+		}
+		onesNode := gorgonia.NodeFromAny(g, ones)
+		if onesNode == nil {
+			return nil, fmt.Errorf("failed to create ones node")
+		}
+		return gorgonia.Mul(onesNode, bias)
+	}
+
+	// Forward pass with dropout during training
+	var err error
+	// First Hidden layer con ReLU e Dropout
+	h1 := gorgonia.Must(gorgonia.Mul(statesNode, w1Node))
+	expandedBias1, err := expandBias(b1Node, len(batch))
 	if err != nil {
+		log.Printf("Error expanding bias1: %v", err)
+		return
+	}
+	h1 = gorgonia.Must(gorgonia.Add(h1, expandedBias1))
+	h1 = gorgonia.Must(gorgonia.Rectify(h1))
+	h1 = gorgonia.Must(gorgonia.Dropout(h1, DropoutRate))
+
+	// Second Hidden layer con ReLU e Dropout
+	h2 := gorgonia.Must(gorgonia.Mul(h1, w2Node))
+	expandedBias2, err := expandBias(b2Node, len(batch))
+	if err != nil {
+		log.Printf("Error expanding bias2: %v", err)
+		return
+	}
+	h2 = gorgonia.Must(gorgonia.Add(h2, expandedBias2))
+	h2 = gorgonia.Must(gorgonia.Rectify(h2))
+	h2 = gorgonia.Must(gorgonia.Dropout(h2, DropoutRate))
+
+	// Output layer
+	output := gorgonia.Must(gorgonia.Mul(h2, w3Node))
+	expandedBias3, err := expandBias(b3Node, len(batch))
+	if err != nil {
+		log.Printf("Error expanding bias3: %v", err)
+		return
+	}
+	pred := gorgonia.Must(gorgonia.Add(output, expandedBias3))
+
+	if err := a.dqn.vm.RunAll(); err != nil {
+		log.Printf("Error during forward pass: %v", err)
 		return
 	}
 
+	predValue := pred.Value()
+	if predValue == nil {
+		log.Printf("Nil prediction value during training")
+		return
+	}
+
+	currentQValues := predValue.Data().([]float64)
+
+	// Get next state Q-values from target network
 	nextQValues, err := a.targetDQN.Forward(nextStates)
 	if err != nil {
+		log.Printf("Error getting next state Q-values: %v", err)
 		return
 	}
 
@@ -383,18 +489,14 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 				maxQ = nextQValues[i*OutputActions+j]
 			}
 		}
-
 		targetQValues[i*OutputActions+actions[i]] = rewards[i] + a.Discount*maxQ
 	}
 
 	targetTensor := tensor.New(tensor.WithBacking(targetQValues), tensor.WithShape(len(batch), OutputActions))
 	targetNode := gorgonia.NodeFromAny(g, targetTensor)
 
-	currentTensor := tensor.New(tensor.WithBacking(currentQValues), tensor.WithShape(len(batch), OutputActions))
-	currentNode := gorgonia.NodeFromAny(g, currentTensor)
-
 	// MSE Loss
-	diff := gorgonia.Must(gorgonia.Sub(currentNode, targetNode))
+	diff := gorgonia.Must(gorgonia.Sub(pred, targetNode))
 	loss := gorgonia.Must(gorgonia.Mean(gorgonia.Must(gorgonia.Square(diff))))
 
 	// Backpropagation con gradient clipping

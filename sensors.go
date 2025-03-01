@@ -239,9 +239,10 @@ func (g *Game) GetStateInfo() []float64 {
 			state[i+8] = 1.0
 		}
 
-		// Cibo [16-23]
-		if nextPos == g.food {
-			state[i+16] = 1.0
+		// Cibo [16-23] - Usa GetCombinedDirectionalInfo per avere informazione direzionale costante
+		foodValue := g.GetCombinedDirectionalInfo(dir)
+		if foodValue > 0 {
+			state[i+16] = foodValue // Valore positivo indica direzione verso il cibo
 		}
 	}
 
