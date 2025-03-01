@@ -181,42 +181,71 @@ func minFloat64(a, b float64) float64 {
 	return b
 }
 
-// GetStateInfo restituisce i valori combinati per le 7 direzioni principali
-func (g *Game) GetStateInfo() (front, left, right, frontLeft, frontRight, backLeft, backRight float64) {
+// GetStateInfo restituisce una matrice 3x8 che rappresenta lo stato del gioco
+// [muri][corpo][cibo] x [backLeft, left, frontLeft, front, frontRight, right, backRight, back]
+func (g *Game) GetStateInfo() []float64 {
 	currentDir := g.GetCurrentDirection()
 	leftDir := currentDir.TurnLeft()
 	rightDir := currentDir.TurnRight()
 
-	// Calcola i vettori per le direzioni diagonali frontali
-	frontLeftVec := Point{
-		X: currentDir.ToPoint().X + leftDir.ToPoint().X,
-		Y: currentDir.ToPoint().Y + leftDir.ToPoint().Y,
-	}
-	frontRightVec := Point{
-		X: currentDir.ToPoint().X + rightDir.ToPoint().X,
-		Y: currentDir.ToPoint().Y + rightDir.ToPoint().Y,
-	}
+	// Calcola i vettori per tutte le direzioni
+	directions := make([]Point, 8)
 
-	// Calcola i vettori per le direzioni posteriori
-	backLeftVec := Point{
+	// Ordine: backLeft, left, frontLeft, front, frontRight, right, backRight, back
+	directions[0] = Point{ // backLeft
 		X: -currentDir.ToPoint().X + leftDir.ToPoint().X,
 		Y: -currentDir.ToPoint().Y + leftDir.ToPoint().Y,
 	}
-	backRightVec := Point{
+	directions[1] = leftDir.ToPoint() // left
+	directions[2] = Point{            // frontLeft
+		X: currentDir.ToPoint().X + leftDir.ToPoint().X,
+		Y: currentDir.ToPoint().Y + leftDir.ToPoint().Y,
+	}
+	directions[3] = currentDir.ToPoint() // front
+	directions[4] = Point{               // frontRight
+		X: currentDir.ToPoint().X + rightDir.ToPoint().X,
+		Y: currentDir.ToPoint().Y + rightDir.ToPoint().Y,
+	}
+	directions[5] = rightDir.ToPoint() // right
+	directions[6] = Point{             // backRight
 		X: -currentDir.ToPoint().X + rightDir.ToPoint().X,
 		Y: -currentDir.ToPoint().Y + rightDir.ToPoint().Y,
 	}
+	directions[7] = Point{ // back
+		X: -currentDir.ToPoint().X,
+		Y: -currentDir.ToPoint().Y,
+	}
 
-	// Ottiene i valori combinati per ogni direzione
-	front = g.GetCombinedDirectionalInfo(currentDir.ToPoint())
-	left = g.GetCombinedDirectionalInfo(leftDir.ToPoint())
-	right = g.GetCombinedDirectionalInfo(rightDir.ToPoint())
-	frontLeft = g.GetCombinedDirectionalInfo(frontLeftVec)
-	frontRight = g.GetCombinedDirectionalInfo(frontRightVec)
-	backLeft = g.GetCombinedDirectionalInfo(backLeftVec)
-	backRight = g.GetCombinedDirectionalInfo(backRightVec)
+	// Crea la matrice 3x8 (appiattita come array di 24 elementi)
+	state := make([]float64, 24)
+	head := g.snake.GetHead()
 
-	return
+	for i, dir := range directions {
+		nextPos := Point{
+			X: head.X + dir.X,
+			Y: head.Y + dir.Y,
+		}
+
+		// Ottiene informazioni sulla collisione
+		_, collisionInfo := g.getCollisionInfo(nextPos)
+
+		// Muri [0-7]
+		if collisionInfo.Type == WallCollision {
+			state[i] = 1.0
+		}
+
+		// Corpo [8-15]
+		if collisionInfo.Type == SelfCollision {
+			state[i+8] = 1.0
+		}
+
+		// Cibo [16-23]
+		if nextPos == g.food {
+			state[i+16] = 1.0
+		}
+	}
+
+	return state
 }
 
 // getManhattanDistance calcola la distanza Manhattan tra due punti considerando i bordi della griglia

@@ -26,13 +26,10 @@ func (sa *SnakeAgent) getManhattanDistance() int {
 	return abs(head.X-food.X) + abs(head.Y-food.Y)
 }
 
-// getState restituisce il vettore di stato semplificato come []float64
+// getState restituisce il vettore di stato come matrice 3x8 appiattita
 func (sa *SnakeAgent) getState() []float64 {
-	// Ottiene i valori combinati per le 7 direzioni
-	front, left, right, frontLeft, frontRight, backLeft, backRight := sa.game.GetStateInfo()
-
-	// Restituisce il vettore di stato
-	return []float64{front, left, right, frontLeft, frontRight, backLeft, backRight}
+	// Ottiene la matrice 3x8 appiattita [muri][corpo][cibo] x [backLeft, left, frontLeft, front, frontRight, right, backRight, back]
+	return sa.game.GetStateInfo()
 }
 
 // relativeActionToAbsolute converte un'azione relativa in una direzione assoluta.
@@ -92,48 +89,77 @@ func (sa *SnakeAgent) calculateReward(oldScore int) float64 {
 
 	// Cibo mangiato (reward proporzionale alla lunghezza)
 	if snake.Score > oldScore {
-		baseReward := 2.0
+		baseReward := 10.0
 		lengthBonus := float64(snake.Score) * 0.1
 		return baseReward + lengthBonus
 	}
 
-	// Ottiene i valori dello stato corrente
-	front, left, right, frontLeft, frontRight, backLeft, backRight := sa.game.GetStateInfo()
+	// Ottiene la matrice di stato
+	state := sa.game.GetStateInfo()
+	walls := state[0:8]  // Primi 8 valori: muri
+	body := state[8:16]  // Secondi 8 valori: corpo
+	food := state[16:24] // Ultimi 8 valori: cibo
 
-	// Determina la direzione scelta e le diagonali/retro associate
-	var chosenValue, diagLeft, diagRight, backValue float64
+	// Determina gli indici per la direzione scelta e le direzioni associate
+	var mainIndex, diagLeftIndex, diagRightIndex, backIndex int
 	switch action := sa.game.GetLastAction(); action {
 	case 1: // avanti
-		chosenValue = front
-		diagLeft = frontLeft
-		diagRight = frontRight
-		backValue = (backLeft + backRight) / 2 // media dei valori posteriori
+		mainIndex = 3      // front
+		diagLeftIndex = 2  // frontLeft
+		diagRightIndex = 4 // frontRight
+		backIndex = 7      // back
 	case 0: // sinistra
-		chosenValue = left
-		diagLeft = frontLeft
-		backValue = backLeft
+		mainIndex = 1     // left
+		diagLeftIndex = 2 // frontLeft
+		backIndex = 0     // backLeft
 	case 2: // destra
-		chosenValue = right
-		diagRight = frontRight
-		backValue = backRight
+		mainIndex = 5      // right
+		diagRightIndex = 4 // frontRight
+		backIndex = 6      // backRight
 	}
 
-	// Reward basato sul valore della direzione scelta
-	if chosenValue == 1.0 { // Ha scelto una direzione con cibo
+	// Reward basato sulla direzione scelta
+	if food[mainIndex] > 0 { // Ha scelto una direzione con cibo
 		reward += 1.0
-	} else if chosenValue == -1.0 { // Ha scelto una direzione pericolosa
+	} else if walls[mainIndex] > 0 || body[mainIndex] > 0 { // Ha scelto una direzione pericolosa
 		reward -= 1.5
-	} else if chosenValue > 0 { // Ha scelto una direzione che avvicina al cibo
-		reward += 0.5
-	} else if chosenValue < 0 { // Ha scelto una direzione che allontana dal cibo
-		reward -= 0.3
 	}
 
-	// Reward aggiuntivo basato sulle diagonali e direzioni posteriori
-	if diagLeft == -1.0 || diagRight == -1.0 || backValue == -1.0 {
-		reward -= 0.5 // Penalità se ci sono pericoli nelle diagonali o dietro
-	} else if diagLeft == 1.0 || diagRight == 1.0 || backValue == 1.0 {
-		reward += 0.3 // Bonus se c'è cibo nelle diagonali o dietro
+	// Reward aggiuntivo basato sulle diagonali e direzione posteriore
+	dangerNearby := false
+	foodNearby := false
+
+	// Controlla le diagonali
+	if diagLeftIndex >= 0 {
+		if walls[diagLeftIndex] > 0 || body[diagLeftIndex] > 0 {
+			dangerNearby = true
+		}
+		if food[diagLeftIndex] > 0 {
+			foodNearby = true
+		}
+	}
+	if diagRightIndex >= 0 {
+		if walls[diagRightIndex] > 0 || body[diagRightIndex] > 0 {
+			dangerNearby = true
+		}
+		if food[diagRightIndex] > 0 {
+			foodNearby = true
+		}
+	}
+
+	// Controlla la direzione posteriore
+	if walls[backIndex] > 0 || body[backIndex] > 0 {
+		dangerNearby = true
+	}
+	if food[backIndex] > 0 {
+		foodNearby = true
+	}
+
+	if dangerNearby {
+		reward -= 0.5 // Penalità se ci sono pericoli nelle vicinanze
+	}
+	if foodNearby {
+		reward += 0.3 // Bonus se c'è cibo nelle vicinanze
 	}
 
 	// Reward basato sulla distanza dal cibo

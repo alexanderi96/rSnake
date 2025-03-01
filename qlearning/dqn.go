@@ -23,7 +23,7 @@ const (
 	ReplayBufferSize = 10000 // Aumentato da 5000 a 10000
 	HiddenLayer1Size = 64    // Primo hidden layer più grande
 	HiddenLayer2Size = 32    // Secondo hidden layer aggiunto
-	InputFeatures    = 7     // Combined food/danger values for 7 directions (front, left, right, frontLeft, frontRight, backLeft, backRight)
+	InputFeatures    = 24    // Matrix 3x8: [walls][body][food] x [backLeft, left, frontLeft, front, frontRight, right, backRight, back]
 	OutputActions    = 3
 	GradientClip     = 0.5
 	DropoutRate      = 0.2  // Aggiunto dropout per migliorare generalizzazione

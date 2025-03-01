@@ -159,36 +159,48 @@ func (s *GameStats) groupGames() {
 				}
 			}
 
-			// Se non abbiamo più di GroupSize elementi, passa al livello successivo
-			if len(sameLevel) <= GroupSize {
+			// Se non abbiamo almeno GroupSize elementi, passa al livello successivo
+			if len(sameLevel) < GroupSize {
 				break
 			}
 
-			// Promuovi il record più vecchio al livello successivo
-			oldestIdx := sameLevel[0]
-
-			// Cerca se esiste già un record del livello successivo che può assorbire
-			nextLevelExists := false
-			nextLevelIdx := -1
-			for i := 0; i < oldestIdx; i++ {
-				if s.Games[i].CompressionIndex == level+1 && s.Games[i].GamesCount < GroupSize {
-					nextLevelExists = true
-					nextLevelIdx = i
-					break
-				}
+			// Calcola il numero totale di record con lo stesso livello
+			totalRecordsAtLevel := 0
+			for _, idx := range sameLevel {
+				totalRecordsAtLevel += s.Games[idx].GamesCount
 			}
 
-			if nextLevelExists {
-				// Prova ad assorbire nel record esistente
-				if !s.mergeRecords(nextLevelIdx, oldestIdx) {
-					// Se il merge fallisce, promuovi al livello successivo e resetta il conteggio
+			// Promuovi solo se il totale dei record è >= GroupSize
+			if totalRecordsAtLevel >= GroupSize {
+				// Promuovi il record più vecchio al livello successivo
+				oldestIdx := sameLevel[0]
+
+				// Cerca se esiste già un record del livello successivo che può assorbire
+				nextLevelExists := false
+				nextLevelIdx := -1
+				for i := 0; i < oldestIdx; i++ {
+					if s.Games[i].CompressionIndex == level+1 && s.Games[i].GamesCount < GroupSize {
+						nextLevelExists = true
+						nextLevelIdx = i
+						break
+					}
+				}
+
+				if nextLevelExists {
+					// Prova ad assorbire nel record esistente
+					if !s.mergeRecords(nextLevelIdx, oldestIdx) {
+						// Se il merge fallisce, promuovi al livello successivo e resetta il conteggio
+						s.Games[oldestIdx].CompressionIndex = level + 1
+						s.Games[oldestIdx].GamesCount = 1
+					}
+				} else {
+					// Promuovi direttamente al livello successivo e resetta il conteggio
 					s.Games[oldestIdx].CompressionIndex = level + 1
 					s.Games[oldestIdx].GamesCount = 1
 				}
 			} else {
-				// Promuovi direttamente al livello successivo e resetta il conteggio
-				s.Games[oldestIdx].CompressionIndex = level + 1
-				s.Games[oldestIdx].GamesCount = 1
+				// Non ci sono abbastanza record totali per promuovere
+				break
 			}
 
 			// Aggiorna il massimo livello se necessario
