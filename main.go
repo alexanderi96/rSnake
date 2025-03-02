@@ -56,8 +56,17 @@ func main() {
 
 		// Check if snake is dead and needs to be reset
 		if snake.Dead {
+			// Calculate policy entropy
+			state := game.GetStateInfo()
+			qValues, err := agent.agent.GetQValues(state)
+			policyEntropy := 0.0
+			if err == nil {
+				policy := agent.softmax(qValues, 0.1)
+				policyEntropy = agent.calculateEntropy(policy)
+			}
+
 			// Save stats before reset
-			renderer.stats.AddGame(snake.Score, gameStartTime, time.Now(), agent.GetEpsilon())
+			renderer.stats.AddGame(snake.Score, gameStartTime, time.Now(), policyEntropy)
 			gameStartTime = time.Time{} // Reset start time
 
 			// Reset agent with new game

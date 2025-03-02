@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"snake-game/qlearning"
 )
@@ -14,7 +15,7 @@ type SnakeAgent struct {
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
-	agent := qlearning.NewAgent(0.5, 0.8, 0.95)
+	agent := qlearning.NewAgent(0.5, 0.8) // learningRate, discount
 	return &SnakeAgent{
 		agent: agent,
 		game:  game,
@@ -93,86 +94,62 @@ func (sa *SnakeAgent) Update() {
 
 func (sa *SnakeAgent) calculateReward(oldScore int, chosenAction int, qValues []float64) float64 {
 	snake := sa.game.GetSnake()
-	baseReward := -0.005 // Penalità minima per step
 
-	// Morte - penalità significativa ma non eccessiva
+	// Reward base semplificato
+	baseReward := -0.01 // Piccola penalità per step per incoraggiare movimento efficiente
+
+	// Morte
 	if snake.Dead {
-		return -2.0
+		return -1.0
 	}
 
-	// Cibo mangiato - premio base più contenuto ma con bonus per lunghezza
+	// Cibo mangiato
 	if snake.Score > oldScore {
-		baseReward = 5.0
-		baseReward += float64(snake.Score) * 0.2
+		baseReward = 1.0
 	}
 
-	// Analisi stato
-	state := sa.game.GetStateInfo()
-	walls := state[0:8]  // Primi 8 valori: muri
-	body := state[8:16]  // Secondi 8 valori: corpo
-	food := state[16:24] // Ultimi 8 valori: cibo
+	// Calcola entropia della policy per incoraggiare esplorazione
+	policy := sa.softmax(qValues, 0.1) // temperatura bassa per policy più sharp
+	entropy := sa.calculateEntropy(policy)
 
-	// Indici per la direzione scelta
-	directionIndex := 3 // front
-	switch chosenAction {
-	case 0: // sinistra
-		directionIndex = 1
-	case 2: // destra
-		directionIndex = 5
-	}
+	// Bonus di esplorazione basato sull'entropia
+	explorationBonus := 0.1 * entropy
 
-	// 1. Vicinanza al cibo (0.0 - 1.0) * 1.5
-	foodReward := food[directionIndex] * 1.5
-
-	// 2. Pericoli (-2.0 - 0.0)
-	wallDanger := walls[directionIndex] * -1.0
-	bodyDanger := body[directionIndex] * -1.0
-	dangerPenalty := wallDanger + bodyDanger
-
-	// 3. Spazio libero circostante (bonus per aree aperte)
-	freeSpace := 0.0
-	for i := 0; i < 8; i++ {
-		if walls[i] == 0 && body[i] == 0 {
-			freeSpace += 0.1
-		}
-	}
-
-	// Calcola il reward base
-	baseReward += foodReward + dangerPenalty + freeSpace
-
-	// Scala il reward basato sulla qualità dell'azione
-	bestQValue := qValues[0]
-	worstQValue := qValues[0]
-	for _, qValue := range qValues {
-		if qValue > bestQValue {
-			bestQValue = qValue
-		}
-		if qValue < worstQValue {
-			worstQValue = qValue
-		}
-	}
-
-	chosenQValue := qValues[chosenAction]
-
-	// Se c'è una differenza significativa tra le azioni
-	if bestQValue != worstQValue {
-		// Normalizza il Q-value dell'azione scelta
-		normalizedQValue := (chosenQValue - worstQValue) / (bestQValue - worstQValue)
-
-		// Scala il reward:
-		// - Se è la migliore azione (normalizedQValue = 1): moltiplica per 1.2
-		// - Se è la peggiore azione (normalizedQValue = 0): moltiplica per 0.8
-		// - Per azioni intermedie: scala proporzionalmente
-		scaleFactor := 0.8 + (0.4 * normalizedQValue)
-		baseReward *= scaleFactor
-	}
-
-	return baseReward
+	// Reward finale
+	return baseReward + explorationBonus
 }
 
-// GetEpsilon returns the current epsilon value
-func (sa *SnakeAgent) GetEpsilon() float64 {
-	return sa.agent.Epsilon
+// softmax converte Q-values in una distribuzione di probabilità
+func (sa *SnakeAgent) softmax(qValues []float64, temperature float64) []float64 {
+	policy := make([]float64, len(qValues))
+	maxQ := qValues[0]
+	for _, q := range qValues {
+		if q > maxQ {
+			maxQ = q
+		}
+	}
+
+	var sum float64
+	for i, q := range qValues {
+		policy[i] = math.Exp((q - maxQ) / temperature)
+		sum += policy[i]
+	}
+
+	for i := range policy {
+		policy[i] /= sum
+	}
+	return policy
+}
+
+// calculateEntropy calcola l'entropia della policy
+func (sa *SnakeAgent) calculateEntropy(policy []float64) float64 {
+	var entropy float64
+	for _, p := range policy {
+		if p > 0 {
+			entropy -= p * math.Log(p)
+		}
+	}
+	return entropy
 }
 
 // Reset prepara l'agente per una nuova partita mantenendo le conoscenze apprese.

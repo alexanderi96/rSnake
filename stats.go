@@ -43,7 +43,7 @@ type GameRecord struct {
 	AverageMinScore           float64   `json:"averageMinScore"`           // Media dei punteggi minimi
 	AverageMaxDuration        float64   `json:"averageMaxDuration"`        // Media delle durate massime
 	AverageMinDuration        float64   `json:"averageMinDuration"`        // Media delle durate minime
-	Epsilon                   float64   `json:"epsilon"`                   // Valore epsilon al momento della partita
+	PolicyEntropy             float64   `json:"policyEntropy"`             // Entropia della policy al momento della partita
 }
 
 // NewGameStats crea una nuova istanza di GameStats e tenta di caricare i dati dal file.
@@ -81,7 +81,7 @@ func (s *GameStats) GetGamesPerSecond() int {
 }
 
 // AddGame aggiunge una nuova partita alle statistiche.
-func (s *GameStats) AddGame(score int, startTime, endTime time.Time, epsilon float64) {
+func (s *GameStats) AddGame(score int, startTime, endTime time.Time, policyEntropy float64) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -120,7 +120,7 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time, epsilon flo
 		AverageMinScore:           float64(score),
 		AverageMaxDuration:        duration,
 		AverageMinDuration:        duration,
-		Epsilon:                   epsilon,
+		PolicyEntropy:             policyEntropy,
 	}
 	s.Games = append(s.Games, game)
 
@@ -324,9 +324,9 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 			newRecord.AverageMinDuration*float64(newRecord.GamesCount)) / float64(totalGames)
 	}
 
-	// Calcola la media dell'epsilon ponderata correttamente
-	newEpsilon := (compressed.Epsilon*float64(compressed.GamesCount) +
-		newRecord.Epsilon*float64(newRecord.GamesCount)) / float64(totalGames)
+	// Calcola la media dell'entropia della policy ponderata correttamente
+	newPolicyEntropy := (compressed.PolicyEntropy*float64(compressed.GamesCount) +
+		newRecord.PolicyEntropy*float64(newRecord.GamesCount)) / float64(totalGames)
 
 	// Aggiorna il record compresso con i nuovi valori calcolati
 	compressed.GamesCount = totalGames
@@ -340,7 +340,7 @@ func (s *GameStats) mergeRecords(compressedIdx, newIdx int) bool {
 	compressed.AverageMinScore = newAverageMinScore
 	compressed.AverageMaxDuration = newAverageMaxDuration
 	compressed.AverageMinDuration = newAverageMinDuration
-	compressed.Epsilon = newEpsilon
+	compressed.PolicyEntropy = newPolicyEntropy
 
 	// Aggiorna la data di fine se il nuovo record è più recente
 	if newRecord.EndTime.After(compressed.EndTime) {

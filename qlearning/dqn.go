@@ -19,25 +19,25 @@ func init() {
 }
 
 const (
-	// Parametri DQN
+	// Network parameters
 	BatchSize        = 64
 	ReplayBufferSize = 10000
-	HiddenLayer1Size = 64 // Ridotto per maggiore efficienza
-	HiddenLayer2Size = 32 // Ridotto per maggiore efficienza
-	InputFeatures    = 24 // Matrix 3x8: [walls][body][food] x [backLeft, left, frontLeft, front, frontRight, right, backRight, back]
+	HiddenLayer1Size = 128 // Increased for better representation
+	HiddenLayer2Size = 64  // Increased for better representation
+	InputFeatures    = 24  // Matrix 3x8: [walls][body][food] x [backLeft, left, frontLeft, front, frontRight, right, backRight, back]
 	OutputActions    = 3
-	GradientClip     = 1.0   // Aumentato per permettere aggiornamenti più significativi
-	TauUpdate        = 0.005 // Ridotto per aggiornamenti più stabili del target network
-	DropoutRate      = 0.2   // Dropout per regolarizzazione
+	GradientClip     = 1.0 // Gradient clipping threshold
+	DropoutRate      = 0.2 // Dropout for regularization
+
+	// Training parameters
+	TargetUpdateFreq = 1000 // Steps between target network updates
+	NumTargets       = 3    // Number of target networks
+	RewardScale      = 0.1  // Scale factor for rewards
+	RewardClip       = 1.0  // Maximum absolute reward value
 
 	// File paths
 	DataDir     = "data"
 	WeightsFile = DataDir + "/dqn_weights.gob"
-
-	// Parametri epsilon ciclico
-	EpsilonBaseline  = 0.2    // Valore base dell'epsilon
-	EpsilonAmplitude = 0.1    // Ridotto da 0.15 a 0.1
-	EpsilonPeriod    = 1000.0 // Aumentato da 1000 a 5000 episodi
 )
 
 // Transition rappresenta un singolo step nell'ambiente
@@ -70,14 +70,30 @@ type DQN struct {
 
 // Agent rappresenta l'agente DQN
 type Agent struct {
-	dqn          *DQN
-	targetDQN    *DQN
-	replayBuffer *ReplayBuffer
-	LearningRate float64
-	Discount     float64
-	Epsilon      float64
-	episodeCount int
+	dqn           *DQN   // Online network
+	targetDQNs    []*DQN // Multiple target networks
+	currentTarget int    // Indice del target network corrente
+	updateFreq    int    // Frequenza di aggiornamento dei target networks
+	stepCount     int    // Contatore degli step per aggiornamento periodico
+	replayBuffer  *ReplayBuffer
+	LearningRate  float64
+	Discount      float64
+	episodeCount  int
+
+	// Reward processing
+	rewardStats struct {
+		history   []float64
+		mean      float64
+		std       float64
+		clipValue float64
+	}
 }
+
+const (
+	NumTargetNetworks = 3    // Numero di target networks
+	UpdateFrequency   = 1000 // Frequenza di aggiornamento dei target networks
+	RewardClipValue   = 1.0  // Valore massimo per il clipping delle rewards
+)
 
 // NewReplayBuffer crea un nuovo buffer di replay
 func NewReplayBuffer(maxSize int) *ReplayBuffer {
@@ -116,7 +132,7 @@ func (b *ReplayBuffer) Sample(batchSize int) []Transition {
 func NewDQN() *DQN {
 	g := gorgonia.NewGraph()
 
-	// Input layer -> First Hidden layer (64)
+	// Input layer -> First Hidden layer (128)
 	w1 := gorgonia.NewMatrix(g,
 		tensor.Float64,
 		gorgonia.WithShape(InputFeatures, HiddenLayer1Size),
@@ -284,19 +300,68 @@ func (dqn *DQN) Forward(states []float64) ([]float64, error) {
 }
 
 // NewAgent crea un nuovo agente DQN
-func NewAgent(learningRate, discount, epsilon float64) *Agent {
+func NewAgent(learningRate, discount float64) *Agent {
 	agent := &Agent{
-		dqn:          NewDQN(),
-		targetDQN:    NewDQN(),
-		replayBuffer: NewReplayBuffer(ReplayBufferSize),
-		LearningRate: learningRate,
-		Discount:     discount,
-		Epsilon:      epsilon,
-		episodeCount: 0,
+		dqn:           NewDQN(),
+		targetDQNs:    make([]*DQN, NumTargetNetworks),
+		currentTarget: 0,
+		updateFreq:    UpdateFrequency,
+		stepCount:     0,
+		replayBuffer:  NewReplayBuffer(ReplayBufferSize),
+		LearningRate:  learningRate,
+		Discount:      discount,
+		episodeCount:  0,
 	}
+
+	// Inizializza i target networks
+	for i := 0; i < NumTargetNetworks; i++ {
+		agent.targetDQNs[i] = NewDQN()
+	}
+
+	// Inizializza le statistiche delle reward
+	agent.rewardStats.history = make([]float64, 0, 1000)
+	agent.rewardStats.clipValue = RewardClipValue
 
 	agent.LoadWeights(WeightsFile)
 	return agent
+}
+
+// processReward applica clipping, scaling e normalizzazione alla reward
+func (a *Agent) processReward(rawReward float64) float64 {
+	// 1. Apply reward scaling
+	scaledReward := rawReward * RewardScale
+
+	// 2. Clipping
+	clippedReward := math.Max(-a.rewardStats.clipValue,
+		math.Min(a.rewardStats.clipValue, scaledReward))
+
+	// 3. Aggiorna statistiche con finestra mobile
+	a.rewardStats.history = append(a.rewardStats.history, clippedReward)
+	windowSize := 1000
+	if len(a.rewardStats.history) > windowSize {
+		a.rewardStats.history = a.rewardStats.history[1:]
+	}
+
+	// 4. Calcola statistiche con Exponential Moving Average
+	if len(a.rewardStats.history) == 1 {
+		a.rewardStats.mean = clippedReward
+		a.rewardStats.std = 1.0 // Inizializza con valore non zero
+	} else {
+		alpha := 0.01 // Fattore di smoothing per EMA
+		a.rewardStats.mean = (1-alpha)*a.rewardStats.mean + alpha*clippedReward
+
+		// Calcola deviazione standard con EMA
+		diff := clippedReward - a.rewardStats.mean
+		variance := diff * diff
+		a.rewardStats.std = math.Sqrt((1-alpha)*a.rewardStats.std*a.rewardStats.std + alpha*variance)
+	}
+
+	// 5. Normalizzazione con epsilon per stabilità numerica
+	epsilon := 1e-8
+	normalizedReward := (clippedReward - a.rewardStats.mean) / (a.rewardStats.std + epsilon)
+
+	// 6. Clip normalized reward per evitare valori estremi
+	return math.Max(-5.0, math.Min(5.0, normalizedReward))
 }
 
 // GetQValues returns Q-values for all actions in the given state
@@ -325,16 +390,25 @@ func (a *Agent) GetQValues(state []float64) ([]float64, error) {
 	return qValues, nil
 }
 
-// GetAction seleziona un'azione usando la policy epsilon-greedy
+const (
+	InitialEpsilon = 1.0   // Valore iniziale di epsilon
+	MinEpsilon     = 0.01  // Valore minimo di epsilon
+	EpsilonDecay   = 0.995 // Fattore di decadimento di epsilon
+)
+
+// GetAction seleziona un'azione usando epsilon-greedy con decadimento
 func (a *Agent) GetAction(state []float64, numActions int) int {
-	// Exploration: scegli un'azione casuale con probabilità epsilon
-	if rand.Float64() < a.Epsilon {
+	// Calcola epsilon corrente
+	epsilon := math.Max(MinEpsilon, InitialEpsilon*math.Pow(EpsilonDecay, float64(a.episodeCount)))
+
+	// Esplorazione casuale con probabilità epsilon
+	if rand.Float64() < epsilon {
 		action := rand.Intn(numActions)
-		log.Printf("Choosing random action (epsilon): %d", action)
+		log.Printf("Exploring with epsilon %.4f: choosing random action %d", epsilon, action)
 		return action
 	}
 
-	// Exploitation: usa la rete per predire i Q-values
+	// Sfruttamento: scegli l'azione con il Q-value più alto
 	qValues, err := a.GetQValues(state)
 	if err != nil {
 		action := rand.Intn(numActions)
@@ -342,7 +416,6 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		return action
 	}
 
-	// Verifica che abbiamo il numero corretto di Q-values
 	if len(qValues) != numActions {
 		action := rand.Intn(numActions)
 		log.Printf("Invalid number of Q-values (got %d, expected %d). Using random action: %d",
@@ -350,26 +423,56 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		return action
 	}
 
-	// Scegli l'azione con il Q-value più alto
-	maxQ := math.Inf(-1)
+	// Trova l'azione con il Q-value massimo
 	bestAction := 0
-	for action, qValue := range qValues {
-		if qValue > maxQ {
-			maxQ = qValue
-			bestAction = action
+	maxQ := qValues[0]
+	for i := 1; i < len(qValues); i++ {
+		if qValues[i] > maxQ {
+			maxQ = qValues[i]
+			bestAction = i
 		}
 	}
 
-	log.Printf("Choosing best action from Q-values: %d (Q-value: %.4f)", bestAction, maxQ)
+	log.Printf("Exploiting with epsilon %.4f: choosing best action %d (Q-value: %.4f)",
+		epsilon, bestAction, maxQ)
 	return bestAction
+}
+
+// softmax converte Q-values in una distribuzione di probabilità
+func (a *Agent) softmax(qValues []float64, temperature float64) []float64 {
+	policy := make([]float64, len(qValues))
+	maxQ := qValues[0]
+	for _, q := range qValues {
+		if q > maxQ {
+			maxQ = q
+		}
+	}
+
+	var sum float64
+	for i, q := range qValues {
+		policy[i] = math.Exp((q - maxQ) / temperature)
+		sum += policy[i]
+	}
+
+	for i := range policy {
+		policy[i] /= sum
+	}
+	return policy
 }
 
 // Update esegue un passo di aggiornamento DQN
 func (a *Agent) Update(state []float64, action int, reward float64, nextState []float64, numActions int) {
+	// Process reward
+	processedReward := a.processReward(reward)
+
+	// Increment step counter
+	a.stepCount++
+
+	// Add to replay buffer
 	a.replayBuffer.Add(Transition{
 		State:     state,
 		Action:    action,
-		Reward:    reward,
+		Reward:    processedReward,
 		NextState: nextState,
 		Done:      false,
 	})
@@ -380,6 +483,14 @@ func (a *Agent) Update(state []float64, action int, reward float64, nextState []
 
 	batch := a.replayBuffer.Sample(BatchSize)
 	a.trainOnBatch(batch)
+
+	// Periodic update of target networks
+	if a.stepCount%a.updateFreq == 0 {
+		// Rotate to next target network
+		a.currentTarget = (a.currentTarget + 1) % len(a.targetDQNs)
+		// Hard update instead of soft update
+		copyWeights(a.targetDQNs[a.currentTarget], a.dqn)
+	}
 }
 
 // trainOnBatch esegue un passo di training su un batch di transizioni
@@ -472,10 +583,17 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 
 	currentQValues := predValue.Data().([]float64)
 
-	// Get next state Q-values from target network
-	nextQValues, err := a.targetDQN.Forward(nextStates)
+	// Get next state Q-values from current target network
+	nextQValues, err := a.targetDQNs[a.currentTarget].Forward(nextStates)
 	if err != nil {
 		log.Printf("Error getting next state Q-values: %v", err)
+		return
+	}
+
+	// Double DQN: use online network to select actions, target network to evaluate them
+	onlineNextQValues, err := a.dqn.Forward(nextStates)
+	if err != nil {
+		log.Printf("Error getting online next state Q-values: %v", err)
 		return
 	}
 
@@ -483,13 +601,19 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 	copy(targetQValues, currentQValues)
 
 	for i := 0; i < len(batch); i++ {
+		// Double DQN: select action using online network
+		bestAction := 0
 		maxQ := math.Inf(-1)
 		for j := 0; j < OutputActions; j++ {
-			if nextQValues[i*OutputActions+j] > maxQ {
-				maxQ = nextQValues[i*OutputActions+j]
+			if onlineNextQValues[i*OutputActions+j] > maxQ {
+				maxQ = onlineNextQValues[i*OutputActions+j]
+				bestAction = j
 			}
 		}
-		targetQValues[i*OutputActions+actions[i]] = rewards[i] + a.Discount*maxQ
+
+		// Use target network to evaluate the selected action
+		targetQ := nextQValues[i*OutputActions+bestAction]
+		targetQValues[i*OutputActions+actions[i]] = rewards[i] + a.Discount*targetQ
 	}
 
 	targetTensor := tensor.New(tensor.WithBacking(targetQValues), tensor.WithShape(len(batch), OutputActions))
@@ -528,21 +652,20 @@ func (a *Agent) trainOnBatch(batch []Transition) {
 	a.dqn.solver.Step(grads)
 	a.dqn.vm.Reset()
 
-	// Soft update del target network con tau aumentato
-	copyWeights(a.targetDQN, a.dqn)
 }
 
-// copyWeights copia i pesi dal DQN principale al target network
+// copyWeights esegue un soft update dei pesi dal DQN principale al target network
 func copyWeights(target, source *DQN) {
-	copyTensor(target.w1.Value().(*tensor.Dense), source.w1.Value().(*tensor.Dense), TauUpdate)
-	copyTensor(target.w2.Value().(*tensor.Dense), source.w2.Value().(*tensor.Dense), TauUpdate)
-	copyTensor(target.w3.Value().(*tensor.Dense), source.w3.Value().(*tensor.Dense), TauUpdate)
-	copyTensor(target.b1.Value().(*tensor.Dense), source.b1.Value().(*tensor.Dense), TauUpdate)
-	copyTensor(target.b2.Value().(*tensor.Dense), source.b2.Value().(*tensor.Dense), TauUpdate)
-	copyTensor(target.b3.Value().(*tensor.Dense), source.b3.Value().(*tensor.Dense), TauUpdate)
+	tau := 0.01 // Fattore di soft update (piccolo per aggiornamenti graduali)
+	copyTensor(target.w1.Value().(*tensor.Dense), source.w1.Value().(*tensor.Dense), tau)
+	copyTensor(target.w2.Value().(*tensor.Dense), source.w2.Value().(*tensor.Dense), tau)
+	copyTensor(target.w3.Value().(*tensor.Dense), source.w3.Value().(*tensor.Dense), tau)
+	copyTensor(target.b1.Value().(*tensor.Dense), source.b1.Value().(*tensor.Dense), tau)
+	copyTensor(target.b2.Value().(*tensor.Dense), source.b2.Value().(*tensor.Dense), tau)
+	copyTensor(target.b3.Value().(*tensor.Dense), source.b3.Value().(*tensor.Dense), tau)
 }
 
-// copyTensor esegue un soft update dei pesi
+// copyTensor esegue un soft update dei pesi: θ_target = τ*θ_online + (1-τ)*θ_target
 func copyTensor(target, source *tensor.Dense, tau float64) {
 	targetData := target.Data().([]float64)
 	sourceData := source.Data().([]float64)
@@ -556,16 +679,16 @@ func (a *Agent) Cleanup() {
 	if a.dqn != nil {
 		a.dqn.Cleanup()
 	}
-	if a.targetDQN != nil {
-		a.targetDQN.Cleanup()
+	for _, target := range a.targetDQNs {
+		if target != nil {
+			target.Cleanup()
+		}
 	}
 }
 
-// IncrementEpisode aggiorna l'epsilon usando una strategia ciclica
+// IncrementEpisode incrementa il contatore degli episodi
 func (a *Agent) IncrementEpisode() {
 	a.episodeCount++
-	// Epsilon oscilla tra (baseline-amplitude) e (baseline+amplitude)
-	a.Epsilon = EpsilonBaseline + EpsilonAmplitude*math.Sin(2*math.Pi*float64(a.episodeCount)/EpsilonPeriod)
 }
 
 // Cleanup releases resources used by the DQN
@@ -623,27 +746,39 @@ func (a *Agent) LoadWeights(filename string) error {
 
 	if w1, ok := weights["w1"]; ok {
 		tensor.Copy(a.dqn.w1.Value().(*tensor.Dense), w1)
-		tensor.Copy(a.targetDQN.w1.Value().(*tensor.Dense), w1)
+		for _, target := range a.targetDQNs {
+			tensor.Copy(target.w1.Value().(*tensor.Dense), w1)
+		}
 	}
 	if w2, ok := weights["w2"]; ok {
 		tensor.Copy(a.dqn.w2.Value().(*tensor.Dense), w2)
-		tensor.Copy(a.targetDQN.w2.Value().(*tensor.Dense), w2)
+		for _, target := range a.targetDQNs {
+			tensor.Copy(target.w2.Value().(*tensor.Dense), w2)
+		}
 	}
 	if w3, ok := weights["w3"]; ok {
 		tensor.Copy(a.dqn.w3.Value().(*tensor.Dense), w3)
-		tensor.Copy(a.targetDQN.w3.Value().(*tensor.Dense), w3)
+		for _, target := range a.targetDQNs {
+			tensor.Copy(target.w3.Value().(*tensor.Dense), w3)
+		}
 	}
 	if b1, ok := weights["b1"]; ok {
 		tensor.Copy(a.dqn.b1.Value().(*tensor.Dense), b1)
-		tensor.Copy(a.targetDQN.b1.Value().(*tensor.Dense), b1)
+		for _, target := range a.targetDQNs {
+			tensor.Copy(target.b1.Value().(*tensor.Dense), b1)
+		}
 	}
 	if b2, ok := weights["b2"]; ok {
 		tensor.Copy(a.dqn.b2.Value().(*tensor.Dense), b2)
-		tensor.Copy(a.targetDQN.b2.Value().(*tensor.Dense), b2)
+		for _, target := range a.targetDQNs {
+			tensor.Copy(target.b2.Value().(*tensor.Dense), b2)
+		}
 	}
 	if b3, ok := weights["b3"]; ok {
 		tensor.Copy(a.dqn.b3.Value().(*tensor.Dense), b3)
-		tensor.Copy(a.targetDQN.b3.Value().(*tensor.Dense), b3)
+		for _, target := range a.targetDQNs {
+			tensor.Copy(target.b3.Value().(*tensor.Dense), b3)
+		}
 	}
 
 	return nil
