@@ -197,64 +197,161 @@ func (s *GameStats) groupGames() {
 		}
 	}
 
-	// Per ogni livello, controlla se ci sono più di GroupSize elementi consecutivi
-	for level := 0; level <= maxLevel; level++ {
+	// Per ogni livello, controlla se ci sono abbastanza elementi da comprimere
+	for level := 0; level <= maxLevel+1; level++ {
 		for {
-			// Conta quanti elementi abbiamo per questo livello
-			sameLevel := make([]int, 0) // Indici dei record con lo stesso livello
+			// Trova tutti i record del livello corrente
+			sameLevel := make([]int, 0)
 			for i := 0; i < len(s.Games); i++ {
 				if s.Games[i].CompressionIndex == level {
 					sameLevel = append(sameLevel, i)
 				}
 			}
 
-			// Se non abbiamo almeno GroupSize elementi, passa al livello successivo
+			// Se non abbiamo abbastanza record per formare un gruppo, passa al livello successivo
 			if len(sameLevel) < GroupSize {
 				break
 			}
 
-			// Calcola il numero totale di record con lo stesso livello
-			totalRecordsAtLevel := 0
-			for _, idx := range sameLevel {
-				totalRecordsAtLevel += s.Games[idx].GamesCount
-			}
+			// Calcola quanti gruppi completi possiamo formare
+			numGroups := len(sameLevel) / GroupSize
 
-			// Promuovi solo se il totale dei record è >= GroupSize
-			if totalRecordsAtLevel >= GroupSize {
-				// Promuovi il record più vecchio al livello successivo
-				oldestIdx := sameLevel[0]
+			// Per ogni gruppo completo
+			for g := 0; g < numGroups; g++ {
+				startIdx := g * GroupSize
+				endIdx := startIdx + GroupSize
 
-				// Cerca se esiste già un record del livello successivo che può assorbire
-				nextLevelExists := false
-				nextLevelIdx := -1
-				for i := 0; i < oldestIdx; i++ {
-					if s.Games[i].CompressionIndex == level+1 && s.Games[i].GamesCount < GroupSize {
-						nextLevelExists = true
-						nextLevelIdx = i
-						break
-					}
+				// Crea un nuovo record compresso
+				baseRecord := s.Games[sameLevel[startIdx]]
+				newRecord := GameRecord{
+					StartTime:        baseRecord.StartTime,
+					EndTime:          s.Games[sameLevel[endIdx-1]].EndTime,
+					CompressionIndex: level + 1,
+					GamesCount:       0,
 				}
 
-				if nextLevelExists {
-					// Prova ad assorbire nel record esistente
-					if !s.mergeRecords(nextLevelIdx, oldestIdx) {
-						// Se il merge fallisce, promuovi al livello successivo e resetta il conteggio
-						s.Games[oldestIdx].CompressionIndex = level + 1
-						s.Games[oldestIdx].GamesCount = 1
-					}
+				// Inizializza i valori con il primo record
+				if baseRecord.GamesCount == 1 {
+					newRecord.MaxScore = baseRecord.Score
+					newRecord.MinScore = baseRecord.Score
+					newRecord.MaxDuration = baseRecord.EndTime.Sub(baseRecord.StartTime).Seconds()
+					newRecord.MinDuration = newRecord.MaxDuration
+					newRecord.CompressedAverageScore = float64(baseRecord.Score)
+					newRecord.CompressedAverageDuration = newRecord.MaxDuration
+					newRecord.AverageMaxScore = float64(baseRecord.Score)
+					newRecord.AverageMinScore = float64(baseRecord.Score)
+					newRecord.AverageMaxDuration = newRecord.MaxDuration
+					newRecord.AverageMinDuration = newRecord.MaxDuration
+					newRecord.PolicyEntropy = baseRecord.PolicyEntropy
+					newRecord.GamesCount = 1
 				} else {
-					// Promuovi direttamente al livello successivo e resetta il conteggio
-					s.Games[oldestIdx].CompressionIndex = level + 1
-					s.Games[oldestIdx].GamesCount = 1
+					newRecord.MaxScore = baseRecord.MaxScore
+					newRecord.MinScore = baseRecord.MinScore
+					newRecord.MaxDuration = baseRecord.MaxDuration
+					newRecord.MinDuration = baseRecord.MinDuration
+					newRecord.CompressedAverageScore = baseRecord.CompressedAverageScore
+					newRecord.CompressedAverageDuration = baseRecord.CompressedAverageDuration
+					newRecord.AverageMaxScore = baseRecord.AverageMaxScore
+					newRecord.AverageMinScore = baseRecord.AverageMinScore
+					newRecord.AverageMaxDuration = baseRecord.AverageMaxDuration
+					newRecord.AverageMinDuration = baseRecord.AverageMinDuration
+					newRecord.PolicyEntropy = baseRecord.PolicyEntropy
+					newRecord.GamesCount = baseRecord.GamesCount
 				}
-			} else {
-				// Non ci sono abbastanza record totali per promuovere
-				break
+
+				// Aggrega i valori dei record rimanenti nel gruppo
+				for i := startIdx + 1; i < endIdx; i++ {
+					record := s.Games[sameLevel[i]]
+					games := record.GamesCount
+					if games == 1 {
+						// Record singolo
+						score := float64(record.Score)
+						duration := record.EndTime.Sub(record.StartTime).Seconds()
+
+						// Aggiorna max/min
+						if record.Score > newRecord.MaxScore {
+							newRecord.MaxScore = record.Score
+						}
+						if record.Score < newRecord.MinScore {
+							newRecord.MinScore = record.Score
+						}
+						if duration > newRecord.MaxDuration {
+							newRecord.MaxDuration = duration
+						}
+						if duration < newRecord.MinDuration {
+							newRecord.MinDuration = duration
+						}
+
+						// Aggiorna medie pesate
+						totalGames := newRecord.GamesCount + 1
+						newRecord.CompressedAverageScore = (newRecord.CompressedAverageScore*float64(newRecord.GamesCount) + score) / float64(totalGames)
+						newRecord.CompressedAverageDuration = (newRecord.CompressedAverageDuration*float64(newRecord.GamesCount) + duration) / float64(totalGames)
+						newRecord.AverageMaxScore = (newRecord.AverageMaxScore*float64(newRecord.GamesCount) + score) / float64(totalGames)
+						newRecord.AverageMinScore = (newRecord.AverageMinScore*float64(newRecord.GamesCount) + score) / float64(totalGames)
+						newRecord.AverageMaxDuration = (newRecord.AverageMaxDuration*float64(newRecord.GamesCount) + duration) / float64(totalGames)
+						newRecord.AverageMinDuration = (newRecord.AverageMinDuration*float64(newRecord.GamesCount) + duration) / float64(totalGames)
+						newRecord.PolicyEntropy = (newRecord.PolicyEntropy*float64(newRecord.GamesCount) + record.PolicyEntropy) / float64(totalGames)
+						newRecord.GamesCount++
+					} else {
+						// Record già compresso
+						totalGames := newRecord.GamesCount + games
+
+						// Aggiorna max/min
+						if record.MaxScore > newRecord.MaxScore {
+							newRecord.MaxScore = record.MaxScore
+						}
+						if record.MinScore < newRecord.MinScore {
+							newRecord.MinScore = record.MinScore
+						}
+						if record.MaxDuration > newRecord.MaxDuration {
+							newRecord.MaxDuration = record.MaxDuration
+						}
+						if record.MinDuration < newRecord.MinDuration {
+							newRecord.MinDuration = record.MinDuration
+						}
+
+						// Aggiorna medie pesate
+						newRecord.CompressedAverageScore = (newRecord.CompressedAverageScore*float64(newRecord.GamesCount) +
+							record.CompressedAverageScore*float64(games)) / float64(totalGames)
+						newRecord.CompressedAverageDuration = (newRecord.CompressedAverageDuration*float64(newRecord.GamesCount) +
+							record.CompressedAverageDuration*float64(games)) / float64(totalGames)
+						newRecord.AverageMaxScore = (newRecord.AverageMaxScore*float64(newRecord.GamesCount) +
+							record.AverageMaxScore*float64(games)) / float64(totalGames)
+						newRecord.AverageMinScore = (newRecord.AverageMinScore*float64(newRecord.GamesCount) +
+							record.AverageMinScore*float64(games)) / float64(totalGames)
+						newRecord.AverageMaxDuration = (newRecord.AverageMaxDuration*float64(newRecord.GamesCount) +
+							record.AverageMaxDuration*float64(games)) / float64(totalGames)
+						newRecord.AverageMinDuration = (newRecord.AverageMinDuration*float64(newRecord.GamesCount) +
+							record.AverageMinDuration*float64(games)) / float64(totalGames)
+						newRecord.PolicyEntropy = (newRecord.PolicyEntropy*float64(newRecord.GamesCount) +
+							record.PolicyEntropy*float64(games)) / float64(totalGames)
+						newRecord.GamesCount += games
+					}
+				}
+
+				// Rimuovi i record del gruppo e inserisci il nuovo record compresso
+				newGames := make([]GameRecord, 0, len(s.Games)-GroupSize+1)
+				newGames = append(newGames, s.Games[:sameLevel[startIdx]]...)
+				newGames = append(newGames, newRecord)
+				if endIdx < len(sameLevel) {
+					newGames = append(newGames, s.Games[sameLevel[startIdx+1]:sameLevel[endIdx]]...)
+					newGames = append(newGames, s.Games[sameLevel[endIdx]:]...)
+				} else {
+					newGames = append(newGames, s.Games[sameLevel[endIdx-1]+1:]...)
+				}
+				s.Games = newGames
+
+				// Aggiorna gli indici dopo la rimozione
+				for i := range sameLevel {
+					if i >= startIdx {
+						sameLevel[i] -= (GroupSize - 1)
+					}
+				}
 			}
 
-			// Aggiorna il massimo livello se necessario
-			if level+1 > maxLevel {
-				maxLevel = level + 1
+			// Se non ci sono più gruppi completi da formare, passa al livello successivo
+			if len(sameLevel) < GroupSize {
+				break
 			}
 		}
 	}
