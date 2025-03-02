@@ -17,13 +17,21 @@ const (
 
 // GameStats contiene tutte le partite registrate e fornisce metodi per
 // ottenere statistiche come punteggio medio, durata media, ecc.
+// BestTimeRecord tiene traccia del miglior tempo per ogni punteggio
+type BestTimeRecord struct {
+	Time      float64   `json:"time"`      // Miglior tempo in secondi
+	Steps     int       `json:"steps"`     // Numero di step per raggiungere il punteggio
+	Timestamp time.Time `json:"timestamp"` // Quando è stato registrato questo record
+}
+
 type GameStats struct {
-	Games         []GameRecord `json:"games"`      // Array di record di partita (sia singole che raggruppate)
-	TotalGames    int          `json:"totalGames"` // Contatore totale delle partite giocate
-	TotalScore    int          `json:"totalScore"` // Somma di tutti i punteggi
-	TotalTime     float64      `json:"totalTime"`  // Somma di tutte le durate
-	mutex         sync.RWMutex `json:"-"`          // Non salvare il mutex in JSON
-	lastGameTimes []time.Time  `json:"-"`          // Timestamps delle ultime partite per calcolare il rate
+	Games         []GameRecord           `json:"games"`      // Array di record di partita (sia singole che raggruppate)
+	TotalGames    int                    `json:"totalGames"` // Contatore totale delle partite giocate
+	TotalScore    int                    `json:"totalScore"` // Somma di tutti i punteggi
+	TotalTime     float64                `json:"totalTime"`  // Somma di tutte le durate
+	BestTimes     map[int]BestTimeRecord `json:"bestTimes"`  // Mappa punteggio -> miglior tempo/steps
+	mutex         sync.RWMutex           `json:"-"`          // Non salvare il mutex in JSON
+	lastGameTimes []time.Time            `json:"-"`          // Timestamps delle ultime partite per calcolare il rate
 }
 
 // GameRecord rappresenta i dati di una partita (singola o raggruppata).
@@ -53,6 +61,7 @@ func NewGameStats() *GameStats {
 		TotalGames:    0,
 		TotalScore:    0,
 		TotalTime:     0,
+		BestTimes:     make(map[int]BestTimeRecord),
 		lastGameTimes: make([]time.Time, 0, 1000),
 	}
 	stats.loadFromFile()
@@ -80,10 +89,51 @@ func (s *GameStats) GetGamesPerSecond() int {
 	return validTimes
 }
 
+// GetBestTime restituisce il miglior tempo registrato per un dato punteggio
+func (s *GameStats) GetBestTime(score int) (BestTimeRecord, bool) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	record, exists := s.BestTimes[score]
+	return record, exists
+}
+
+// GetTimeScalingFactor calcola un fattore di scaling per la reward basato sulla performance rispetto al miglior tempo
+func (s *GameStats) GetTimeScalingFactor(score int, currentTime float64) float64 {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	if bestTime, exists := s.BestTimes[score]; exists {
+		if currentTime <= bestTime.Time {
+			// Se è un nuovo record, massima reward
+			return 1.5
+		}
+		// Scala la reward in base a quanto siamo vicini al record
+		// 1.0 = stesso tempo del record
+		// 0.5 = doppio del tempo del record
+		return 1.0 / (currentTime / bestTime.Time)
+	}
+
+	// Se non abbiamo un record per questo punteggio, return 1.0 (nessuna scalatura)
+	return 1.0
+}
+
 // AddGame aggiunge una nuova partita alle statistiche.
 func (s *GameStats) AddGame(score int, startTime, endTime time.Time, policyEntropy float64) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	duration := endTime.Sub(startTime).Seconds()
+	steps := int(duration * 10) // Approssimazione degli step basata sul tempo (assumendo 10 step/secondo)
+
+	// Aggiorna il miglior tempo per questo punteggio se necessario
+	if bestTime, exists := s.BestTimes[score]; !exists || duration < bestTime.Time {
+		s.BestTimes[score] = BestTimeRecord{
+			Time:      duration,
+			Steps:     steps,
+			Timestamp: endTime,
+		}
+	}
 
 	// Incrementa i contatori totali
 	s.TotalGames++
@@ -101,7 +151,6 @@ func (s *GameStats) AddGame(score int, startTime, endTime time.Time, policyEntro
 		}
 	}
 	s.TotalScore += score
-	duration := endTime.Sub(startTime).Seconds()
 	s.TotalTime += duration
 
 	game := GameRecord{
