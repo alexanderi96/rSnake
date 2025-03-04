@@ -36,17 +36,33 @@ func main() {
 	// Calculate initial grid dimensions
 	width := rl.GetScreenWidth() / 20
 	height := rl.GetScreenHeight() / 20
-	game := NewGame(width, height)
-	agent := NewSnakeAgent(game)
+
+	// Numero di agenti per il training parallelo
+	const numAgents = 4
+
+	// Crea il training manager con gli agenti
+	trainingManager := NewTrainingManager(numAgents, width, height, time.Duration(*speed)*time.Millisecond)
 	renderer := NewRenderer()
-	renderer.stats = game.Stats // Initialize renderer with game's stats
-	ticker := time.NewTicker(time.Duration(*speed) * time.Millisecond)
-	defer ticker.Stop()
+
+	// Inizializza il renderer con le statistiche del primo agente
+	if game := trainingManager.GetGame(0); game != nil {
+		renderer.stats = game.Stats
+	}
+
+	// Avvia il training
+	trainingManager.StartTraining()
+	defer trainingManager.StopTraining()
 
 	var gameStartTime time.Time
+	currentAgentIndex := 0 // Indice dell'agente correntemente visualizzato
 
 	// Main game loop
 	for !rl.WindowShouldClose() {
+		game := trainingManager.GetGame(currentAgentIndex)
+		if game == nil {
+			continue
+		}
+
 		snake := game.GetSnake()
 
 		// Start timing when snake is alive
@@ -54,79 +70,78 @@ func main() {
 			gameStartTime = time.Now()
 		}
 
-		// Check if snake is dead and needs to be reset
+		// Check if snake is dead
 		if snake.Dead {
-			// Calculate policy entropy
+			// Calculate policy entropy for the current agent
 			state := game.GetStateInfo()
-			qValues, err := agent.agent.GetQValues(state)
-			policyEntropy := 0.0
-			if err == nil {
-				policy := agent.softmax(qValues, 0.1)
-				policyEntropy = agent.calculateEntropy(policy)
+			agent := trainingManager.agentPool.GetAgent(currentAgentIndex)
+			if agent != nil {
+				qValues, err := agent.agent.GetQValues(state)
+				policyEntropy := 0.0
+				if err == nil {
+					policy := agent.softmax(qValues, 0.1)
+					policyEntropy = agent.calculateEntropy(policy)
+				}
+
+				// Save stats before reset
+				renderer.stats.AddGame(snake.Score, gameStartTime, time.Now(), policyEntropy)
 			}
-
-			// Save stats before reset
-			renderer.stats.AddGame(snake.Score, gameStartTime, time.Now(), policyEntropy)
 			gameStartTime = time.Time{} // Reset start time
-
-			// Reset agent with new game
-			agent.Reset()
-			game = agent.game           // Update our game reference
-			renderer.stats = game.Stats // Ensure renderer uses the same stats instance
 		}
 
-		// Handle window resize
+		// Handle window resize for all agents
 		if rl.IsWindowResized() {
 			renderer.UpdateDimensions()
 			newWidth := rl.GetScreenWidth() / 20
 			newHeight := rl.GetScreenHeight() / 20
 
-			// Verifica e correggi la posizione del serpente e del cibo prima di ridimensionare
-			snake := game.GetSnake()
-			snake.Mutex.Lock()
-			for i := 0; i < len(snake.Body); i++ {
-				if snake.Body[i].X >= newWidth {
-					snake.Body[i].X = newWidth - 1
+			// Aggiorna tutti gli agenti
+			for i := 0; i < numAgents; i++ {
+				if game := trainingManager.GetGame(i); game != nil {
+					// Verifica e correggi la posizione del serpente e del cibo
+					snake := game.GetSnake()
+					snake.Mutex.Lock()
+					for j := 0; j < len(snake.Body); j++ {
+						if snake.Body[j].X >= newWidth {
+							snake.Body[j].X = newWidth - 1
+						}
+						if snake.Body[j].Y >= newHeight {
+							snake.Body[j].Y = newHeight - 1
+						}
+					}
+					snake.Mutex.Unlock()
+
+					// Correggi la posizione del cibo
+					if game.food.X >= newWidth {
+						game.food.X = newWidth - 1
+					}
+					if game.food.Y >= newHeight {
+						game.food.Y = newHeight - 1
+					}
+
+					// Aggiorna le dimensioni della griglia
+					game.Grid.Width = newWidth
+					game.Grid.Height = newHeight
 				}
-				if snake.Body[i].Y >= newHeight {
-					snake.Body[i].Y = newHeight - 1
-				}
 			}
-			snake.Mutex.Unlock()
-
-			// Correggi la posizione del cibo se necessario
-			if game.food.X >= newWidth {
-				game.food.X = newWidth - 1
-			}
-			if game.food.Y >= newHeight {
-				game.food.Y = newHeight - 1
-			}
-
-			// Aggiorna le dimensioni della griglia
-			fmt.Printf("\nRidimensionamento griglia: %dx%d -> %dx%d\n", game.Grid.Width, game.Grid.Height, newWidth, newHeight)
-			game.Grid.Width = newWidth
-			game.Grid.Height = newHeight
-
-			// Verifica posizioni dopo ridimensionamento
-			snake = game.GetSnake()
-			snake.Mutex.RLock()
-			head := snake.GetHead()
-			snake.Mutex.RUnlock()
-			fmt.Printf("Posizione serpente dopo ridimensionamento: (%d,%d)\n", head.X, head.Y)
-			food := game.GetFood()
-			fmt.Printf("Posizione cibo dopo ridimensionamento: (%d,%d)\n", food.X, food.Y)
 		}
 
-		// Update game state at fixed interval
-		select {
-		case <-ticker.C:
-			agent.Update() // Let agent make decision and update game
-		default:
+		// Switch between agents with number keys
+		for i := 0; i < numAgents; i++ {
+			if rl.IsKeyPressed(rl.KeyOne + int32(i)) {
+				currentAgentIndex = i
+				if game := trainingManager.GetGame(i); game != nil {
+					renderer.stats = game.Stats
+				}
+			}
 		}
+
+		// Update game states
+		trainingManager.UpdateGameState()
 
 		// Handle quit
 		if rl.IsKeyPressed(rl.KeyQ) || rl.IsKeyPressed(rl.KeyEscape) {
-			if err := agent.SaveWeights(); err != nil {
+			if err := trainingManager.agentPool.SaveWeights(); err != nil {
 				fmt.Printf("Error saving weights: %v\n", err)
 			}
 			if err := renderer.stats.SaveToFile(); err != nil {
@@ -135,7 +150,7 @@ func main() {
 			break
 		}
 
-		// Render
-		renderer.Draw(game)
+		// Render all agents
+		renderer.DrawMultiAgent(trainingManager)
 	}
 }

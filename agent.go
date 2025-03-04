@@ -5,20 +5,49 @@ import (
 	"math"
 	"math/rand"
 	"snake-game/qlearning"
+	"sync"
 )
+
+// stateVisits tiene traccia di quante volte è stato visitato ogni stato
+type stateVisits struct {
+	visits map[string]int
+	mu     sync.RWMutex
+}
+
+func newStateVisits() *stateVisits {
+	return &stateVisits{
+		visits: make(map[string]int),
+	}
+}
+
+func (sv *stateVisits) getVisitCount(state []float64) int {
+	sv.mu.RLock()
+	defer sv.mu.RUnlock()
+	key := fmt.Sprintf("%v", state)
+	return sv.visits[key]
+}
+
+func (sv *stateVisits) incrementVisit(state []float64) {
+	sv.mu.Lock()
+	defer sv.mu.Unlock()
+	key := fmt.Sprintf("%v", state)
+	sv.visits[key]++
+}
 
 // SnakeAgent rappresenta l'agente che gioca a Snake usando Q-learning.
 type SnakeAgent struct {
-	agent *qlearning.Agent
-	game  *Game
+	agent       *qlearning.Agent
+	game        *Game
+	stateVisits *stateVisits
 }
 
 // NewSnakeAgent crea un nuovo agente per il gioco.
 func NewSnakeAgent(game *Game) *SnakeAgent {
-	agent := qlearning.NewAgent(0.5, 0.8) // learningRate, discount
+	agent := qlearning.NewAgent(0.001, 0.99) // Ridotto learning rate e aumentato discount per stabilità
 	return &SnakeAgent{
-		agent: agent,
-		game:  game,
+		agent:       agent,
+		game:        game,
+		stateVisits: newStateVisits(),
 	}
 }
 
@@ -94,8 +123,14 @@ func (sa *SnakeAgent) Update() {
 
 func (sa *SnakeAgent) calculateReward(oldScore int, chosenAction int, qValues []float64) float64 {
 	snake := sa.game.GetSnake()
+	currentState := sa.getState()
 
-	// Reward base semplificato
+	// Ottieni l'area di gioco corrente
+	minX, maxX, minY, maxY := sa.game.getPlayableArea()
+	playableArea := (maxX - minX + 1) * (maxY - minY + 1)
+	maxPlayableArea := sa.game.Grid.Width * sa.game.Grid.Height
+
+	// Reward base
 	baseReward := -0.01 // Piccola penalità per step per incoraggiare movimento efficiente
 
 	// Morte
@@ -105,15 +140,31 @@ func (sa *SnakeAgent) calculateReward(oldScore int, chosenAction int, qValues []
 
 	// Cibo mangiato
 	if snake.Score > oldScore {
-		baseReward = 1.0
+		// Reward maggiore quando l'area di gioco è più piccola
+		areaRatio := float64(playableArea) / float64(maxPlayableArea)
+		baseReward = 1.0 + (1.0 - areaRatio) // Bonus maggiore in aree più piccole
 	}
 
 	// Calcola entropia della policy per incoraggiare esplorazione
-	policy := sa.softmax(qValues, 0.1) // temperatura bassa per policy più sharp
+	policy := sa.softmax(qValues, 0.5)
 	entropy := sa.calculateEntropy(policy)
 
-	// Bonus di esplorazione basato sull'entropia
-	explorationBonus := 0.1 * entropy
+	// Calcola novelty dello stato
+	visitCount := sa.stateVisits.getVisitCount(currentState)
+
+	// Bonus di novità scalato in base all'area di gioco
+	// Più alto quando l'area è piccola per incoraggiare l'esplorazione iniziale
+	areaScaling := float64(maxPlayableArea) / float64(playableArea)
+	noveltyBonus := areaScaling / math.Sqrt(float64(visitCount+1))
+
+	// Incrementa il contatore delle visite
+	sa.stateVisits.incrementVisit(currentState)
+
+	// Penalità per stati molto visitati, più severa in aree piccole
+	loopPenalty := -0.2 * areaScaling * math.Log(float64(visitCount+1))
+
+	// Bonus di esplorazione combinato
+	explorationBonus := 0.5*entropy + noveltyBonus + loopPenalty
 
 	// Reward finale
 	return baseReward + explorationBonus
@@ -166,6 +217,10 @@ func (sa *SnakeAgent) Reset() {
 	// Create new game
 	sa.game = NewGame(width, height)
 	sa.game.Stats = existingStats
+
+	// Reset state visits per episodio per evitare accumulo di penalità
+	sa.stateVisits = newStateVisits()
+
 	sa.agent.IncrementEpisode()
 }
 

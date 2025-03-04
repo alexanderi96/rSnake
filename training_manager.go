@@ -17,11 +17,10 @@ type GameState struct {
 	Direction Point
 }
 
-// TrainingManager gestisce il training dell'agente in un thread separato
+// TrainingManager gestisce il training degli agenti in thread separati
 type TrainingManager struct {
-	game           *Game
-	agent          *SnakeAgent
-	gameStateChan  chan GameState
+	agentPool      *AgentPool
+	gameStateChan  []chan GameState
 	controlChan    chan bool // per segnali di controllo (es. stop)
 	wg             sync.WaitGroup
 	mutex          sync.RWMutex
@@ -33,11 +32,16 @@ type TrainingManager struct {
 }
 
 // NewTrainingManager crea un nuovo training manager
-func NewTrainingManager(game *Game, agent *SnakeAgent, updateInterval time.Duration) *TrainingManager {
+func NewTrainingManager(numAgents int, gameWidth, gameHeight int, updateInterval time.Duration) *TrainingManager {
+	// Crea un canale per ogni agente
+	gameStateChannels := make([]chan GameState, numAgents)
+	for i := 0; i < numAgents; i++ {
+		gameStateChannels[i] = make(chan GameState, 1)
+	}
+
 	return &TrainingManager{
-		game:           game,
-		agent:          agent,
-		gameStateChan:  make(chan GameState, 1), // buffer di 1 per evitare blocchi
+		agentPool:      NewAgentPool(numAgents, gameWidth, gameHeight),
+		gameStateChan:  gameStateChannels,
 		controlChan:    make(chan bool, 1),
 		updateInterval: updateInterval,
 	}
@@ -71,7 +75,7 @@ func (tm *TrainingManager) StopTraining() {
 	tm.wg.Wait()
 }
 
-// UpdateGameState aggiorna lo stato del gioco nel canale
+// UpdateGameState aggiorna lo stato del gioco nel canale per ogni agente
 func (tm *TrainingManager) UpdateGameState() {
 	tm.mutex.RLock()
 	if !tm.isTraining {
@@ -80,74 +84,86 @@ func (tm *TrainingManager) UpdateGameState() {
 	}
 	tm.mutex.RUnlock()
 
-	snake := tm.game.GetSnake()
-	state := GameState{
-		Snake:     snake,
-		Food:      tm.game.food,
-		Score:     snake.Score,
-		Dead:      snake.Dead,
-		Width:     tm.game.Grid.Width,
-		Height:    tm.game.Grid.Height,
-		Direction: snake.Direction,
-	}
+	agents := tm.agentPool.GetAllAgents()
+	for i, agent := range agents {
+		snake := agent.game.GetSnake()
+		state := GameState{
+			Snake:     snake,
+			Food:      agent.game.food,
+			Score:     snake.Score,
+			Dead:      snake.Dead,
+			Width:     agent.game.Grid.Width,
+			Height:    agent.game.Grid.Height,
+			Direction: snake.Direction,
+		}
 
-	// Invio non bloccante dello stato
-	select {
-	case tm.gameStateChan <- state:
-	default:
-		// Se il canale è pieno, scartiamo lo stato
+		// Invio non bloccante dello stato per ogni agente
+		select {
+		case tm.gameStateChan[i] <- state:
+		default:
+			// Se il canale è pieno, scartiamo lo stato
+		}
 	}
 }
 
-// trainingLoop è il loop principale di training che viene eseguito in un goroutine separato
+// trainingLoop è il loop principale di training che viene eseguito in goroutine separate per ogni agente
 func (tm *TrainingManager) trainingLoop() {
 	defer tm.wg.Done()
 
 	ticker := time.NewTicker(tm.updateInterval)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-tm.controlChan:
-			// Salva i pesi prima di uscire
-			if err := tm.agent.SaveWeights(); err != nil {
-				fmt.Printf("Error saving final weights: %v\n", err)
-			}
-			return
-		case state := <-tm.gameStateChan:
-			tm.mutex.Lock()
-			// Aggiorna lo stato del gioco
-			snake := tm.game.GetSnake()
-			snake.Body = state.Snake.Body
-			snake.Direction = state.Direction
-			snake.Dead = state.Dead
-			snake.Score = state.Score
-			tm.game.food = state.Food
-			tm.game.Grid.Width = state.Width
-			tm.game.Grid.Height = state.Height
+	agents := tm.agentPool.GetAllAgents()
+	for i, agent := range agents {
+		// Avvia un goroutine separato per ogni agente
+		go func(agentIndex int, currentAgent *SnakeAgent) {
+			for {
+				select {
+				case <-tm.controlChan:
+					// Salva i pesi prima di uscire
+					if err := tm.agentPool.SaveWeights(); err != nil {
+						fmt.Printf("Error saving final weights: %v\n", err)
+					}
+					return
+				case state := <-tm.gameStateChan[agentIndex]:
+					tm.mutex.Lock()
+					// Aggiorna lo stato del gioco
+					snake := currentAgent.game.GetSnake()
+					snake.Body = state.Snake.Body
+					snake.Direction = state.Direction
+					snake.Dead = state.Dead
+					snake.Score = state.Score
+					currentAgent.game.food = state.Food
+					currentAgent.game.Grid.Width = state.Width
+					currentAgent.game.Grid.Height = state.Height
 
-			// Esegui l'update dell'agente
-			if !snake.Dead {
-				tm.agent.Update()
-			} else {
-				// Aggiorna le statistiche quando il serpente muore
-				tm.updateStats(snake.Score)
-				// Resetta per il prossimo episodio
-				tm.ResetGame()
+					// Esegui l'update dell'agente
+					if !snake.Dead {
+						currentAgent.Update()
+					} else {
+						// Aggiorna le statistiche quando il serpente muore
+						tm.updateStats(snake.Score)
+						// Resetta per il prossimo episodio
+						tm.ResetGame(agentIndex)
+					}
+					tm.mutex.Unlock()
+				case <-ticker.C:
+					// Timeout per evitare blocchi
+					continue
+				}
 			}
-			tm.mutex.Unlock()
-		case <-ticker.C:
-			// Timeout per evitare blocchi
-			continue
-		}
+		}(i, agent)
 	}
 }
 
-// GetGame restituisce il gioco corrente in modo thread-safe
-func (tm *TrainingManager) GetGame() *Game {
+// GetGame restituisce il gioco dell'agente specificato in modo thread-safe
+func (tm *TrainingManager) GetGame(agentIndex int) *Game {
 	tm.mutex.RLock()
 	defer tm.mutex.RUnlock()
-	return tm.game
+	if agent := tm.agentPool.GetAgent(agentIndex); agent != nil {
+		return agent.game
+	}
+	return nil
 }
 
 // updateStats aggiorna le statistiche di training
@@ -162,7 +178,7 @@ func (tm *TrainingManager) updateStats(score int) {
 	// Salva i pesi automaticamente ogni 500 episodi
 	if tm.episodeCount%500 == 0 {
 		go func() {
-			if err := tm.agent.SaveWeights(); err != nil {
+			if err := tm.agentPool.SaveWeights(); err != nil {
 				fmt.Printf("Failed to save weights at episode %d: %v\n", tm.episodeCount, err)
 			} else {
 				fmt.Printf("Weights automatically saved at episode %d\n", tm.episodeCount)
@@ -176,19 +192,24 @@ func (tm *TrainingManager) updateStats(score int) {
 	}
 }
 
-// ResetGame resetta il gioco in modo thread-safe
-func (tm *TrainingManager) ResetGame() {
+// ResetGame resetta il gioco per l'agente specificato in modo thread-safe
+func (tm *TrainingManager) ResetGame(agentIndex int) {
+	agent := tm.agentPool.GetAgent(agentIndex)
+	if agent == nil {
+		return
+	}
+
 	// Preserva le statistiche esistenti
-	existingStats := tm.game.Stats
+	existingStats := agent.game.Stats
 
 	// Crea un nuovo gioco con le stesse dimensioni
-	width := tm.game.Grid.Width
-	height := tm.game.Grid.Height
-	tm.game = NewGame(width, height)
+	width := agent.game.Grid.Width
+	height := agent.game.Grid.Height
+	agent.game = NewGame(width, height)
 
 	// Ripristina le statistiche
-	tm.game.Stats = existingStats
+	agent.game.Stats = existingStats
 
 	// Resetta l'agente
-	tm.agent.Reset()
+	agent.Reset()
 }

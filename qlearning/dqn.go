@@ -396,19 +396,8 @@ const (
 	EpsilonDecay   = 0.995 // Fattore di decadimento di epsilon
 )
 
-// GetAction seleziona un'azione usando epsilon-greedy con decadimento
+// GetAction seleziona un'azione usando softmax con temperatura dinamica
 func (a *Agent) GetAction(state []float64, numActions int) int {
-	// Calcola epsilon corrente
-	epsilon := math.Max(MinEpsilon, InitialEpsilon*math.Pow(EpsilonDecay, float64(a.episodeCount)))
-
-	// Esplorazione casuale con probabilità epsilon
-	if rand.Float64() < epsilon {
-		action := rand.Intn(numActions)
-		log.Printf("Exploring with epsilon %.4f: choosing random action %d", epsilon, action)
-		return action
-	}
-
-	// Sfruttamento: scegli l'azione con il Q-value più alto
 	qValues, err := a.GetQValues(state)
 	if err != nil {
 		action := rand.Intn(numActions)
@@ -423,18 +412,30 @@ func (a *Agent) GetAction(state []float64, numActions int) int {
 		return action
 	}
 
-	// Trova l'azione con il Q-value massimo
+	// Calcola la policy usando softmax
+	policy := a.softmax(qValues, 0.5) // temperatura fissa a 0.5 per bilanciare esplorazione/sfruttamento
+
+	// Campiona un'azione dalla distribuzione di probabilità
+	r := rand.Float64()
+	cumulativeProb := 0.0
+	for i, prob := range policy {
+		cumulativeProb += prob
+		if r <= cumulativeProb {
+			log.Printf("Choosing action %d with probability %.4f", i, prob)
+			return i
+		}
+	}
+
+	// Fallback all'azione con probabilità più alta
 	bestAction := 0
-	maxQ := qValues[0]
-	for i := 1; i < len(qValues); i++ {
-		if qValues[i] > maxQ {
-			maxQ = qValues[i]
+	maxProb := policy[0]
+	for i := 1; i < len(policy); i++ {
+		if policy[i] > maxProb {
+			maxProb = policy[i]
 			bestAction = i
 		}
 	}
 
-	log.Printf("Exploiting with epsilon %.4f: choosing best action %d (Q-value: %.4f)",
-		epsilon, bestAction, maxQ)
 	return bestAction
 }
 

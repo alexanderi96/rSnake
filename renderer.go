@@ -10,10 +10,9 @@ const borderPadding = 0 // No padding
 
 // Colori personalizzati per le statistiche
 var (
-	scoreColor          = rl.Color{R: 0, G: 180, B: 0, A: 255}   // Verde per il punteggio
-	durationColor       = rl.Color{R: 128, G: 0, B: 128, A: 255} // Viola per la durata
-	entropyColor        = rl.Color{R: 255, G: 165, B: 0, A: 255} // Arancione per l'entropia
-	compressionIndColor = rl.Color{R: 255, G: 0, B: 0, A: 255}   // Rosso per indicatori di compressione
+	scoreColor    = rl.Color{R: 0, G: 180, B: 0, A: 255}   // Verde per il punteggio
+	durationColor = rl.Color{R: 128, G: 0, B: 128, A: 255} // Viola per la durata
+	entropyColor  = rl.Color{R: 255, G: 165, B: 0, A: 255} // Arancione per l'entropia
 )
 
 type Renderer struct {
@@ -26,10 +25,15 @@ type Renderer struct {
 	offsetY         int32
 	stats           *GameStats
 	game            *Game // Add game reference to access state info
+	numAgents       int   // Numero di agenti da visualizzare
+	agentsPerRow    int   // Numero di agenti per riga
 }
 
 func NewRenderer() *Renderer {
-	r := &Renderer{}
+	r := &Renderer{
+		numAgents:    4, // Default a 4 agenti
+		agentsPerRow: 2, // 2x2 grid layout
+	}
 	r.UpdateDimensions()
 	return r
 }
@@ -88,34 +92,82 @@ func (r *Renderer) drawPlayableArea(g *Game) {
 	rl.DrawRectangleLines(screenMinX, screenMinY, screenWidth, screenHeight, borderColor)
 }
 
-func (r *Renderer) Draw(g *Game) {
-	if g == nil {
+// DrawMultiAgent disegna tutti gli agenti in una griglia
+func (r *Renderer) DrawMultiAgent(trainingManager *TrainingManager) {
+	if trainingManager == nil {
 		return
 	}
 
-	r.game = g // Store game reference
 	r.UpdateDimensions()
 	rl.BeginDrawing()
 	rl.ClearBackground(rl.Gray)
 
 	fontSize := int32(r.screenHeight / 45) // Dynamic font size
 
-	// Use full screen for grid
-	availableWidth := r.screenWidth
-	availableHeight := r.screenHeight
+	// Calcola le dimensioni per ogni griglia di gioco
+	gridMargin := int32(10)
+	availableWidth := (r.screenWidth - gridMargin*int32(r.agentsPerRow+1)) / int32(r.agentsPerRow)
+	numRows := (r.numAgents + r.agentsPerRow - 1) / r.agentsPerRow
+	availableHeight := (r.screenHeight - gridMargin*int32(numRows+1)) / int32(numRows)
 
-	// Calculate cell size based on available space and grid dimensions
-	cellW := availableWidth / int32(g.Grid.Width)
-	cellH := availableHeight / int32(g.Grid.Height)
+	// Ottieni il primo gioco per le dimensioni della griglia
+	firstGame := trainingManager.GetGame(0)
+	if firstGame == nil {
+		rl.EndDrawing()
+		return
+	}
+
+	// Calcola la dimensione delle celle basata sullo spazio disponibile
+	cellW := availableWidth / int32(firstGame.Grid.Width)
+	cellH := availableHeight / int32(firstGame.Grid.Height)
 	r.cellSize = min(cellW, cellH)
 
-	// Calculate total grid dimensions
-	r.totalGridWidth = r.cellSize * int32(g.Grid.Width)
-	r.totalGridHeight = r.cellSize * int32(g.Grid.Height)
+	// Disegna ogni agente nella sua posizione nella griglia
+	for i := 0; i < r.numAgents; i++ {
+		game := trainingManager.GetGame(i)
+		if game == nil {
+			continue
+		}
 
-	// Position grid at the top left corner
-	r.offsetX = 0
-	r.offsetY = 0
+		// Calcola la posizione nella griglia
+		row := i / r.agentsPerRow
+		col := i % r.agentsPerRow
+
+		// Calcola l'offset per questo agente
+		r.offsetX = gridMargin + int32(col)*(availableWidth+gridMargin)
+		r.offsetY = gridMargin + int32(row)*(availableHeight+gridMargin)
+
+		// Calcola le dimensioni totali della griglia per questo agente
+		r.totalGridWidth = r.cellSize * int32(game.Grid.Width)
+		r.totalGridHeight = r.cellSize * int32(game.Grid.Height)
+
+		// Disegna il numero dell'agente
+		agentLabel := fmt.Sprintf("Agent %d", i+1)
+		labelWidth := rl.MeasureText(agentLabel, fontSize)
+		rl.DrawText(agentLabel,
+			r.offsetX+(availableWidth-labelWidth)/2,
+			r.offsetY-fontSize-5,
+			fontSize,
+			rl.White)
+
+		r.drawGame(game)
+	}
+
+	// Disegna le statistiche globali nella parte inferiore
+	if r.stats != nil {
+		r.drawStatsGraph()
+	}
+
+	rl.EndDrawing()
+}
+
+// drawGame disegna un singolo gioco
+func (r *Renderer) drawGame(g *Game) {
+	if g == nil {
+		return
+	}
+
+	r.game = g // Store game reference
 
 	// Draw grid
 	gridColor := rl.Color{R: 100, G: 100, B: 100, A: 100} // Colore grigio chiaro semi-trasparente
@@ -210,15 +262,18 @@ func (r *Renderer) Draw(g *Game) {
 
 	// Only draw stats and state grid if stats are initialized
 	if r.stats != nil {
-		stats := r.stats.GetStats()
-		if len(stats) > 0 {
+		allStats := r.stats.GetStats()
+		if len(allStats) > 0 {
+			// Take only the last stat for display
+			latestGame := allStats[len(allStats)-1]
+			fontSize := int32(r.screenHeight / 45) // Dynamic font size
+
 			// Define graph dimensions
 			graphHeight := int32(150)
 			graphY := r.screenHeight - graphHeight
 
 			// Get all stats values first
 			maxScore := r.stats.GetAbsoluteMaxScore()
-			latestGame := stats[len(stats)-1]
 			gamesPerSecond := r.stats.GetGamesPerSecond()
 
 			// Calculate max width needed for stats
@@ -292,11 +347,9 @@ func (r *Renderer) Draw(g *Game) {
 
 	// Draw state visualization grid
 	r.drawStateGrid(g)
-
-	rl.EndDrawing()
 }
 
-// drawStateGrid draws the state information grid
+// drawStateGrid draws the state information grids
 func (r *Renderer) drawStateGrid(g *Game) {
 	if g == nil {
 		return
@@ -306,138 +359,65 @@ func (r *Renderer) drawStateGrid(g *Game) {
 	state := g.GetStateInfo()
 
 	// Calculate grid positions and sizes
-	cellSize := int32(25)                    // Size of each cell in the grid
-	rowSpacing := int32(35)                  // Space between rows
-	gridX := r.screenWidth - cellSize*8 - 10 // Position from right edge
-	gridY := int32(30)                       // Start Y position
+	gridSize := int32(25)                                    // Size of each cell in the grid
+	gridSpacing := int32(35)                                 // Space between grids
+	startX := r.screenWidth - (gridSize*3*4 + gridSpacing*3) // Position from right edge, accounting for 4 grids with spacing
+	startY := int32(30)                                      // Start Y position
+	fontSize := int32(14)                                    // Font size for labels
 
-	// Calculate position for directional grid (3x3)
-	dirGridSize := int32(25)                                    // Same size as state cells
-	dirGridX := r.screenWidth - cellSize*8 - dirGridSize*3 - 30 // Position to the left of state grid
-	dirGridY := gridY                                           // Same Y as state grid
-
-	// Draw backgrounds for each row with spacing
-	for row := int32(0); row < 3; row++ {
-		rl.DrawRectangle(
-			gridX-5,
-			gridY+row*rowSpacing-5,
-			cellSize*8+10,
-			cellSize+10,
-			rl.Color{R: 0, G: 0, B: 0, A: 100},
-		)
+	// Define grid positions
+	grids := []struct {
+		label  string
+		x      int32
+		color  func(value float64) rl.Color
+		values []float64
+	}{
+		{
+			label:  "Combined Values",
+			x:      startX,
+			color:  r.getStateColor,
+			values: nil, // Will be filled with combined values
+		},
+		{
+			label: "Wall Values",
+			x:     startX + gridSize*3 + gridSpacing,
+			color: func(value float64) rl.Color {
+				if value > 0 {
+					return rl.Gray
+				}
+				return rl.Black
+			},
+			values: state[0:8], // Wall values
+		},
+		{
+			label: "Body Values",
+			x:     startX + gridSize*6 + gridSpacing*2,
+			color: func(value float64) rl.Color {
+				if value > 0 {
+					return rl.Blue
+				}
+				return rl.Black
+			},
+			values: state[8:16], // Body values
+		},
+		{
+			label: "Food Values",
+			x:     startX + gridSize*9 + gridSpacing*3,
+			color: func(value float64) rl.Color {
+				if value > 0 {
+					return rl.Red
+				}
+				return rl.Black
+			},
+			values: state[16:24], // Food values
+		},
 	}
 
-	// For directional grid
-	rl.DrawRectangle(
-		dirGridX-5,
-		dirGridY-5,
-		dirGridSize*3+10,
-		dirGridSize*3+10,
-		rl.Color{R: 0, G: 0, B: 0, A: 100},
-	)
-
-	// Draw labels
-	fontSize := int32(14) // Slightly larger font
-
-	// Direction labels
-	labels := []string{"BL", "L", "FL", "F", "FR", "R", "BR", "B"}
-	rowLabels := []string{"Wall", "Body", "Food"}
-
-	// Draw row labels with new spacing
-	for i, label := range rowLabels {
-		labelWidth := rl.MeasureText(label, fontSize)
-		labelX := gridX - labelWidth - 10
-		labelY := gridY + int32(i)*rowSpacing + (cellSize-fontSize)/2
-		rl.DrawText(label, labelX, labelY, fontSize, rl.White)
-	}
-
-	// Draw "Combined Values" label
-	dirLabel := "Combined Values"
-	labelWidth := rl.MeasureText(dirLabel, fontSize)
-	labelX := dirGridX + (dirGridSize*3-labelWidth)/2
-	labelY := dirGridY - fontSize - 2
-	rl.DrawText(dirLabel, labelX, labelY, fontSize, rl.White)
-
-	// Draw the state grid cells with directional indicators
-	for row := int32(0); row < 3; row++ {
-		rowY := gridY + row*rowSpacing
-
-		// Draw direction labels for this row
-		for i, label := range labels {
-			labelWidth := rl.MeasureText(label, fontSize)
-			labelX := gridX + int32(i)*cellSize + (cellSize-labelWidth)/2
-			labelY := rowY - fontSize - 2
-			rl.DrawText(label, labelX, labelY, fontSize, rl.White)
-		}
-
-		for col := int32(0); col < 8; col++ {
-			value := state[int(row)*8+int(col)]
-			cellX := gridX + col*cellSize
-
-			// Choose color based on the type of information
-			var color rl.Color
-			switch row {
-			case 0: // Walls
-				if value > 0 {
-					color = rl.Gray
-				} else {
-					color = rl.Black
-				}
-			case 1: // Body
-				if value > 0 {
-					color = rl.Blue
-				} else {
-					color = rl.Black
-				}
-			case 2: // Food
-				if value > 0 {
-					color = rl.Red
-				} else {
-					color = rl.Black
-				}
-			}
-
-			// Draw cell background
-			rl.DrawRectangle(cellX, rowY, cellSize, cellSize, color)
-			rl.DrawRectangleLines(cellX, rowY, cellSize, cellSize, rl.White)
-
-			// Draw directional indicator triangle
-			if value > 0 {
-				halfCell := cellSize / 2
-				triangleSize := cellSize / 3
-
-				// Calculate triangle points based on direction
-				var p1, p2, p3 rl.Vector2
-				switch {
-				case col == 3: // Front
-					p1 = rl.Vector2{X: float32(cellX + halfCell), Y: float32(rowY)}
-					p2 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + triangleSize)}
-					p3 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + triangleSize)}
-				case col == 7: // Back
-					p1 = rl.Vector2{X: float32(cellX + halfCell), Y: float32(rowY + cellSize)}
-					p2 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + cellSize - triangleSize)}
-					p3 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + cellSize - triangleSize)}
-				case col < 3: // Left side
-					p1 = rl.Vector2{X: float32(cellX), Y: float32(rowY + halfCell)}
-					p2 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + triangleSize)}
-					p3 = rl.Vector2{X: float32(cellX + triangleSize), Y: float32(rowY + cellSize - triangleSize)}
-				case col > 3 && col < 7: // Right side
-					p1 = rl.Vector2{X: float32(cellX + cellSize), Y: float32(rowY + halfCell)}
-					p2 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + triangleSize)}
-					p3 = rl.Vector2{X: float32(cellX + cellSize - triangleSize), Y: float32(rowY + cellSize - triangleSize)}
-				}
-
-				rl.DrawTriangle(p1, p2, p3, rl.Yellow)
-			}
-		}
-	}
-
-	// Draw the directional grid (3x3)
+	// Calculate directions
 	currentDir := g.GetCurrentDirection()
 	leftDir := currentDir.TurnLeft()
 	rightDir := currentDir.TurnRight()
 
-	// Calculate all 8 directions around the snake
 	directions := []Point{
 		{X: -currentDir.ToPoint().X + leftDir.ToPoint().X, Y: -currentDir.ToPoint().Y + leftDir.ToPoint().Y}, // backLeft
 		leftDir.ToPoint(), // left
@@ -449,7 +429,6 @@ func (r *Renderer) drawStateGrid(g *Game) {
 		{X: -currentDir.ToPoint().X, Y: -currentDir.ToPoint().Y},                                               // back
 	}
 
-	// Map of positions to directions
 	dirMap := map[Point]Point{
 		{X: -1, Y: -1}: directions[0], // backLeft
 		{X: -1, Y: 0}:  directions[1], // left
@@ -461,72 +440,75 @@ func (r *Renderer) drawStateGrid(g *Game) {
 		{X: 1, Y: 1}:   directions[4], // frontRight
 	}
 
-	// Draw the 3x3 grid
-	for row := -1; row <= 1; row++ {
-		for col := -1; col <= 1; col++ {
-			if row == 0 && col == 0 {
-				// Center cell (snake position)
-				cellX := dirGridX + dirGridSize
-				cellY := dirGridY + dirGridSize
-				rl.DrawRectangle(cellX, cellY, dirGridSize, dirGridSize, rl.DarkGray)
-				rl.DrawRectangleLines(cellX, cellY, dirGridSize, dirGridSize, rl.White)
-				continue
-			}
+	// Draw each grid
+	for gridIndex, grid := range grids {
+		// Draw background
+		rl.DrawRectangle(
+			grid.x-5,
+			startY-5,
+			gridSize*3+10,
+			gridSize*3+10,
+			rl.Color{R: 0, G: 0, B: 0, A: 100},
+		)
 
-			cellX := dirGridX + int32(col+1)*dirGridSize
-			cellY := dirGridY + int32(row+1)*dirGridSize
+		// Draw label
+		labelWidth := rl.MeasureText(grid.label, fontSize)
+		labelX := grid.x + (gridSize*3-labelWidth)/2
+		labelY := startY - fontSize - 2
+		rl.DrawText(grid.label, labelX, labelY, fontSize, rl.White)
 
-			// Get the direction for this position
-			if dir, ok := dirMap[Point{X: col, Y: row}]; ok {
-				// Get combined directional value
-				value := g.GetCombinedDirectionalInfo(dir)
-				// Get color based on value
-				color := r.getStateColor(value)
+		// Draw the 3x3 grid
+		for row := -1; row <= 1; row++ {
+			for col := -1; col <= 1; col++ {
+				if row == 0 && col == 0 {
+					// Center cell (snake position)
+					cellX := grid.x + gridSize
+					cellY := startY + gridSize
+					rl.DrawRectangle(cellX, cellY, gridSize, gridSize, rl.DarkGray)
+					rl.DrawRectangleLines(cellX, cellY, gridSize, gridSize, rl.White)
+					continue
+				}
 
-				// Draw cell with value
-				rl.DrawRectangle(cellX, cellY, dirGridSize, dirGridSize, color)
-				rl.DrawRectangleLines(cellX, cellY, dirGridSize, dirGridSize, rl.White)
+				cellX := grid.x + int32(col+1)*gridSize
+				cellY := startY + int32(row+1)*gridSize
 
-				// Draw value text
-				valueText := fmt.Sprintf("%.2f", value)
-				textWidth := rl.MeasureText(valueText, fontSize)
-				textX := cellX + (dirGridSize-textWidth)/2
-				textY := cellY + (dirGridSize-fontSize)/2
-				rl.DrawText(valueText, textX, textY, fontSize, rl.Black)
+				// Get the direction for this position
+				if dir, ok := dirMap[Point{X: col, Y: row}]; ok {
+					var value float64
+					if gridIndex == 0 {
+						// Combined values grid
+						value = g.GetCombinedDirectionalInfo(dir)
+					} else {
+						// Find the index in the direction array
+						dirIndex := -1
+						for i, d := range directions {
+							if d == dir {
+								dirIndex = i
+								break
+							}
+						}
+						if dirIndex >= 0 {
+							value = grid.values[dirIndex]
+						}
+					}
+
+					// Get color based on value
+					color := grid.color(value)
+
+					// Draw cell
+					rl.DrawRectangle(cellX, cellY, gridSize, gridSize, color)
+					rl.DrawRectangleLines(cellX, cellY, gridSize, gridSize, rl.White)
+
+					// Draw value text
+					valueText := fmt.Sprintf("%.2f", value)
+					textWidth := rl.MeasureText(valueText, fontSize)
+					textX := cellX + (gridSize-textWidth)/2
+					textY := cellY + (gridSize-fontSize)/2
+					rl.DrawText(valueText, textX, textY, fontSize, rl.Black)
+				}
 			}
 		}
 	}
-}
-
-// drawCompressionIndicator disegna una barra verticale rossa con l'indicatore del livello di compressione
-func (r *Renderer) drawCompressionIndicator(x float32, graphY, graphHeight int32, compressionIndex int) {
-	const (
-		indicatorWidth = 2 // Larghezza della barra verticale
-		textPadding    = 5 // Padding sopra il grafico per il testo
-	)
-
-	// Disegna la barra verticale
-	rl.DrawRectangle(
-		int32(x-indicatorWidth/2),
-		graphY,
-		indicatorWidth,
-		graphHeight,
-		compressionIndColor,
-	)
-
-	// Mostra direttamente il livello di compressione
-	compressionText := fmt.Sprintf("L%d", compressionIndex)
-	fontSize := int32(20)
-	textWidth := rl.MeasureText(compressionText, fontSize)
-
-	// Posiziona il testo centrato sopra la barra
-	rl.DrawText(
-		compressionText,
-		int32(x)-textWidth/2,
-		graphY-fontSize-textPadding,
-		fontSize,
-		compressionIndColor,
-	)
 }
 
 func (r *Renderer) drawStatsGraph() {
@@ -535,18 +517,26 @@ func (r *Renderer) drawStatsGraph() {
 	graphWidth := r.screenWidth
 	graphY := r.screenHeight - graphHeight
 
-	// Get stats data
-	stats := r.stats.GetStats()
-	if len(stats) == 0 {
+	// Get stats data - only last 100
+	allStats := r.stats.GetStats()
+	if len(allStats) == 0 {
 		return
 	}
+
+	// Take only the last 100 stats
+	startIdx := len(allStats)
+	if startIdx > 100 {
+		startIdx = len(allStats) - 100
+	}
+	stats := allStats[startIdx:]
 
 	// Find max values for scaling
 	maxScore := r.stats.GetAbsoluteMaxScore()
 	var maxDuration float64
 	for _, game := range stats {
-		if game.MaxDuration > maxDuration {
-			maxDuration = game.MaxDuration
+		duration := game.EndTime.Sub(game.StartTime).Seconds()
+		if duration > maxDuration {
+			maxDuration = duration
 		}
 	}
 
@@ -578,27 +568,6 @@ func (r *Renderer) drawStatsGraph() {
 		barAlpha   = uint8(180) // Standard alpha for bars
 	)
 
-	// Draw compression indicators first (so they appear behind the data)
-	for i, game := range sortedStats {
-		if game.CompressionIndex > 0 {
-			// Verifica se è l'ultimo elemento del suo livello di compressione
-			isLast := true
-			if i < len(sortedStats)-1 {
-				isLast = sortedStats[i+1].CompressionIndex != game.CompressionIndex
-			}
-
-			// Se è l'ultimo elemento, disegna l'indicatore alla posizione dell'elemento successivo
-			if isLast && i < len(sortedStats)-1 {
-				nextX := currentX + pointSpacing
-				r.drawCompressionIndicator(nextX, graphY, graphHeight, game.CompressionIndex)
-			}
-		}
-		currentX += pointSpacing
-	}
-
-	// Reset currentX for drawing the data
-	currentX = float32(borderPadding)
-
 	// Draw all records chronologically
 	for i, game := range sortedStats {
 		// Calculate x positions for score and duration bars
@@ -606,20 +575,9 @@ func (r *Renderer) drawStatsGraph() {
 		durationX := currentX + barSpacing/2
 
 		// Calculate score and duration Y positions
-		var scoreY float32
-		if game.CompressionIndex == 0 {
-			scoreY = float32(graphY+graphHeight) - float32(game.Score)*scaleY
-		} else {
-			scoreY = float32(graphY+graphHeight) - float32(game.CompressedAverageScore)*scaleY
-		}
-
-		var durationY float32
-		if game.CompressionIndex == 0 {
-			duration := float32(game.EndTime.Sub(game.StartTime).Seconds())
-			durationY = float32(graphY+graphHeight) - duration*durationScaleY
-		} else {
-			durationY = float32(graphY+graphHeight) - float32(game.CompressedAverageDuration)*durationScaleY
-		}
+		scoreY := float32(graphY+graphHeight) - float32(game.Score)*scaleY
+		duration := float32(game.EndTime.Sub(game.StartTime).Seconds())
+		durationY := float32(graphY+graphHeight) - duration*durationScaleY
 
 		// Draw points for score and duration
 		rl.DrawCircle(int32(scoreX), int32(scoreY), 2, scoreColor)
@@ -631,15 +589,9 @@ func (r *Renderer) drawStatsGraph() {
 			nextGame := sortedStats[i+1]
 
 			// Calculate next point positions
-			var nextScoreY, nextDurationY float32
-			if nextGame.CompressionIndex == 0 {
-				nextScoreY = float32(graphY+graphHeight) - float32(nextGame.Score)*scaleY
-				nextDuration := float32(nextGame.EndTime.Sub(nextGame.StartTime).Seconds())
-				nextDurationY = float32(graphY+graphHeight) - nextDuration*durationScaleY
-			} else {
-				nextScoreY = float32(graphY+graphHeight) - float32(nextGame.CompressedAverageScore)*scaleY
-				nextDurationY = float32(graphY+graphHeight) - float32(nextGame.CompressedAverageDuration)*durationScaleY
-			}
+			nextScoreY := float32(graphY+graphHeight) - float32(nextGame.Score)*scaleY
+			nextDuration := float32(nextGame.EndTime.Sub(nextGame.StartTime).Seconds())
+			nextDurationY := float32(graphY+graphHeight) - nextDuration*durationScaleY
 
 			// Draw connecting lines
 			rl.DrawLine(int32(scoreX), int32(scoreY), int32(nextX-barSpacing/2), int32(nextScoreY), scoreColor)

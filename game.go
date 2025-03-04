@@ -42,13 +42,24 @@ const (
 )
 
 type Game struct {
-	Grid       Grid
-	snake      *Snake
-	food       Point
-	Steps      int
-	StartTime  time.Time
-	Stats      *GameStats
-	lastAction int // 0: sinistra, 1: avanti, 2: destra
+	Grid            Grid
+	snake           *Snake
+	food            Point
+	Steps           int
+	StartTime       time.Time
+	Stats           *GameStats
+	lastAction      int  // 0: sinistra, 1: avanti, 2: destra
+	enforcePlayArea bool // Controls whether the playable area is enforced
+}
+
+// SetEnforcePlayArea sets whether the playable area should be enforced
+func (g *Game) SetEnforcePlayArea(enforce bool) {
+	g.enforcePlayArea = enforce
+}
+
+// IsPlayAreaEnforced returns whether the playable area is currently enforced
+func (g *Game) IsPlayAreaEnforced() bool {
+	return g.enforcePlayArea
 }
 
 func NewSnake(startPos Point, color Color) *Snake {
@@ -66,6 +77,10 @@ func NewSnake(startPos Point, color Color) *Snake {
 
 // getPlayableArea returns the current playable area boundaries based on snake length
 func (g *Game) getPlayableArea() (minX, maxX, minY, maxY int) {
+	if !g.enforcePlayArea {
+		return 0, g.Grid.Width - 1, 0, g.Grid.Height - 1
+	}
+
 	snakeLength := 1
 	if g.snake != nil {
 		snakeLength = len(g.snake.Body)
@@ -90,12 +105,13 @@ func NewGame(width, height int) *Game {
 			Width:  width,
 			Height: height,
 		},
-		snake:      &Snake{},
-		food:       Point{X: width / 2, Y: height / 2}, // Food starts at center
-		Steps:      0,
-		StartTime:  time.Now(),
-		Stats:      NewGameStats(),
-		lastAction: 1, // Inizia andando avanti
+		snake:           &Snake{},
+		food:            Point{X: width / 2, Y: height / 2}, // Food starts at center
+		Steps:           0,
+		StartTime:       time.Now(),
+		Stats:           NewGameStats(),
+		lastAction:      1,    // Inizia andando avanti
+		enforcePlayArea: true, // By default, enforce the playable area
 	}
 
 	// Get initial playable area
@@ -342,28 +358,45 @@ func maxInt(a, b int) int {
 	return b
 }
 
+func (g *Game) getFoodArea() (minX, maxX, minY, maxY int) {
+	playMinX, playMaxX, playMinY, playMaxY := g.getPlayableArea()
+
+	// Calculate the food area size, leaving a border of 1 unit
+	foodAreaWidth := playMaxX - playMinX - 2
+	foodAreaHeight := playMaxY - playMinY - 2
+
+	// Calculate center of playable area
+	centerX := (playMinX + playMaxX) / 2
+	centerY := (playMinY + playMaxY) / 2
+
+	// Calculate food area boundaries, ensuring we leave a border
+	minX = centerX - foodAreaWidth/2
+	maxX = centerX + foodAreaWidth/2
+	minY = centerY - foodAreaHeight/2
+	maxY = centerY + foodAreaHeight/2
+
+	return
+}
+
 func (g *Game) generateFood() Point {
-	// If snake length is 1, food spawns only at center
-	if len(g.snake.Body) == 1 {
-		return Point{X: g.Grid.Width / 2, Y: g.Grid.Height / 2}
+	minX, maxX, minY, maxY := g.getFoodArea()
+
+	// Ensure minimum dimensions
+	if maxX <= minX {
+		maxX = minX + 1
+	}
+	if maxY <= minY {
+		maxY = minY + 1
 	}
 
-	// For length > 1, calculate area size based on length
-	// length 2 -> 3x3 area (radius 1 from center)
-	// length 3 -> 5x5 area (radius 2 from center)
-	// length 4 -> 7x7 area (radius 3 from center)
-	radius := len(g.snake.Body) - 1
-	centerX := g.Grid.Width / 2
-	centerY := g.Grid.Height / 2
-
 	for {
-		// Generate random position within the NxN area
+		// Generate random position within the food area
 		newFood := Point{
-			X: centerX - radius + rand.Intn(2*radius+1),
-			Y: centerY - radius + rand.Intn(2*radius+1),
+			X: minX + rand.Intn(maxX-minX+1),
+			Y: minY + rand.Intn(maxY-minY+1),
 		}
 
-		// Ensure food doesn't spawn on snake
+		// Check if position is occupied by snake
 		occupied := false
 		for _, part := range g.snake.Body {
 			if part == newFood {

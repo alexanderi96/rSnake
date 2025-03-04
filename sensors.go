@@ -65,11 +65,17 @@ func (d Direction) TurnRight() Direction {
 // considerando sia la presenza di cibo che di pericoli, con scaling basato sulla distanza
 func (g *Game) GetCombinedDirectionalInfo(dir Point) float64 {
 	head := g.snake.GetHead()
+	minX, maxX, minY, maxY := g.getPlayableArea()
 
 	// Calcola la posizione nella direzione specificata
 	nextPos := Point{
-		X: (head.X + dir.X + g.Grid.Width) % g.Grid.Width,
-		Y: (head.Y + dir.Y + g.Grid.Height) % g.Grid.Height,
+		X: head.X + dir.X,
+		Y: head.Y + dir.Y,
+	}
+
+	// Verifica se la posizione è fuori dall'area di gioco corrente
+	if nextPos.X < minX || nextPos.X > maxX || nextPos.Y < minY || nextPos.Y > maxY {
+		return -1.0 // Fuori dall'area di gioco
 	}
 
 	// Ottiene informazioni dettagliate sulla collisione
@@ -91,16 +97,9 @@ func (g *Game) GetCombinedDirectionalInfo(dir Point) float64 {
 		Y: g.food.Y - head.Y,
 	}
 
-	// Considera il wrapping della griglia
-	if foodDir.X > g.Grid.Width/2 {
-		foodDir.X -= g.Grid.Width
-	} else if foodDir.X < -g.Grid.Width/2 {
-		foodDir.X += g.Grid.Width
-	}
-	if foodDir.Y > g.Grid.Height/2 {
-		foodDir.Y -= g.Grid.Height
-	} else if foodDir.Y < -g.Grid.Height/2 {
-		foodDir.Y += g.Grid.Height
+	// Limita la direzione del cibo all'area di gioco corrente
+	if g.food.X < minX || g.food.X > maxX || g.food.Y < minY || g.food.Y > maxY {
+		return dangerValue // Il cibo è fuori dall'area di gioco
 	}
 
 	// Se la nuova posizione è il cibo
@@ -188,6 +187,9 @@ func (g *Game) GetStateInfo() []float64 {
 	leftDir := currentDir.TurnLeft()
 	rightDir := currentDir.TurnRight()
 
+	// Ottieni l'area di gioco corrente
+	minX, maxX, minY, maxY := g.getPlayableArea()
+
 	// Calcola i vettori per tutte le direzioni
 	directions := make([]Point, 8)
 
@@ -226,23 +228,34 @@ func (g *Game) GetStateInfo() []float64 {
 			Y: head.Y + dir.Y,
 		}
 
-		// Ottiene informazioni sulla collisione
-		_, collisionInfo := g.getCollisionInfo(nextPos)
+		// Verifica se la posizione è fuori dall'area di gioco corrente
+		isOutsidePlayArea := nextPos.X < minX || nextPos.X > maxX || nextPos.Y < minY || nextPos.Y > maxY
 
-		// Muri [0-7]
-		if collisionInfo.Type == WallCollision {
+		// Muri [0-7] - Considera sia i muri dell'area di gioco che quelli della griglia
+		if isOutsidePlayArea {
 			state[i] = 1.0
+		} else {
+			// Se siamo dentro l'area di gioco, verifica le collisioni normali
+			_, collisionInfo := g.getCollisionInfo(nextPos)
+			if collisionInfo.Type == WallCollision {
+				state[i] = 1.0
+			}
 		}
 
 		// Corpo [8-15]
-		if collisionInfo.Type == SelfCollision {
-			state[i+8] = 1.0
+		if !isOutsidePlayArea {
+			_, collisionInfo := g.getCollisionInfo(nextPos)
+			if collisionInfo.Type == SelfCollision {
+				state[i+8] = 1.0
+			}
 		}
 
-		// Cibo [16-23] - Usa GetCombinedDirectionalInfo per avere informazione direzionale costante
-		foodValue := g.GetCombinedDirectionalInfo(dir)
-		if foodValue > 0 {
-			state[i+16] = foodValue // Valore positivo indica direzione verso il cibo
+		// Cibo [16-23] - Usa GetCombinedDirectionalInfo solo se siamo dentro l'area di gioco
+		if !isOutsidePlayArea {
+			foodValue := g.GetCombinedDirectionalInfo(dir)
+			if foodValue > 0 {
+				state[i+16] = foodValue // Valore positivo indica direzione verso il cibo
+			}
 		}
 	}
 
