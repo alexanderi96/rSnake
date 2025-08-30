@@ -1,4 +1,20 @@
-*.json
-*.txt
-*.bk
-*.pprof
+# Compiled files
+/target/
+
+# Cargo lock file for libraries (se è un binario, puoi toglierlo dal gitignore)
+# Cargo.lock
+
+# Backup / temporary files
+*.rs.bk
+*.swp
+*.swo
+*.tmp
+
+# IDE / editor configs
+.vscode/
+.idea/
+*.iml
+
+# OS cruft
+.DS_Store
+Thumbs.db
