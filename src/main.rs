@@ -23,6 +23,9 @@ struct SnakeSegment;
 #[derive(Component)]
 struct Food;
 
+#[derive(Component)]
+struct GridLine;
+
 // --- Risorse & Eventi ---
 #[derive(Resource, Default)]
 struct SnakeSegments(Vec<Entity>);
@@ -30,7 +33,7 @@ struct SnakeSegments(Vec<Entity>);
 #[derive(Resource, Default, Copy, Clone)]
 struct SnakeDirection(Vec2I);
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, PartialEq)]
 struct Vec2I { x: i32, y: i32 }
 
 impl Vec2I {
@@ -68,6 +71,7 @@ fn main() {
         .add_event::<GameOver>()
         // Setup
         .add_systems(Startup, setup)
+        .add_systems(Startup, spawn_grid)
         .add_systems(Startup, spawn_snake)
         .add_systems(Startup, spawn_food)
         // Input ogni frame
@@ -88,6 +92,53 @@ fn main() {
 // --- Setup camera ---
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
+}
+
+// --- Spawn grid lines ---
+fn spawn_grid(mut commands: Commands, windows: Query<&Window>) {
+    let win = windows.single();
+    let tile_w = win.width() / ARENA_WIDTH as f32;
+    let tile_h = win.height() / ARENA_HEIGHT as f32;
+    
+    // Vertical lines
+    for i in 0..=ARENA_WIDTH {
+        let x = (i as f32 - ARENA_WIDTH as f32 / 2.0) * tile_w;
+        commands.spawn((
+            SpriteBundle {
+                sprite: Sprite {
+                    color: Color::srgba(0.3, 0.3, 0.3, 0.5),
+                    ..default()
+                },
+                transform: Transform {
+                    translation: Vec3::new(x, 0.0, -1.0),
+                    scale: Vec3::new(1.0, win.height(), 1.0),
+                    ..default()
+                },
+                ..default()
+            },
+            GridLine,
+        ));
+    }
+    
+    // Horizontal lines
+    for i in 0..=ARENA_HEIGHT {
+        let y = (i as f32 - ARENA_HEIGHT as f32 / 2.0) * tile_h;
+        commands.spawn((
+            SpriteBundle {
+                sprite: Sprite {
+                    color: Color::srgba(0.3, 0.3, 0.3, 0.5),
+                    ..default()
+                },
+                transform: Transform {
+                    translation: Vec3::new(0.0, y, -1.0),
+                    scale: Vec3::new(win.width(), 1.0, 1.0),
+                    ..default()
+                },
+                ..default()
+            },
+            GridLine,
+        ));
+    }
 }
 
 // --- Converte coordinate griglia -> mondo ---
@@ -198,7 +249,7 @@ fn tick_move_timer(
 
 // Condizione: esegui passo quando scatta il timer
 fn should_step(timer: Res<MoveTimer>) -> bool {
-    timer.0.finished_this_tick()
+    timer.0.times_finished_this_tick() > 0
 }
 
 // --- Movimento Snake ---
@@ -206,7 +257,7 @@ fn snake_movement(
     dir: Res<SnakeDirection>,
     mut query: Query<(&mut Position, &mut Transform), With<SnakeSegment>>,
     windows: Query<&Window>,
-    mut segments: ResMut<SnakeSegments>,
+    segments: ResMut<SnakeSegments>,
 ) {
     if query.is_empty() { return; }
 
@@ -248,8 +299,32 @@ fn snake_movement(
 #[derive(Resource, Default)]
 struct FoodSpawnNeeded(bool);
 
-fn spawn_food(mut commands: Commands, windows: Query<&Window>) {
+fn spawn_food(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    segments: Res<SnakeSegments>,
+    seg_query: Query<&Position, With<SnakeSegment>>,
+) {
     let win = windows.single();
+    
+    // Collect occupied positions
+    let occupied: std::collections::HashSet<(i32, i32)> = segments.0.iter()
+        .filter_map(|e| seg_query.get(*e).ok())
+        .map(|p| (p.x, p.y))
+        .collect();
+
+    let mut rng = thread_rng();
+    // Find a free cell
+    let (fx, fy) = loop {
+        let x = rng.gen_range(0..ARENA_WIDTH);
+        let y = rng.gen_range(0..ARENA_HEIGHT);
+        if !occupied.contains(&(x, y)) {
+            break (x, y);
+        }
+    };
+    
+    let food_pos = Position { x: fx, y: fy };
+    
     commands.spawn((
         SpriteBundle {
             sprite: Sprite {
@@ -257,34 +332,40 @@ fn spawn_food(mut commands: Commands, windows: Query<&Window>) {
                 ..default()
             },
             transform: Transform {
-                // placeholder, verrà posizionato da respawn_food
-                translation: Vec3::ZERO,
+                translation: position_to_translation(food_pos, win),
                 scale: size_to_scale(Size { w: 0.8, h: 0.8 }, win),
                 ..default()
             },
             ..default()
         },
         Food,
-        Position { x: 0, y: 0 },
+        food_pos,
         Size { w: 0.8, h: 0.8 },
     ));
 }
 
 fn respawn_food(
-    mut food_q: Query<(&mut Position, &mut Transform), With<Food>>,
+    mut queries: ParamSet<(
+        Query<(&mut Position, &mut Transform), With<Food>>,
+        Query<&Position, With<SnakeSegment>>,
+    )>,
     windows: Query<&Window>,
     mut need: ResMut<FoodSpawnNeeded>,
     segments: Res<SnakeSegments>,
-    seg_q: Query<&Position, With<SnakeSegment>>,
 ) {
     if !need.0 { return; }
     need.0 = false;
 
     let win = windows.single();
-    let occupied: std::collections::HashSet<(i32, i32)> = segments.0.iter()
-        .filter_map(|e| seg_q.get(*e).ok())
-        .map(|p| (p.x, p.y))
-        .collect();
+    
+    // First, collect occupied positions using the second query
+    let occupied: std::collections::HashSet<(i32, i32)> = {
+        let seg_q = queries.p1();
+        segments.0.iter()
+            .filter_map(|e| seg_q.get(*e).ok())
+            .map(|p| (p.x, p.y))
+            .collect()
+    };
 
     let mut rng = thread_rng();
     // trova una cella libera
@@ -295,6 +376,8 @@ fn respawn_food(
         if !occupied.contains(&(fx, fy)) { break; }
     }
 
+    // Then, update food position using the first query
+    let mut food_q = queries.p0();
     if let Ok((mut p, mut t)) = food_q.get_single_mut() {
         *p = Position { x: fx, y: fy };
         t.translation = position_to_translation(*p, win);
@@ -303,7 +386,7 @@ fn respawn_food(
 
 // --- Mangia & Cresci ---
 fn eat_food(
-    mut commands: Commands,
+    _commands: Commands,
     mut need: ResMut<FoodSpawnNeeded>,
     mut ate_writer: EventWriter<AteFood>,
     head_q: Query<&Position, (With<SnakeHead>, With<SnakeSegment>)>,
@@ -321,8 +404,7 @@ fn grow_snake(
     mut reader: EventReader<AteFood>,
     mut commands: Commands,
     windows: Query<&Window>,
-    segments: Res<SnakeSegments>,
-    mut segments_res: ResMut<SnakeSegments>,
+    mut segments: ResMut<SnakeSegments>,
     query: Query<(&Position, &Size), With<SnakeSegment>>,
 ) {
     if reader.read().next().is_none() { return; }
@@ -351,9 +433,7 @@ fn grow_snake(
                     *last_size,
                 ))
                 .id();
-            let mut v = segments.0.clone();
-            v.push(new_entity);
-            segments_res.0 = v;
+            segments.0.push(new_entity);
         }
     }
 }
