@@ -1,0 +1,14 @@
+{
+  "total_generations": 3002,
+  "high_score": 52,
+  "total_games_played": 12400,
+  "total_food_eaten": 0,
+  "total_training_time_secs": 52681,
+  "best_score_per_snake": [
+    3,
+    2,
+    2,
+    3
+  ],
+  "last_saved": "2026-02-15 11:29:23"
+}
