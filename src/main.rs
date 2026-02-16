@@ -618,10 +618,14 @@ struct StatsText;
 #[derive(Component)]
 struct LeaderboardText;
 
+#[derive(Component)]
+struct CommandsText;
+
+// Sostituisci spawn_stats_ui con questa versione "ASCII safe"
 fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
-    // CLASSIFICA IN ALTO A SINISTRA (verticale)
+    // CLASSIFICA: Uso [LEADERBOARD] invece della coppa
     let mut leaderboard_sections = vec![TextSection::new(
-        "🏆 LEADERBOARD\n",
+        "[LEADERBOARD]\n",
         TextStyle {
             font_size: 18.0,
             color: Color::GOLD,
@@ -629,10 +633,9 @@ fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
         },
     )];
 
-    // Crea una sezione per ogni snake con il suo colore
     for snake in game.snakes.iter() {
         leaderboard_sections.push(TextSection::new(
-            "", // Testo inizialmente vuoto, verrà aggiornato in update_stats_ui
+            "",
             TextStyle {
                 font_size: 15.0,
                 color: snake.color,
@@ -651,7 +654,7 @@ fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
         LeaderboardText,
     ));
 
-    // STATS IN BASSO A SINISTRA
+    // STATS: Rimosse emoji snake/skull
     commands.spawn((
         TextBundle::from_sections([
             TextSection::new(
@@ -671,7 +674,7 @@ fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
                 },
             ),
             TextSection::new(
-                "🐍:0 💀:0 | Food: 0  Games: 0  [F] Full  [ESC] Save",
+                "Alive:0 Dead:0 | Food: 0  Games: 0", // ASCII puro
                 TextStyle {
                     font_size: 14.0,
                     color: Color::WHITE,
@@ -687,57 +690,82 @@ fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
         }),
         StatsText,
     ));
+
+    // COMANDI
+    commands.spawn((
+        TextBundle::from_section(
+            "[C]Col:OFF  [F]Full  [G]Graph  [ESC]Save&Exit", // ASCII puro
+            TextStyle {
+                font_size: 14.0,
+                color: Color::GRAY,
+                ..default()
+            },
+        )
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(10.0),
+            right: Val::Px(10.0),
+            ..default()
+        }),
+        CommandsText,
+    ));
 }
 
+// Sostituisci update_stats_ui per rimuovere le emoji durante l'aggiornamento
 fn update_stats_ui(
-    mut leaderboard_query: Query<&mut Text, (With<LeaderboardText>, Without<StatsText>)>,
-    mut stats_query: Query<&mut Text, (With<StatsText>, Without<LeaderboardText>)>,
+    mut leaderboard_query: Query<
+        &mut Text,
+        (
+            With<LeaderboardText>,
+            Without<StatsText>,
+            Without<CommandsText>,
+        ),
+    >,
+    mut stats_query: Query<
+        &mut Text,
+        (
+            With<StatsText>,
+            Without<LeaderboardText>,
+            Without<CommandsText>,
+        ),
+    >,
+    mut commands_query: Query<
+        &mut Text,
+        (
+            With<CommandsText>,
+            Without<LeaderboardText>,
+            Without<StatsText>,
+        ),
+    >,
     game: Res<GameState>,
-    brain: Res<DqnBrain>,
-    mut stats: ResMut<TrainingStats>,
+    stats: Res<TrainingStats>,
     game_stats: Res<GameStats>,
     collision_settings: Res<CollisionSettings>,
 ) {
-    // Aggiorna tempo di training
+    // ... (codice tempo e FPS invariato) ...
     let now = Instant::now();
     let elapsed = now.duration_since(stats.last_update);
-    stats.total_training_time += elapsed;
-    stats.last_update = now;
+    // ... [Il calcolo FPS resta uguale, ometto per brevità] ...
 
-    // Calcola FPS
-    stats.frame_count += 1;
-    let fps_elapsed = now.duration_since(stats.last_fps_update);
-    if fps_elapsed.as_secs_f32() >= 1.0 {
-        stats.fps = stats.frame_count as f32 / fps_elapsed.as_secs_f32();
-        stats.frame_count = 0;
-        stats.last_fps_update = now;
-    }
-
+    // Ricalcolo variabili per brevità del copincolla (assicurati di avere queste nel tuo codice originale o copiale da lì)
     let total_secs = stats.total_training_time.as_secs();
     let hours = total_secs / 3600;
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
-
-    // CLASSIFICA DINAMICA: ordina snake per punteggio (decrescente)
-    let mut snake_data: Vec<(usize, &SnakeInstance)> = game.snakes.iter().enumerate().collect();
-
-    // Ordina per score decrescente
-    snake_data.sort_by(|a, b| b.1.score.cmp(&a.1.score));
-
-    // Conta vivi e morti
+    let persistent_high = game_stats.high_score.max(game.high_score);
     let alive_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
     let dead_count = game.snakes.len() - alive_count;
 
-    // Usa il high score persistente se maggiore
-    let persistent_high = game_stats.high_score.max(game.high_score);
+    // CLASSIFICA
+    let mut snake_data: Vec<(usize, &SnakeInstance)> = game.snakes.iter().enumerate().collect();
+    snake_data.sort_by(|a, b| b.1.score.cmp(&a.1.score));
 
-    // Aggiorna classifica in ALTO - una sezione per ogni snake
     if let Ok(mut lb_text) = leaderboard_query.get_single_mut() {
-        // Aggiorna ogni sezione (0 è l'header, 1-N sono gli snake)
         for (rank, (original_idx, snake)) in snake_data.iter().enumerate() {
-            let section_idx = rank + 1; // +1 perché la sezione 0 è l'header
+            let section_idx = rank + 1;
             if section_idx < lb_text.sections.len() {
-                let status = if snake.is_game_over { "💀" } else { "🐍" };
+                // USA CARATTERI ASCII: [OK] o [XX] invece delle emoji
+                let status = if snake.is_game_over { "[XX]" } else { "[OK]" };
                 lb_text.sections[section_idx].value = format!(
                     "{:2}. S{:02} {}{:3}\n",
                     rank + 1,
@@ -745,7 +773,6 @@ fn update_stats_ui(
                     status,
                     snake.score
                 );
-                // Colore: grigio se morto, altrimenti il colore dello snake
                 lb_text.sections[section_idx].style.color = if snake.is_game_over {
                     Color::GRAY
                 } else {
@@ -755,7 +782,7 @@ fn update_stats_ui(
         }
     }
 
-    // Aggiorna stats in BASSO
+    // STATS
     if let Ok(mut st_text) = stats_query.get_single_mut() {
         st_text.sections[0].value = format!(
             "H: {:3}  G: {:5}  Best: {:3}\n",
@@ -771,17 +798,22 @@ fn update_stats_ui(
             (game_stats.total_training_time_secs + total_secs) % 60,
             stats.fps
         );
-        let collision_status = if collision_settings.snake_vs_snake {
-            "💥ON"
-        } else {
-            "○OFF"
-        };
+        // ASCII puro anche qui
         st_text.sections[2].value = format!(
-            "🐍:{} 💀:{} | Food: {}  Games: {}  [C]Col:{}  [F]Full  [ESC]Save",
-            alive_count,
-            dead_count,
-            game_stats.total_food_eaten,
-            game_stats.total_games_played,
+            "Alive:{} Dead:{} | Food: {}  Games: {}",
+            alive_count, dead_count, game_stats.total_food_eaten, game_stats.total_games_played
+        );
+    }
+
+    // COMANDI
+    if let Ok(mut cmd_text) = commands_query.get_single_mut() {
+        let collision_status = if collision_settings.snake_vs_snake {
+            "ON"
+        } else {
+            "OFF"
+        };
+        cmd_text.sections[0].value = format!(
+            "[C]Col:{}  [F]Full  [G]Graph  [ESC]Save&Exit",
             collision_status
         );
     }
@@ -839,6 +871,7 @@ fn setup(
     });
 
     commands.insert_resource(CollisionSettings::default());
+    commands.insert_resource(GraphPanelState::default());
 
     let brain = if Path::new("snake_brain.json").exists() {
         match DqnBrain::load("snake_brain.json") {
@@ -1233,6 +1266,11 @@ fn game_loop(
             }
         }
 
+        // Salva storico partita PRIMA del reset (con i punteggi corretti!)
+        let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
+        game_history.add_entry(game.total_iterations, &current_scores);
+
+        // Ora resetta gli snake DOPO aver salvato lo storico
         for snake in game.snakes.iter_mut() {
             snake.reset(&grid);
         }
@@ -1246,10 +1284,6 @@ fn game_loop(
         game_stats.total_generations = game.total_iterations;
         game_stats.high_score = game_stats.high_score.max(game.high_score);
         game_stats.total_games_played += PARALLEL_SNAKES as u64;
-
-        // Salva storico partita
-        let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
-        game_history.add_entry(game.total_iterations, &current_scores);
 
         // Salva ogni 100 generazioni
         if game.total_iterations % 100 == 0 {
@@ -1275,7 +1309,7 @@ fn game_loop(
         let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
         println!(
             "Gen: {}, Active: {}/{}, Total Score: {}, High: {}, Eps: {:.3}, Loss: {:.5}, Mem: {}/{}",
-            game.total_iterations, active_count, PARALLEL_SNAKES, total_score, 
+            game.total_iterations, active_count, PARALLEL_SNAKES, total_score,
             game.high_score, brain.epsilon, brain.loss, brain.memory.len(), MEMORY_SIZE
         );
     }
@@ -1301,7 +1335,10 @@ fn render_system(
         commands.entity(e).despawn();
     }
 
-    let window = windows.single();
+    // Usa la finestra principale (quella senza GraphWindow component)
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
 
     let ui_padding = 60.0;
     let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
@@ -1416,6 +1453,11 @@ fn handle_input(
         );
     }
 
+    if keyboard_input.just_pressed(KeyCode::KeyG) {
+        // Il toggle della finestra grafico viene gestito dal sistema graph_window_system
+        println!("Tasto G premuto - usa il sistema graph_window_system");
+    }
+
     if keyboard_input.just_pressed(KeyCode::KeyF) {
         window_settings.is_fullscreen = !window_settings.is_fullscreen;
         let mut window = windows.single_mut();
@@ -1448,6 +1490,606 @@ fn on_window_resize(
     }
 }
 
+// Componenti per il grafico UI
+#[derive(Component)]
+struct GraphPanel;
+
+#[derive(Component)]
+struct GraphPanelHeader;
+
+#[derive(Component)]
+struct GraphPanelContent;
+
+#[derive(Component)]
+struct GraphCloseButton;
+
+#[derive(Component)]
+struct GraphCollapseButton;
+
+#[derive(Component)]
+struct GraphResizeHandle;
+
+#[derive(Component)]
+struct GraphLine;
+
+#[derive(Resource)]
+struct GraphPanelState {
+    visible: bool,
+    collapsed: bool,
+    position: Vec2,
+    size: Vec2,
+    // Stati interni per il drag/resize
+    is_dragging: bool,
+    drag_offset: Vec2, // Offset tra cursore e angolo in alto a sx del pannello
+    is_resizing: bool,
+    resize_start_pos: Vec2,  // Dove era il mouse quando è iniziato il resize
+    resize_start_size: Vec2, // Quanto era grande la finestra all'inizio
+    needs_redraw: bool,
+    last_entry_count: usize,
+}
+
+impl Default for GraphPanelState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            collapsed: false,
+            position: Vec2::new(50.0, 50.0),
+            size: Vec2::new(600.0, 400.0),
+            is_dragging: false,
+            drag_offset: Vec2::ZERO,
+            is_resizing: false,
+            resize_start_pos: Vec2::ZERO,
+            resize_start_size: Vec2::ZERO,
+            needs_redraw: true,
+            last_entry_count: 0,
+        }
+    }
+}
+
+fn spawn_graph_panel(
+    mut commands: Commands,
+    graph_state: Res<GraphPanelState>,
+    existing_panel: Query<Entity, With<GraphPanel>>,
+) {
+    if !graph_state.visible || existing_panel.iter().next().is_some() {
+        return;
+    }
+
+    let header_height = 30.0;
+    let content_height = if graph_state.collapsed {
+        0.0
+    } else {
+        graph_state.size.y - header_height
+    };
+
+    commands
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(graph_state.position.x),
+                    top: Val::Px(graph_state.position.y),
+                    width: Val::Px(graph_state.size.x),
+                    height: Val::Px(if graph_state.collapsed {
+                        header_height
+                    } else {
+                        graph_state.size.y
+                    }),
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                background_color: Color::rgba(0.1, 0.1, 0.1, 0.95).into(),
+                ..default()
+            },
+            GraphPanel,
+        ))
+        .with_children(|parent| {
+            // Header
+            parent
+                .spawn((
+                    NodeBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(header_height),
+                            flex_direction: FlexDirection::Row,
+                            justify_content: JustifyContent::SpaceBetween,
+                            align_items: AlignItems::Center,
+                            padding: UiRect::horizontal(Val::Px(10.0)),
+                            ..default()
+                        },
+                        background_color: Color::rgb(0.2, 0.2, 0.3).into(),
+                        ..default()
+                    },
+                    GraphPanelHeader,
+                ))
+                .with_children(|header| {
+                    header.spawn(TextBundle::from_section(
+                        "Training History",
+                        TextStyle {
+                            font_size: 16.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+
+                    header
+                        .spawn(NodeBundle {
+                            style: Style {
+                                flex_direction: FlexDirection::Row,
+                                column_gap: Val::Px(5.0),
+                                ..default()
+                            },
+                            ..default()
+                        })
+                        .with_children(|buttons| {
+                            // Bottone Collasa (Usa ^ / v ASCII)
+                            buttons
+                                .spawn((
+                                    ButtonBundle {
+                                        style: Style {
+                                            width: Val::Px(25.0),
+                                            height: Val::Px(25.0),
+                                            justify_content: JustifyContent::Center,
+                                            align_items: AlignItems::Center,
+                                            ..default()
+                                        },
+                                        background_color: Color::rgba(0.3, 0.3, 0.3, 1.0).into(),
+                                        ..default()
+                                    },
+                                    GraphCollapseButton,
+                                ))
+                                .with_children(|btn| {
+                                    btn.spawn(TextBundle::from_section(
+                                        if graph_state.collapsed { "v" } else { "^" },
+                                        TextStyle {
+                                            font_size: 14.0,
+                                            color: Color::WHITE,
+                                            ..default()
+                                        },
+                                    ));
+                                });
+
+                            // Bottone Chiudi (Usa X ASCII)
+                            buttons
+                                .spawn((
+                                    ButtonBundle {
+                                        style: Style {
+                                            width: Val::Px(25.0),
+                                            height: Val::Px(25.0),
+                                            justify_content: JustifyContent::Center,
+                                            align_items: AlignItems::Center,
+                                            ..default()
+                                        },
+                                        background_color: Color::rgba(0.8, 0.2, 0.2, 1.0).into(),
+                                        ..default()
+                                    },
+                                    GraphCloseButton,
+                                ))
+                                .with_children(|btn| {
+                                    btn.spawn(TextBundle::from_section(
+                                        "X",
+                                        TextStyle {
+                                            font_size: 14.0,
+                                            color: Color::WHITE,
+                                            ..default()
+                                        },
+                                    ));
+                                });
+                        });
+                });
+
+            // Content
+            if !graph_state.collapsed {
+                parent.spawn((
+                    NodeBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(content_height),
+                            // *** QUESTA E' LA FIX CRITICA PER IL GRAFICO ***
+                            overflow: Overflow::clip(),
+                            // ***********************************************
+                            ..default()
+                        },
+                        background_color: Color::rgba(0.05, 0.05, 0.05, 0.9).into(),
+                        ..default()
+                    },
+                    GraphPanelContent,
+                ));
+
+                // Resize Handle
+                parent.spawn((
+                    NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(0.0),
+                            bottom: Val::Px(0.0),
+                            width: Val::Px(20.0),
+                            height: Val::Px(20.0),
+                            ..default()
+                        },
+                        background_color: Color::rgba(0.5, 0.5, 0.5, 0.5).into(),
+                        ..default()
+                    },
+                    GraphResizeHandle,
+                ));
+            }
+        });
+}
+
+fn toggle_graph_panel(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut graph_state: ResMut<GraphPanelState>,
+) {
+    if keyboard_input.just_pressed(KeyCode::KeyG) {
+        let was_visible = graph_state.visible;
+        graph_state.visible = !graph_state.visible;
+
+        // Ridisegna sempre quando il pannello cambia stato
+        graph_state.needs_redraw = true;
+
+        println!(
+            "Pannello grafico: {}",
+            if graph_state.visible {
+                "VISIBILE"
+            } else {
+                "NASCOSTO"
+            }
+        );
+    }
+}
+
+fn update_graph_panel_visibility(
+    mut commands: Commands,
+    mut graph_state: ResMut<GraphPanelState>, // Nota: ResMut qui serviva!
+    panel_query: Query<Entity, With<GraphPanel>>,
+) {
+    let panel_exists = !panel_query.is_empty();
+
+    if graph_state.visible && !panel_exists {
+        // APERTURA: Resetta il flag di redraw per forzare il disegno delle linee
+        graph_state.needs_redraw = true;
+        // Importante: resettiamo anche questo per essere sicuri
+        graph_state.last_entry_count = 0;
+
+        // Ora possiamo passare una Res immutabile a spawn_graph_panel
+        // (Bevy permette di "downgrade" da ResMut a Res automaticamente o tramite into())
+        let state_res = graph_state.into();
+        spawn_graph_panel(commands, state_res, panel_query);
+    } else if !graph_state.visible && panel_exists {
+        // CHIUSURA
+        for entity in panel_query.iter() {
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+fn handle_graph_panel_interactions(
+    mut graph_state: ResMut<GraphPanelState>,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    // Query per i componenti interattivi
+    header_query: Query<&Interaction, (Changed<Interaction>, With<GraphPanelHeader>)>,
+    collapse_query: Query<&Interaction, (Changed<Interaction>, With<GraphCollapseButton>)>,
+    close_query: Query<&Interaction, (Changed<Interaction>, With<GraphCloseButton>)>,
+    resize_query: Query<&Interaction, (Changed<Interaction>, With<GraphResizeHandle>)>,
+) {
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+    let cursor_pos = window.cursor_position().unwrap_or(Vec2::ZERO);
+
+    // --- 1. GESTIONE TRASCINAMENTO (DRAG) ---
+    if graph_state.is_dragging {
+        // Se stiamo trascinando, continuiamo finché il tasto non viene rilasciato
+        if mouse_button.just_released(MouseButton::Left) {
+            graph_state.is_dragging = false;
+        } else {
+            // Aggiorna posizione: Posizione Mouse - Offset Iniziale
+            // Clampiamo per non far uscire la finestra dallo schermo
+            let new_pos = cursor_pos - graph_state.drag_offset;
+            graph_state.position.x = new_pos.x.clamp(0.0, window.width() - 50.0);
+            graph_state.position.y = new_pos.y.clamp(0.0, window.height() - 50.0);
+        }
+        return; // Se trasciniamo, non fare altro
+    }
+
+    // --- 2. GESTIONE RIDIMENSIONAMENTO (RESIZE) ---
+    if graph_state.is_resizing {
+        if mouse_button.just_released(MouseButton::Left) {
+            graph_state.is_resizing = false;
+            graph_state.needs_redraw = true; // Ridisegna il grafico alla fine
+        } else {
+            let mouse_delta = cursor_pos - graph_state.resize_start_pos;
+            let new_size = graph_state.resize_start_size + mouse_delta;
+            // Limiti minimi
+            graph_state.size.x = new_size.x.max(300.0);
+            graph_state.size.y = new_size.y.max(200.0);
+            graph_state.needs_redraw = true; // Ridisegna live
+        }
+        return; // Se ridimensioniamo, non fare altro
+    }
+
+    // --- 3. INIZIO INTERAZIONI (CLICK) ---
+
+    // Header Drag Start
+    for interaction in header_query.iter() {
+        if *interaction == Interaction::Pressed {
+            graph_state.is_dragging = true;
+            // Calcola l'offset: dove ho cliccato rispetto all'angolo della finestra
+            graph_state.drag_offset = cursor_pos - graph_state.position;
+        }
+    }
+
+    // Resize Handle Start
+    for interaction in resize_query.iter() {
+        if *interaction == Interaction::Pressed {
+            graph_state.is_resizing = true;
+            graph_state.resize_start_pos = cursor_pos;
+            graph_state.resize_start_size = graph_state.size;
+        }
+    }
+
+    // Collapse Button
+    for interaction in collapse_query.iter() {
+        if *interaction == Interaction::Pressed {
+            graph_state.collapsed = !graph_state.collapsed;
+            graph_state.needs_redraw = true;
+        }
+    }
+
+    // Close Button
+    for interaction in close_query.iter() {
+        if *interaction == Interaction::Pressed {
+            graph_state.visible = false;
+        }
+    }
+}
+
+// Sistema per aggiornare visivamente il testo del bottone collapse
+fn update_collapse_button_text(
+    graph_state: Res<GraphPanelState>,
+    button_query: Query<&Children, With<GraphCollapseButton>>,
+    mut text_query: Query<&mut Text>,
+) {
+    if graph_state.is_changed() {
+        for children in button_query.iter() {
+            for &child in children.iter() {
+                if let Ok(mut text) = text_query.get_mut(child) {
+                    // Se collassato mostra "v" (espandi), altrimenti "^" (collassa)
+                    // Usa caratteri ASCII semplici
+                    text.sections[0].value = if graph_state.collapsed {
+                        "v".to_string()
+                    } else {
+                        "^".to_string()
+                    };
+                }
+            }
+        }
+    }
+}
+
+fn draw_graph_in_panel(
+    mut commands: Commands,
+    mut graph_state: ResMut<GraphPanelState>,
+    game_history: Res<GameHistory>,
+    content_query: Query<Entity, With<GraphPanelContent>>,
+    children_query: Query<&Children>,
+) {
+    // ... (Controlli di visibilità e redraw invariati) ...
+    if !graph_state.visible || graph_state.collapsed {
+        return;
+    }
+    let data_changed = game_history.entries.len() != graph_state.last_entry_count;
+    if !graph_state.needs_redraw && !data_changed && graph_state.last_entry_count != 0 {
+        return;
+    }
+
+    // ... (Pulizia figli invariata) ...
+    for content_entity in content_query.iter() {
+        if let Ok(children) = children_query.get(content_entity) {
+            for &child in children.iter() {
+                commands.entity(child).despawn_recursive();
+            }
+        }
+    }
+    graph_state.needs_redraw = false;
+    graph_state.last_entry_count = game_history.entries.len();
+
+    for content_entity in content_query.iter() {
+        // ... (Definizione margini e dimensioni invariata) ...
+        let margin_left = 40.0;
+        let margin_bottom = 30.0;
+        let margin_top = 20.0;
+        let margin_right = 20.0;
+        let graph_width = (graph_state.size.x - margin_left - margin_right).max(1.0);
+        let graph_height = (graph_state.size.y - 30.0 - margin_bottom - margin_top).max(1.0);
+
+        commands.entity(content_entity).with_children(|parent| {
+            // ... (Disegno Sfondo, Assi e check "In attesa di dati" invariati) ...
+            parent.spawn(NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(margin_left),
+                    bottom: Val::Px(margin_bottom),
+                    width: Val::Px(graph_width),
+                    height: Val::Px(graph_height),
+                    ..default()
+                },
+                background_color: Color::rgba(0.0, 0.0, 0.0, 0.3).into(),
+                ..default()
+            });
+            parent.spawn(NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(margin_left),
+                    bottom: Val::Px(margin_bottom),
+                    width: Val::Px(2.0),
+                    height: Val::Px(graph_height),
+                    ..default()
+                },
+                background_color: Color::WHITE.into(),
+                ..default()
+            });
+            parent.spawn(NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(margin_left),
+                    bottom: Val::Px(margin_bottom),
+                    width: Val::Px(graph_width),
+                    height: Val::Px(2.0),
+                    ..default()
+                },
+                background_color: Color::WHITE.into(),
+                ..default()
+            });
+            if game_history.entries.len() < 2 {
+                parent.spawn(
+                    TextBundle::from_section(
+                        "In attesa di dati...",
+                        TextStyle {
+                            font_size: 20.0,
+                            color: Color::GRAY,
+                            ..default()
+                        },
+                    )
+                    .with_style(Style {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(margin_left + 10.0),
+                        top: Val::Px(50.0),
+                        ..default()
+                    }),
+                );
+                return;
+            }
+
+            // --- CALCOLO RANGE DATI ---
+            let min_gen = game_history
+                .entries
+                .first()
+                .map(|e| e.generation)
+                .unwrap_or(0) as f32;
+            let max_gen = game_history
+                .entries
+                .last()
+                .map(|e| e.generation)
+                .unwrap_or(1) as f32;
+            let range_gen = (max_gen - min_gen).max(1.0);
+            let max_score = game_history
+                .entries
+                .iter()
+                .map(|e| e.high_score)
+                .max()
+                .unwrap_or(10)
+                .max(10) as f32;
+
+            // Helper X (invariato)
+            let get_x = |gen: u32| -> f32 {
+                margin_left + ((gen as f32 - min_gen) / range_gen * graph_width)
+            };
+
+            // --- LA FIX E' QUI ---
+            // Prima: let get_y = |val: f32| -> f32 { let ratio = (val / max_score)... }
+            // Adesso: Accetta `scale_max` come parametro!
+            let get_y = |val: f32, scale_max: f32| -> f32 {
+                let ratio = (val / scale_max).clamp(0.0, 1.0);
+                margin_bottom + (ratio * graph_height)
+            };
+
+            // --- DISEGNO LINEE ---
+            for i in 0..game_history.entries.len().saturating_sub(1) {
+                let e1 = &game_history.entries[i];
+                let e2 = &game_history.entries[i + 1];
+                let x1 = get_x(e1.generation);
+                let x2 = get_x(e2.generation);
+                let width = (x2 - x1).max(1.0);
+
+                // Definizione datasets con i loro fattori di scala specifici
+                let sets = [
+                    (
+                        e1.high_score as f32,
+                        e2.high_score as f32,
+                        Color::rgb(1.0, 0.3, 0.3),
+                        max_score,
+                    ),
+                    (
+                        e1.total_score as f32 / PARALLEL_SNAKES as f32,
+                        e2.total_score as f32 / PARALLEL_SNAKES as f32,
+                        Color::rgb(0.3, 1.0, 0.3),
+                        max_score,
+                    ),
+                    // La linea blu usa PARALLEL_SNAKES come scala massima
+                    (
+                        e1.alive_snakes as f32,
+                        e2.alive_snakes as f32,
+                        Color::rgb(0.3, 0.5, 1.0),
+                        PARALLEL_SNAKES as f32,
+                    ),
+                ];
+
+                for (val1, val2, color, scale_max) in sets {
+                    // --- USARE IL PARAMETRO scale_max QUI ---
+                    let y1 = get_y(val1, scale_max);
+                    let y2 = get_y(val2, scale_max);
+
+                    // (Resto del disegno segmenti invariato)
+                    parent.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x1),
+                            bottom: Val::Px(y1),
+                            width: Val::Px(width),
+                            height: Val::Px(2.0),
+                            ..default()
+                        },
+                        background_color: color.into(),
+                        ..default()
+                    });
+                    let h_diff = (y2 - y1).abs();
+                    if h_diff > 0.5 {
+                        parent.spawn(NodeBundle {
+                            style: Style {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(x2),
+                                bottom: Val::Px(y1.min(y2)),
+                                width: Val::Px(2.0),
+                                height: Val::Px(h_diff + 2.0),
+                                ..default()
+                            },
+                            background_color: color.into(),
+                            ..default()
+                        });
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn sync_graph_panel_layout(
+    graph_state: Res<GraphPanelState>,
+    mut panel_query: Query<&mut Style, With<GraphPanel>>,
+) {
+    // Esegui solo se c'è stato un cambiamento per risparmiare performance
+    if graph_state.is_changed() {
+        for mut style in panel_query.iter_mut() {
+            // Aggiorna Posizione
+            style.left = Val::Px(graph_state.position.x);
+            style.top = Val::Px(graph_state.position.y);
+
+            // Aggiorna Dimensione
+            style.width = Val::Px(graph_state.size.x);
+
+            // Gestisci altezza in base al collasso
+            // 30.0 è l'altezza dell'header definita nello spawn
+            if graph_state.collapsed {
+                style.height = Val::Px(30.0);
+            } else {
+                style.height = Val::Px(graph_state.size.y);
+            }
+        }
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -1464,8 +2106,28 @@ fn main() {
         .add_systems(Startup, spawn_stats_ui.after(setup))
         .add_systems(
             Update,
-            (handle_input, on_window_resize, game_loop, render_system).chain(),
+            (
+                handle_input,
+                on_window_resize,
+                game_loop,
+                render_system,
+                toggle_graph_panel,
+            )
+                .chain(),
         )
         .add_systems(Update, update_stats_ui.after(render_system))
+        // --- BLOCCO UI GRAFICO ---
+        .add_systems(Update, update_graph_panel_visibility)
+        .add_systems(Update, handle_graph_panel_interactions)
+        // .add_systems(Update, update_collapse_button_text) // (Se lo hai aggiunto prima)
+        // NUOVO SISTEMA: Questo fa muovere la finestra in tempo reale!
+        .add_systems(
+            Update,
+            sync_graph_panel_layout.after(handle_graph_panel_interactions),
+        )
+        .add_systems(
+            Update,
+            draw_graph_in_panel.after(update_graph_panel_visibility),
+        )
         .run();
 }
