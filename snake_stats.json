@@ -1,14 +1,26 @@
 {
-  "total_generations": 3002,
-  "high_score": 52,
-  "total_games_played": 12400,
+  "total_generations": 25,
+  "high_score": 106,
+  "total_games_played": 50440,
   "total_food_eaten": 0,
-  "total_training_time_secs": 52681,
+  "total_training_time_secs": 5303,
   "best_score_per_snake": [
-    3,
-    2,
-    2,
-    3
+    38,
+    32,
+    53,
+    48,
+    48,
+    52,
+    38,
+    54,
+    10,
+    34,
+    44,
+    28,
+    30,
+    39,
+    31,
+    19
   ],
-  "last_saved": "2026-02-15 11:29:23"
+  "last_saved": "2026-02-16 10:30:23"
 }

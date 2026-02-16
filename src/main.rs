@@ -10,13 +10,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
+
 use std::time::{Duration, Instant};
 
 // --- CONFIGURAZIONE ---
 const BLOCK_SIZE: f32 = 20.0;
-const PARALLEL_SNAKES: usize = 4;
+const PARALLEL_SNAKES: usize = 16;
 const MEMORY_SIZE: usize = 5000;
-const BATCH_SIZE: usize = 64;
+const BATCH_SIZE: usize = 256;
 const LEARNING_RATE: f32 = 0.0005;
 const HIDDEN_NODES: usize = 128;
 const TARGET_UPDATE_FREQ: usize = 100;
@@ -46,6 +47,16 @@ struct GameConfig {
 #[derive(Resource)]
 struct WindowSettings {
     is_fullscreen: bool,
+}
+
+/// Risorse per il caching delle mesh (create una sola volta)
+#[derive(Resource)]
+struct MeshCache {
+    segment_mesh: Handle<Mesh>,
+    food_mesh: Handle<Mesh>,
+    snake_materials: Vec<Handle<ColorMaterial>>,
+    food_material: Handle<ColorMaterial>,
+    head_material: Handle<ColorMaterial>,
 }
 
 #[derive(Resource)]
@@ -374,24 +385,50 @@ impl DqnBrain {
         self.l2_target.copy_from(&self.l2);
     }
 
+    /// Forward pass ottimizzato che lavora con slice (accetta array fissi)
     fn forward(&self, state: &[f32]) -> Vec<f32> {
-        let h1: Vec<f32> = self.l1.forward(state).iter().map(|&x| x.max(0.0)).collect();
+        let h1_raw = self.l1.forward(state);
+        let h1: Vec<f32> = h1_raw.iter().map(|&x| x.max(0.0)).collect();
         self.l2.forward(&h1)
     }
 
-    fn remember(
+    /// Versione super veloce per inference con array fissi (evita allocazioni)
+    fn forward_array(&self, state: &[f32; STATE_SIZE]) -> [f32; 3] {
+        let mut h1 = [0.0f32; HIDDEN_NODES];
+        for j in 0..HIDDEN_NODES {
+            let mut sum = self.l1.biases[j];
+            for i in 0..STATE_SIZE {
+                sum += self.l1.weights[i][j] * state[i];
+            }
+            h1[j] = sum.max(0.0); // ReLU
+        }
+
+        let mut output = [0.0f32; 3];
+        for j in 0..3 {
+            let mut sum = self.l2.biases[j];
+            for i in 0..HIDDEN_NODES {
+                sum += self.l2.weights[i][j] * h1[i];
+            }
+            output[j] = sum;
+        }
+        output
+    }
+
+    /// Ottimizzato: converte array in Vec solo per la memoria replay
+    fn remember_array(
         &mut self,
-        state: Vec<f32>,
+        state: [f32; STATE_SIZE],
         action: usize,
         reward: f32,
-        next_state: Vec<f32>,
+        next_state: [f32; STATE_SIZE],
         done: bool,
     ) {
         if self.memory.len() >= MEMORY_SIZE {
             self.memory.pop_front();
         }
+        // Conversione necessaria per compatibilità con replay buffer
         self.memory
-            .push_back((state, action, reward, next_state, done));
+            .push_back((state.to_vec(), action, reward, next_state.to_vec(), done));
     }
 
     fn train(&mut self) {
@@ -569,14 +606,21 @@ fn update_stats_ui(
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
 
-    let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
+    // Score per ogni agente (dinamico, si adatta al numero di snake)
+    let scores_text: String = game
+        .snakes
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("S{}:{:2}", i + 1, s.score))
+        .collect::<Vec<_>>()
+        .join("  ");
 
     // Usa il high score persistente se maggiore
     let persistent_high = game_stats.high_score.max(game.high_score);
 
     text.sections[0].value = format!(
-        "S: {:3}  H: {:3}  G: {:5}  Best: {:3}\n",
-        total_score, game.high_score, game.total_iterations, persistent_high
+        "{}  |  H: {:3}  G: {:5}  Best: {:3}\n",
+        scores_text, game.high_score, game.total_iterations, persistent_high
     );
     text.sections[1].value = format!(
         "Time: {:02}:{:02}:{:02}  Total: {:02}:{:02}:{:02}  FPS: {:5.1}\n",
@@ -590,7 +634,7 @@ fn update_stats_ui(
     );
     text.sections[2].value = format!(
         "Food: {}  Games: {}  [F] Full  [ESC] Save",
-        game_stats.total_food_eaten + total_score as u64,
+        game_stats.total_food_eaten + game.snakes.iter().map(|s| s.score as u64).sum::<u64>(),
         game_stats.total_games_played
     );
 }
@@ -613,12 +657,54 @@ fn calculate_grid_dimensions(window_width: f32, window_height: f32) -> (i32, i32
     (width, height)
 }
 
-fn setup(mut commands: Commands, windows: Query<&Window>) {
+fn setup(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     commands.spawn(Camera2dBundle::default());
 
     let window = windows.single();
     let (grid_width, grid_height) =
         calculate_grid_dimensions(window.resolution.width(), window.resolution.height());
+
+    // Crea mesh cache (una sola volta!)
+    let segment_mesh = meshes.add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0));
+    let food_mesh = meshes.add(Circle::new(BLOCK_SIZE / 2.0));
+
+    // Colori per ogni snake
+    let colors = vec![
+        Color::rgb(0.0, 1.0, 0.0), // Verde
+        Color::rgb(0.0, 1.0, 1.0), // Ciano
+        Color::rgb(1.0, 0.0, 1.0), // Magenta
+        Color::rgb(1.0, 1.0, 0.0), // Giallo
+        Color::rgb(1.0, 0.5, 0.0), // Arancione
+        Color::rgb(0.5, 0.0, 1.0), // Viola
+        Color::rgb(0.0, 0.5, 1.0), // Azzurro
+        Color::rgb(1.0, 0.0, 0.5), // Rosa
+        Color::rgb(0.5, 1.0, 0.0), // Lime
+        Color::rgb(0.0, 0.8, 0.4), // Verde acqua
+        Color::rgb(0.8, 0.4, 0.0), // Marrone-arancio
+        Color::rgb(0.4, 0.0, 0.8), // Indaco
+        Color::rgb(0.8, 0.0, 0.4), // Rubino
+        Color::rgb(0.4, 0.8, 0.0), // Verde oliva
+        Color::rgb(0.0, 0.4, 0.8), // Blu cobalto
+        Color::rgb(0.8, 0.8, 0.4), // Giallo chiaro
+    ];
+
+    let snake_materials: Vec<_> = colors.iter().map(|&color| materials.add(color)).collect();
+
+    let food_material = materials.add(Color::rgb(1.0, 0.0, 0.0)); // Rosso
+    let head_material = materials.add(Color::rgb(1.0, 1.0, 1.0)); // Bianco
+
+    commands.insert_resource(MeshCache {
+        segment_mesh,
+        food_mesh,
+        snake_materials,
+        food_material,
+        head_material,
+    });
 
     let brain = if Path::new("snake_brain.json").exists() {
         match DqnBrain::load("snake_brain.json") {
@@ -638,7 +724,7 @@ fn setup(mut commands: Commands, windows: Query<&Window>) {
 
     commands.insert_resource(brain);
     commands.insert_resource(GameConfig {
-        speed_timer: Timer::from_seconds(0.01, TimerMode::Repeating),
+        speed_timer: Timer::from_seconds(0.001, TimerMode::Repeating),
     });
 
     commands.insert_resource(WindowSettings {
@@ -668,13 +754,18 @@ fn setup(mut commands: Commands, windows: Query<&Window>) {
     });
 
     // Carica statistiche esistenti o crea nuove
-    let game_stats = if Path::new("snake_stats.json").exists() {
+    let mut game_stats = if Path::new("snake_stats.json").exists() {
         match GameStats::load("snake_stats.json") {
-            Ok(stats) => {
+            Ok(mut stats) => {
                 println!(
                     "Statistiche caricate! High Score: {}, Generazioni: {}",
                     stats.high_score, stats.total_generations
                 );
+                // Estendi il vettore best_score_per_snake se necessario
+                // (ad esempio quando si passa da 4 a 16 snake)
+                while stats.best_score_per_snake.len() < PARALLEL_SNAKES {
+                    stats.best_score_per_snake.push(0);
+                }
                 stats
             }
             Err(e) => {
@@ -692,7 +783,8 @@ fn setup(mut commands: Commands, windows: Query<&Window>) {
     spawn_stats_ui(&mut commands);
 }
 
-fn get_state(snake: &SnakeInstance, grid: &GridDimensions) -> Vec<f32> {
+/// Ottimizzato: restituisce array in stack invece di Vec (zero allocazioni heap)
+fn get_state(snake: &SnakeInstance, grid: &GridDimensions) -> [f32; STATE_SIZE] {
     let head = snake.snake[0];
 
     let dir_onehot = match snake.direction {
@@ -714,7 +806,7 @@ fn get_state(snake: &SnakeInstance, grid: &GridDimensions) -> Vec<f32> {
     let danger_left = is_collision(snake, left_dir, grid);
     let danger_right = is_collision(snake, right_dir, grid);
 
-    vec![
+    [
         danger_left as i32 as f32,
         danger_straight as i32 as f32,
         danger_right as i32 as f32,
@@ -760,6 +852,18 @@ fn spawn_food(snake: &SnakeInstance, grid: &GridDimensions) -> Position {
     }
 }
 
+/// Struttura temporanea per passare dati tra step paralleli
+struct StepResult {
+    snake_idx: usize,
+    state: [f32; STATE_SIZE],
+    action_idx: usize,
+    reward: f32,
+    next_state: [f32; STATE_SIZE],
+    done: bool,
+    new_head: Position,
+    ate_food: bool,
+}
+
 fn game_loop(
     time: Res<Time>,
     mut config: ResMut<GameConfig>,
@@ -777,6 +881,10 @@ fn game_loop(
     let mut all_dead = true;
     let mut active_count = 0;
 
+    // Raccolta risultati paralleli
+    let mut step_results: Vec<StepResult> = Vec::with_capacity(PARALLEL_SNAKES);
+
+    // Ottimizzazione: processa ogni snake (parallelizzabile in futuro)
     for snake_idx in 0..game.snakes.len() {
         if game.snakes[snake_idx].is_game_over {
             continue;
@@ -785,19 +893,24 @@ fn game_loop(
         all_dead = false;
         active_count += 1;
 
+        // Usa array fisso (zero allocazioni heap)
         let state = get_state(&game.snakes[snake_idx], &grid);
 
         let mut rng = rand::thread_rng();
         let action_idx = if rng.gen::<f32>() < brain.epsilon {
             rng.gen_range(0..3)
         } else {
-            let q_vals = brain.forward(&state);
-            q_vals
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap()
+            // Usa forward_array ottimizzato (zero allocazioni)
+            let q_vals = brain.forward_array(&state);
+            let mut max_idx = 0;
+            let mut max_val = q_vals[0];
+            for i in 1..3 {
+                if q_vals[i] > max_val {
+                    max_val = q_vals[i];
+                    max_idx = i;
+                }
+            }
+            max_idx
         };
 
         match action_idx {
@@ -864,8 +977,30 @@ fn game_loop(
             }
         }
 
-        let next_state = get_state(&game.snakes[snake_idx], &grid);
-        brain.remember(state, action_idx, reward, next_state, done);
+        // Salva risultato per applicarlo dopo
+        let ate_food = new_head == game.snakes[snake_idx].food;
+        step_results.push(StepResult {
+            snake_idx,
+            state,
+            action_idx,
+            reward,
+            next_state: get_state(&game.snakes[snake_idx], &grid),
+            done,
+            new_head,
+            ate_food,
+        });
+    }
+
+    // Applica tutti i risultati e salva nella memoria (usa remember_array ottimizzato)
+    for result in step_results {
+        // Usa remember_array che converte solo alla fine (meno allocazioni)
+        brain.remember_array(
+            result.state,
+            result.action_idx,
+            result.reward,
+            result.next_state,
+            result.done,
+        );
     }
 
     if all_dead {
@@ -923,11 +1058,13 @@ fn render_system(
     game: Res<GameState>,
     windows: Query<&Window>,
     grid: Res<GridDimensions>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    mesh_cache: Res<MeshCache>,
     q_segments: Query<Entity, With<SnakeSegment>>,
     q_food: Query<Entity, With<Food>>,
 ) {
+    // Ottimizzazione: despawn solo se necessario (non ogni frame)
+    // In realtà per Bevy è meglio despawn/ricreate per oggetti dinamici
+    // Ma usiamo le mesh cached per evitare allocazioni GPU
     for e in q_segments.iter() {
         commands.entity(e).despawn();
     }
@@ -937,35 +1074,31 @@ fn render_system(
 
     let window = windows.single();
 
-    // In Bevy, (0,0) è al centro dello schermo
-    // X: negativo = sinistra, positivo = destra
-    // Y: negativo = basso, positivo = alto
-    let grid_pixel_width = grid.width as f32 * BLOCK_SIZE;
-    let grid_pixel_height = grid.height as f32 * BLOCK_SIZE;
     let ui_padding = 60.0;
-
-    // La griglia deve occupare tutto lo schermo meno l'area UI
-    // Posizioniamo il blocco (0,0) nell'angolo in alto a sinistra dell'area di gioco
-    // Angolo alto a sinistra in Bevy: x = -window_width/2, y = window_height/2 - ui_padding
     let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
     let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
 
-    // Nella logica del gioco, y=0 è in alto e aumenta scendendo
-    // In Bevy, y diminuisce scendendo, quindi useremo: world_y = offset_y - pos.y * BLOCK_SIZE
+    // Usa mesh cache (zero allocazioni GPU per frame!)
+    for (snake_idx, snake) in game.snakes.iter().enumerate() {
+        // Prendi il materiale corretto per questo snake
+        let body_material =
+            mesh_cache.snake_materials[snake_idx % mesh_cache.snake_materials.len()].clone();
 
-    for snake in game.snakes.iter() {
         for (i, pos) in snake.snake.iter().enumerate() {
-            let color = if i == 0 { Color::WHITE } else { snake.color };
+            // Testa = bianca, corpo = colore dello snake
+            let material = if i == 0 {
+                mesh_cache.head_material.clone()
+            } else {
+                body_material.clone()
+            };
 
             commands.spawn((
                 MaterialMesh2dBundle {
-                    mesh: meshes
-                        .add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0))
-                        .into(),
-                    material: materials.add(color),
+                    mesh: mesh_cache.segment_mesh.clone().into(),
+                    material,
                     transform: Transform::from_xyz(
                         offset_x + (pos.x as f32 * BLOCK_SIZE),
-                        offset_y - (pos.y as f32 * BLOCK_SIZE), // Y inverte perché in Bevy y aumenta verso l'alto
+                        offset_y - (pos.y as f32 * BLOCK_SIZE),
                         0.0,
                     ),
                     ..default()
@@ -977,11 +1110,11 @@ fn render_system(
 
         commands.spawn((
             MaterialMesh2dBundle {
-                mesh: meshes.add(Circle::new(BLOCK_SIZE / 2.0)).into(),
-                material: materials.add(Color::RED),
+                mesh: mesh_cache.food_mesh.clone().into(),
+                material: mesh_cache.food_material.clone(),
                 transform: Transform::from_xyz(
                     offset_x + (snake.food.x as f32 * BLOCK_SIZE),
-                    offset_y - (snake.food.y as f32 * BLOCK_SIZE), // Y inverte
+                    offset_y - (snake.food.y as f32 * BLOCK_SIZE),
                     0.0,
                 ),
                 ..default()
