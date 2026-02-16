@@ -86,6 +86,70 @@ struct GameStats {
     last_saved: Option<String>,
 }
 
+/// Singola entry nello storico partite
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct GameHistoryEntry {
+    timestamp: String,
+    generation: u32,
+    scores: Vec<u32>,
+    high_score: u32,
+    total_score: u32,
+    alive_snakes: usize,
+}
+
+/// Storico completo delle partite
+#[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
+struct GameHistory {
+    entries: Vec<GameHistoryEntry>,
+    max_entries: usize,
+}
+
+impl GameHistory {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries,
+        }
+    }
+
+    fn add_entry(&mut self, generation: u32, scores: &[u32]) {
+        let now = std::time::SystemTime::now();
+        let datetime: chrono::DateTime<chrono::Local> = now.into();
+
+        let high_score = scores.iter().copied().max().unwrap_or(0);
+        let total_score: u32 = scores.iter().sum();
+        let alive_count = scores.iter().filter(|&&s| s > 0).count();
+
+        let entry = GameHistoryEntry {
+            timestamp: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
+            generation,
+            scores: scores.to_vec(),
+            high_score,
+            total_score,
+            alive_snakes: alive_count,
+        };
+
+        self.entries.push(entry);
+
+        // Mantieni solo le ultime N partite
+        if self.entries.len() > self.max_entries {
+            self.entries.remove(0);
+        }
+    }
+
+    fn save(&self, path: &str) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(&self)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    fn load(path: &str) -> std::io::Result<Self> {
+        let json = fs::read_to_string(path)?;
+        let history: GameHistory = serde_json::from_str(&json)?;
+        Ok(history)
+    }
+}
+
 impl GameStats {
     fn new(num_snakes: usize) -> Self {
         Self {
@@ -539,29 +603,52 @@ impl DqnBrain {
 #[derive(Component)]
 struct StatsText;
 
+#[derive(Component)]
+struct LeaderboardText;
+
 fn spawn_stats_ui(commands: &mut Commands) {
+    // CLASSIFICA IN ALTO A SINISTRA (verticale)
+    commands.spawn((
+        TextBundle::from_section(
+            "🏆 LEADERBOARD\n",
+            TextStyle {
+                font_size: 18.0,
+                color: Color::GOLD,
+                ..default()
+            },
+        )
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(10.0),
+            ..default()
+        }),
+        LeaderboardText,
+    ));
+
+    // STATS IN BASSO A SINISTRA
     commands.spawn((
         TextBundle::from_sections([
             TextSection::new(
-                "S: 0  H: 0  G: 0\n",
+                "H: 0  G: 0  Best: 0\n",
                 TextStyle {
-                    font_size: 20.0,
+                    font_size: 18.0,
                     color: Color::WHITE,
                     ..default()
                 },
             ),
             TextSection::new(
-                "Time: 00:00:00  FPS: 0\n",
-                TextStyle {
-                    font_size: 20.0,
-                    color: Color::WHITE,
-                    ..default()
-                },
-            ),
-            TextSection::new(
-                "Threads: 0  Mode: TRAINING  [F] Fullscreen",
+                "Time: 00:00:00  Total: 00:00:00  FPS: 0\n",
                 TextStyle {
                     font_size: 16.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ),
+            TextSection::new(
+                "🐍:0 💀:0 | Food: 0  Games: 0  [F] Full  [ESC] Save",
+                TextStyle {
+                    font_size: 14.0,
                     color: Color::WHITE,
                     ..default()
                 },
@@ -569,7 +656,7 @@ fn spawn_stats_ui(commands: &mut Commands) {
         ])
         .with_style(Style {
             position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
+            bottom: Val::Px(10.0),
             left: Val::Px(10.0),
             ..default()
         }),
@@ -578,14 +665,13 @@ fn spawn_stats_ui(commands: &mut Commands) {
 }
 
 fn update_stats_ui(
-    mut query: Query<&mut Text, With<StatsText>>,
+    mut leaderboard_query: Query<&mut Text, (With<LeaderboardText>, Without<StatsText>)>,
+    mut stats_query: Query<&mut Text, (With<StatsText>, Without<LeaderboardText>)>,
     game: Res<GameState>,
     brain: Res<DqnBrain>,
     mut stats: ResMut<TrainingStats>,
     game_stats: Res<GameStats>,
 ) {
-    let mut text = query.single_mut();
-
     // Aggiorna tempo di training
     let now = Instant::now();
     let elapsed = now.duration_since(stats.last_update);
@@ -606,37 +692,65 @@ fn update_stats_ui(
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
 
-    // Score per ogni agente (dinamico, si adatta al numero di snake)
-    let scores_text: String = game
+    // CLASSIFICA DINAMICA: ordina snake per punteggio (decrescente)
+    let mut snake_scores: Vec<(usize, u32, bool)> = game
         .snakes
         .iter()
         .enumerate()
-        .map(|(i, s)| format!("S{}:{:2}", i + 1, s.score))
-        .collect::<Vec<_>>()
-        .join("  ");
+        .map(|(i, s)| (i, s.score, s.is_game_over))
+        .collect();
+
+    // Ordina per score decrescente
+    snake_scores.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Mostra top 10 snake in VERTICALE (per classifica in alto)
+    const TOP_N: usize = 10;
+    let top_snakes = &snake_scores[..snake_scores.len().min(TOP_N)];
+
+    let leaderboard_text: String = std::iter::once("🏆 LEADERBOARD\n".to_string())
+        .chain(top_snakes.iter().map(|(idx, score, dead)| {
+            let status = if *dead { "💀" } else { "🐍" };
+            let rank = match snake_scores.iter().position(|(i, _, _)| *i == *idx) {
+                Some(pos) => pos + 1,
+                None => 0,
+            };
+            format!("{:2}. S{:02} {}{:3}\n", rank, idx + 1, status, score)
+        }))
+        .collect::<String>();
+
+    // Conta vivi e morti
+    let alive_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
+    let dead_count = game.snakes.len() - alive_count;
 
     // Usa il high score persistente se maggiore
     let persistent_high = game_stats.high_score.max(game.high_score);
 
-    text.sections[0].value = format!(
-        "{}  |  H: {:3}  G: {:5}  Best: {:3}\n",
-        scores_text, game.high_score, game.total_iterations, persistent_high
-    );
-    text.sections[1].value = format!(
-        "Time: {:02}:{:02}:{:02}  Total: {:02}:{:02}:{:02}  FPS: {:5.1}\n",
-        hours,
-        minutes,
-        seconds,
-        (game_stats.total_training_time_secs + total_secs) / 3600,
-        ((game_stats.total_training_time_secs + total_secs) % 3600) / 60,
-        (game_stats.total_training_time_secs + total_secs) % 60,
-        stats.fps
-    );
-    text.sections[2].value = format!(
-        "Food: {}  Games: {}  [F] Full  [ESC] Save",
-        game_stats.total_food_eaten + game.snakes.iter().map(|s| s.score as u64).sum::<u64>(),
-        game_stats.total_games_played
-    );
+    // Aggiorna classifica in ALTO
+    if let Ok(mut lb_text) = leaderboard_query.get_single_mut() {
+        lb_text.sections[0].value = leaderboard_text;
+    }
+
+    // Aggiorna stats in BASSO
+    if let Ok(mut st_text) = stats_query.get_single_mut() {
+        st_text.sections[0].value = format!(
+            "H: {:3}  G: {:5}  Best: {:3}\n",
+            game.high_score, game.total_iterations, persistent_high
+        );
+        st_text.sections[1].value = format!(
+            "Time: {:02}:{:02}:{:02}  Total: {:02}:{:02}:{:02}  FPS: {:5.1}\n",
+            hours,
+            minutes,
+            seconds,
+            (game_stats.total_training_time_secs + total_secs) / 3600,
+            ((game_stats.total_training_time_secs + total_secs) % 3600) / 60,
+            (game_stats.total_training_time_secs + total_secs) % 60,
+            stats.fps
+        );
+        st_text.sections[2].value = format!(
+            "🐍:{} 💀:{} | Food: {}  Games: {}  [F] Full  [ESC] Save",
+            alive_count, dead_count, game_stats.total_food_eaten, game_stats.total_games_played
+        );
+    }
 }
 
 // --- SISTEMI BEVY ---
@@ -780,6 +894,24 @@ fn setup(
 
     commands.insert_resource(game_stats);
 
+    // Carica storico partite esistente o crea nuovo
+    let game_history = if Path::new("snake_history.json").exists() {
+        match GameHistory::load("snake_history.json") {
+            Ok(h) => {
+                println!("Storico partite caricato! {} entries", h.entries.len());
+                h
+            }
+            Err(e) => {
+                eprintln!("Errore caricamento storico: {}, creo nuovo", e);
+                GameHistory::new(1000) // Max 1000 partite
+            }
+        }
+    } else {
+        println!("Nessuno storico trovato, inizializzo nuovo");
+        GameHistory::new(1000)
+    };
+    commands.insert_resource(game_history);
+
     spawn_stats_ui(&mut commands);
 }
 
@@ -870,6 +1002,7 @@ fn game_loop(
     mut game: ResMut<GameState>,
     mut brain: ResMut<DqnBrain>,
     mut game_stats: ResMut<GameStats>,
+    mut game_history: ResMut<GameHistory>,
     stats: Res<TrainingStats>,
     grid: Res<GridDimensions>,
 ) {
@@ -1004,6 +1137,18 @@ fn game_loop(
     }
 
     if all_dead {
+        // SALVA I PUNTEGGI PRIMA DEL RESET!
+        let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
+        game_stats.total_food_eaten += food_eaten as u64;
+
+        // Aggiorna best score per snake PRIMA del reset
+        for (i, snake) in game.snakes.iter().enumerate() {
+            if i < game_stats.best_score_per_snake.len() {
+                game_stats.best_score_per_snake[i] =
+                    game_stats.best_score_per_snake[i].max(snake.score);
+            }
+        }
+
         for snake in game.snakes.iter_mut() {
             snake.reset(&grid);
         }
@@ -1017,16 +1162,10 @@ fn game_loop(
         game_stats.total_generations = game.total_iterations;
         game_stats.high_score = game_stats.high_score.max(game.high_score);
         game_stats.total_games_played += PARALLEL_SNAKES as u64;
-        let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
-        game_stats.total_food_eaten += food_eaten as u64;
 
-        // Aggiorna best score per snake
-        for (i, snake) in game.snakes.iter().enumerate() {
-            if i < game_stats.best_score_per_snake.len() {
-                game_stats.best_score_per_snake[i] =
-                    game_stats.best_score_per_snake[i].max(snake.score);
-            }
-        }
+        // Salva storico partita
+        let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
+        game_history.add_entry(game.total_iterations, &current_scores);
 
         // Salva ogni 100 generazioni
         if game.total_iterations % 100 == 0 {
@@ -1039,6 +1178,11 @@ fn game_loop(
 
             if let Err(e) = game_stats.save("snake_stats.json") {
                 eprintln!("Errore salvataggio statistiche: {}", e);
+            }
+
+            // Salva anche lo storico
+            if let Err(e) = game_history.save("snake_history.json") {
+                eprintln!("Errore salvataggio storico: {}", e);
             }
 
             println!("💾 Salvataggio automatico (Gen {})", game.total_iterations);
@@ -1079,7 +1223,13 @@ fn render_system(
     let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
 
     // Usa mesh cache (zero allocazioni GPU per frame!)
+    // NOTA: Salta gli snake morti (is_game_over = true)
     for (snake_idx, snake) in game.snakes.iter().enumerate() {
+        // Salta snake morti - non renderizzare né snake né cibo
+        if snake.is_game_over {
+            continue;
+        }
+
         // Prendi il materiale corretto per questo snake
         let body_material =
             mesh_cache.snake_materials[snake_idx % mesh_cache.snake_materials.len()].clone();
@@ -1130,6 +1280,7 @@ fn handle_input(
     mut app_exit_events: EventWriter<AppExit>,
     brain: ResMut<DqnBrain>,
     mut game_stats: ResMut<GameStats>,
+    game_history: ResMut<GameHistory>,
     game: Res<GameState>,
     stats: Res<TrainingStats>,
     mut window_settings: ResMut<WindowSettings>,
@@ -1149,6 +1300,11 @@ fn handle_input(
             eprintln!("Errore salvataggio statistiche: {}", e);
         }
 
+        // Salva storico
+        if let Err(e) = game_history.save("snake_history.json") {
+            eprintln!("Errore salvataggio storico: {}", e);
+        }
+
         // Stampa riepilogo
         println!("\n=== RIEPILOGO SESSIONE ===");
         println!("Generazioni totali: {}", game_stats.total_generations);
@@ -1157,6 +1313,7 @@ fn handle_input(
             "Tempo di training: {}s",
             game_stats.total_training_time_secs
         );
+        println!("Partite in storico: {}", game_history.entries.len());
         println!("========================\n");
 
         app_exit_events.send(AppExit);
