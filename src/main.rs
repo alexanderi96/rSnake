@@ -42,6 +42,7 @@ struct Position {
 #[derive(Resource)]
 struct GameConfig {
     speed_timer: Timer,
+    session_path: std::path::PathBuf,
 }
 
 #[derive(Resource)]
@@ -115,6 +116,183 @@ struct GameHistory {
     entries: Vec<GameHistoryEntry>,
     max_entries: usize,
 }
+
+// =============================================================================
+// NUOVO SISTEMA DI STATISTICHE UNIFICATO
+// =============================================================================
+
+/// Record singolo di una generazione con metriche AI
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GenerationRecord {
+    pub gen: u32,
+    pub timestamp: u64, // Unix timestamp
+
+    // Performance di Gioco
+    pub avg_score: f32,
+    pub max_score: u32,
+    pub min_score: u32,
+
+    // Metriche AI (Nuove)
+    pub avg_loss: f32,
+    pub epsilon: f32,
+}
+
+/// Sessione di training completa con storico compresso
+#[derive(Resource, Serialize, Deserialize, Debug, Default)]
+pub struct TrainingSession {
+    pub total_time_secs: u64,
+    pub records: Vec<GenerationRecord>,
+}
+
+impl TrainingSession {
+    pub fn new() -> Self {
+        Self {
+            total_time_secs: 0,
+            records: Vec::new(),
+        }
+    }
+
+    /// Aggiunge un nuovo record di generazione
+    pub fn add_record(&mut self, record: GenerationRecord) {
+        self.records.push(record);
+    }
+
+    /// Comprime lo storico per evitare file JSON troppo grandi
+    /// Mantiene i record recenti dettagliati, comprime quelli vecchi
+    pub fn compress_history(&mut self) {
+        const MAX_DETAILED_ENTRIES: usize = 200;
+        const COMPRESSION_RATIO: usize = 4; // Unisci 4 vecchi record in 1
+
+        if self.records.len() <= MAX_DETAILED_ENTRIES * 2 {
+            return; // Non c'è bisogno di comprimere
+        }
+
+        let split_idx = self.records.len() - MAX_DETAILED_ENTRIES;
+
+        // Separa i vecchi dai nuovi
+        let recent_records = self.records.split_off(split_idx);
+        let old_records = std::mem::take(&mut self.records);
+
+        // Comprimi i vecchi
+        let mut compressed = Vec::new();
+        for chunk in old_records.chunks(COMPRESSION_RATIO) {
+            if chunk.is_empty() {
+                continue;
+            }
+
+            let first = &chunk[0];
+            let count = chunk.len() as f32;
+
+            // Calcola medie
+            let avg_gen = chunk.iter().map(|r| r.gen).sum::<u32>() / chunk.len() as u32;
+            let avg_score = chunk.iter().map(|r| r.avg_score).sum::<f32>() / count;
+            let max_score = chunk.iter().map(|r| r.max_score).max().unwrap_or(0);
+            let avg_loss = chunk.iter().map(|r| r.avg_loss).sum::<f32>() / count;
+            let avg_epsilon = chunk.iter().map(|r| r.epsilon).sum::<f32>() / count;
+
+            compressed.push(GenerationRecord {
+                gen: avg_gen,
+                timestamp: first.timestamp,
+                avg_score,
+                max_score,
+                min_score: 0, // Non ha senso preservare min nei record compressi
+                avg_loss,
+                epsilon: avg_epsilon,
+            });
+        }
+
+        // Unisci: Vecchi Compressi + Recenti Dettagliati
+        let total_old = old_records.len() + recent_records.len();
+        self.records = compressed;
+        self.records.extend(recent_records);
+        println!(
+            "📊 Storico compresso: {} entry (da {} originali)",
+            self.records.len(),
+            total_old
+        );
+    }
+
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(&self)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        let json = fs::read_to_string(path)?;
+        let session: TrainingSession = serde_json::from_str(&json)?;
+        println!(
+            "📊 Sessione training caricata! {} records",
+            session.records.len()
+        );
+        Ok(session)
+    }
+
+    /// Ottiene l'ultima generazione registrata, se esiste
+    pub fn last_generation(&self) -> Option<u32> {
+        self.records.last().map(|r| r.gen)
+    }
+}
+
+// =============================================================================
+// GESTIONE CARTELLE DI SALVATAGGIO
+// =============================================================================
+
+/// Restituisce o crea la cartella runs/{uuid}/ per il run corrente
+/// Usa l'ultima cartella esistente, oppure crea un nuovo UUID
+fn get_or_create_run_dir() -> std::path::PathBuf {
+    use std::fs;
+
+    let runs_dir = std::path::PathBuf::from("runs");
+    fs::create_dir_all(&runs_dir).ok();
+
+    // Trova l'ultima cartella (run) esistente
+    if let Ok(entries) = fs::read_dir(&runs_dir) {
+        let mut dirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.path())
+            .collect();
+
+        if !dirs.is_empty() {
+            dirs.sort_by(|a, b| b.cmp(a)); // Ordina decrescente (più recente prima)
+            println!("📂 Usando run esistente: {}", dirs[0].display());
+            return dirs[0].clone();
+        }
+    }
+
+    // Crea nuovo run con UUID
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let new_dir = runs_dir.join(&uuid);
+    fs::create_dir_all(&new_dir).ok();
+
+    // Crea anche la sottocartella sessions/
+    let sessions_dir = new_dir.join("sessions");
+    fs::create_dir_all(&sessions_dir).ok();
+
+    println!("📂 Creato nuovo run: {}", uuid);
+    new_dir
+}
+
+/// Restituisce il percorso del brain.json (runs/{uuid}/brain.json)
+fn brain_path() -> std::path::PathBuf {
+    get_or_create_run_dir().join("brain.json")
+}
+
+/// Restituisce il percorso per un file di sessione (runs/{uuid}/sessions/{nome})
+fn session_path(filename: &str) -> std::path::PathBuf {
+    let sessions_dir = get_or_create_run_dir().join("sessions");
+    std::fs::create_dir_all(&sessions_dir).ok();
+    sessions_dir.join(filename)
+}
+
+/// Restituisce il percorso per una nuova sessione con nome basato su timestamp
+fn new_session_path() -> std::path::PathBuf {
+    let timestamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    session_path(format!("{}.json", timestamp).as_str())
+}
+
+// =============================================================================
 
 impl GameHistory {
     fn new(max_entries: usize) -> Self {
@@ -853,13 +1031,6 @@ fn setup(
     let segment_mesh = meshes.add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0));
     let food_mesh = meshes.add(Circle::new(BLOCK_SIZE / 2.0));
 
-    // Crea GameState prima per avere i colori casuali degli snake
-    let grid = GridDimensions {
-        width: grid_width,
-        height: grid_height,
-    };
-    let game_state = GameState::new(&grid);
-
     let food_material = materials.add(Color::rgb(1.0, 0.0, 0.0)); // Rosso
     let head_material = materials.add(Color::rgb(1.0, 1.0, 1.0)); // Bianco
 
@@ -873,8 +1044,32 @@ fn setup(
     commands.insert_resource(CollisionSettings::default());
     commands.insert_resource(GraphPanelState::default());
 
-    let brain = if Path::new("snake_brain.json").exists() {
-        match DqnBrain::load("snake_brain.json") {
+    // Carica TrainingSession - ogni sessione è un file separato
+    let session_file = new_session_path();
+    let mut training_session = if session_file.exists() {
+        match TrainingSession::load(session_file.to_str().unwrap_or("session.json")) {
+            Ok(session) => {
+                println!(
+                    "📊 Sessione caricata: {} records da {}",
+                    session.records.len(),
+                    session_file.display()
+                );
+                session
+            }
+            Err(e) => {
+                eprintln!("Errore caricamento sessione: {}, creo nuova", e);
+                TrainingSession::new()
+            }
+        }
+    } else {
+        println!("📊 Nuova sessione: {}", session_file.display());
+        TrainingSession::new()
+    };
+
+    // Nota: session_file viene passato tramite GameConfig
+
+    let mut brain = if brain_path().exists() {
+        match DqnBrain::load(brain_path().to_str().unwrap_or("brain.json")) {
             Ok(b) => {
                 println!("Modello esistente caricato!");
                 b
@@ -889,9 +1084,25 @@ fn setup(
         DqnBrain::new()
     };
 
+    // Crea GameState DOPO aver caricato TrainingSession
+    let grid = GridDimensions {
+        width: grid_width,
+        height: grid_height,
+    };
+    let mut game_state = GameState::new(&grid);
+
+    // FIX SINCRONIZZAZIONE: Se c'è uno storico, sincronizza il contatore
+    if let Some(last_gen) = training_session.last_generation() {
+        println!("🔄 Sync: Riprendo dalla generazione {}", last_gen);
+        game_state.total_iterations = last_gen;
+        brain.iterations = last_gen;
+    }
+
+    commands.insert_resource(training_session);
     commands.insert_resource(brain);
     commands.insert_resource(GameConfig {
         speed_timer: Timer::from_seconds(0.001, TimerMode::Repeating),
+        session_path: session_file,
     });
 
     commands.insert_resource(WindowSettings {
@@ -917,50 +1128,10 @@ fn setup(
         frame_count: 0,
     });
 
-    // Carica statistiche esistenti o crea nuove
-    let mut game_stats = if Path::new("snake_stats.json").exists() {
-        match GameStats::load("snake_stats.json") {
-            Ok(mut stats) => {
-                println!(
-                    "Statistiche caricate! High Score: {}, Generazioni: {}",
-                    stats.high_score, stats.total_generations
-                );
-                // Estendi il vettore best_score_per_snake se necessario
-                // (ad esempio quando si passa da 4 a 16 snake)
-                while stats.best_score_per_snake.len() < PARALLEL_SNAKES {
-                    stats.best_score_per_snake.push(0);
-                }
-                stats
-            }
-            Err(e) => {
-                eprintln!("Errore caricamento statistiche: {}, creo nuove", e);
-                GameStats::new(PARALLEL_SNAKES)
-            }
-        }
-    } else {
-        println!("Nessuna statistica trovata, inizializzo nuove");
-        GameStats::new(PARALLEL_SNAKES)
-    };
-
-    commands.insert_resource(game_stats);
-
-    // Carica storico partite esistente o crea nuovo
-    let game_history = if Path::new("snake_history.json").exists() {
-        match GameHistory::load("snake_history.json") {
-            Ok(h) => {
-                println!("Storico partite caricato! {} entries", h.entries.len());
-                h
-            }
-            Err(e) => {
-                eprintln!("Errore caricamento storico: {}, creo nuovo", e);
-                GameHistory::new(1000) // Max 1000 partite
-            }
-        }
-    } else {
-        println!("Nessuno storico trovato, inizializzo nuovo");
-        GameHistory::new(1000)
-    };
-    commands.insert_resource(game_history);
+    // GameStats e GameHistory sono ora gestiti tramite TrainingSession
+    // Manteniamo le risorse per retrocompatibilità ma le inizializziamo vuote
+    commands.insert_resource(GameStats::new(PARALLEL_SNAKES));
+    commands.insert_resource(GameHistory::new(0)); // Non usato, tutto in TrainingSession
 
     // NOTA: spawn_stats_ui deve essere chiamato DOPO che game_state è stato creato
     // ma PRIMA che venga inserito come risorsa (per evitare il borrow checker)
@@ -1093,6 +1264,7 @@ fn game_loop(
     mut brain: ResMut<DqnBrain>,
     mut game_stats: ResMut<GameStats>,
     mut game_history: ResMut<GameHistory>,
+    mut training_session: ResMut<TrainingSession>,
     stats: Res<TrainingStats>,
     grid: Res<GridDimensions>,
     collision_settings: Res<CollisionSettings>,
@@ -1270,6 +1442,45 @@ fn game_loop(
         let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
         game_history.add_entry(game.total_iterations, &current_scores);
 
+        // NUOVO: Crea record unificato con metriche AI
+        let max_score = current_scores.iter().copied().max().unwrap_or(0);
+        let min_score = current_scores.iter().copied().min().unwrap_or(0);
+        let avg_score = current_scores.iter().sum::<u32>() as f32 / current_scores.len() as f32;
+
+        let record = GenerationRecord {
+            gen: game.total_iterations,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            avg_score,
+            max_score,
+            min_score,
+            avg_loss: brain.loss,
+            epsilon: brain.epsilon,
+        };
+        training_session.add_record(record);
+        training_session.total_time_secs = stats.total_training_time.as_secs();
+
+        // Salva ad OGNI generazione
+        if let Err(e) =
+            training_session.save(config.session_path.to_str().unwrap_or("session.json"))
+        {
+            eprintln!("Errore salvataggio sessione: {}", e);
+        }
+
+        // Salva brain ogni 100 generazioni
+        if game.total_iterations % 100 == 0 {
+            if let Err(e) = brain.save(brain_path().to_str().unwrap_or("brain.json")) {
+                eprintln!("Errore salvataggio modello: {}", e);
+            }
+            println!(
+                "💾 Brain salvato (Gen {}) in {}",
+                game.total_iterations,
+                get_or_create_run_dir().display()
+            );
+        }
+
         // Ora resetta gli snake DOPO aver salvato lo storico
         for snake in game.snakes.iter_mut() {
             snake.reset(&grid);
@@ -1284,27 +1495,6 @@ fn game_loop(
         game_stats.total_generations = game.total_iterations;
         game_stats.high_score = game_stats.high_score.max(game.high_score);
         game_stats.total_games_played += PARALLEL_SNAKES as u64;
-
-        // Salva ogni 100 generazioni
-        if game.total_iterations % 100 == 0 {
-            if let Err(e) = brain.save("snake_brain.json") {
-                eprintln!("Errore salvataggio modello: {}", e);
-            }
-
-            // Aggiorna tempo prima di salvare
-            game_stats.total_training_time_secs = stats.total_training_time.as_secs();
-
-            if let Err(e) = game_stats.save("snake_stats.json") {
-                eprintln!("Errore salvataggio statistiche: {}", e);
-            }
-
-            // Salva anche lo storico
-            if let Err(e) = game_history.save("snake_history.json") {
-                eprintln!("Errore salvataggio storico: {}", e);
-            }
-
-            println!("💾 Salvataggio automatico (Gen {})", game.total_iterations);
-        }
 
         let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
         println!(
@@ -1401,7 +1591,8 @@ fn handle_input(
     mut app_exit_events: EventWriter<AppExit>,
     brain: ResMut<DqnBrain>,
     mut game_stats: ResMut<GameStats>,
-    game_history: ResMut<GameHistory>,
+    mut training_session: ResMut<TrainingSession>,
+    config: Res<GameConfig>,
     game: Res<GameState>,
     stats: Res<TrainingStats>,
     mut window_settings: ResMut<WindowSettings>,
@@ -1412,19 +1603,18 @@ fn handle_input(
         // Aggiorna statistiche finali
         game_stats.update(&game, stats.total_training_time);
 
-        // Salva modello
-        if let Err(e) = brain.save("snake_brain.json") {
+        // Salva brain.json (unico per run)
+        if let Err(e) = brain.save(brain_path().to_str().unwrap_or("brain.json")) {
             eprintln!("Errore salvataggio modello: {}", e);
         }
 
-        // Salva statistiche
-        if let Err(e) = game_stats.save("snake_stats.json") {
-            eprintln!("Errore salvataggio statistiche: {}", e);
-        }
-
-        // Salva storico
-        if let Err(e) = game_history.save("snake_history.json") {
-            eprintln!("Errore salvataggio storico: {}", e);
+        // Salva sessione corrente
+        training_session.total_time_secs = stats.total_training_time.as_secs();
+        training_session.compress_history();
+        if let Err(e) =
+            training_session.save(config.session_path.to_str().unwrap_or("session.json"))
+        {
+            eprintln!("Errore salvataggio sessione: {}", e);
         }
 
         // Stampa riepilogo
@@ -1435,7 +1625,8 @@ fn handle_input(
             "Tempo di training: {}s",
             game_stats.total_training_time_secs
         );
-        println!("Partite in storico: {}", game_history.entries.len());
+        println!("Records in sessione: {}", training_session.records.len());
+        println!("Salvato in: {}", get_or_create_run_dir().display());
         println!("========================\n");
 
         app_exit_events.send(AppExit);
@@ -1871,7 +2062,7 @@ fn update_collapse_button_text(
 fn draw_graph_in_panel(
     mut commands: Commands,
     mut graph_state: ResMut<GraphPanelState>,
-    game_history: Res<GameHistory>,
+    training_session: Res<TrainingSession>,
     content_query: Query<Entity, With<GraphPanelContent>>,
     children_query: Query<&Children>,
 ) {
@@ -1879,7 +2070,7 @@ fn draw_graph_in_panel(
     if !graph_state.visible || graph_state.collapsed {
         return;
     }
-    let data_changed = game_history.entries.len() != graph_state.last_entry_count;
+    let data_changed = training_session.records.len() != graph_state.last_entry_count;
     if !graph_state.needs_redraw && !data_changed && graph_state.last_entry_count != 0 {
         return;
     }
@@ -1893,7 +2084,7 @@ fn draw_graph_in_panel(
         }
     }
     graph_state.needs_redraw = false;
-    graph_state.last_entry_count = game_history.entries.len();
+    graph_state.last_entry_count = training_session.records.len();
 
     for content_entity in content_query.iter() {
         // ... (Definizione margini e dimensioni invariata) ...
@@ -1942,7 +2133,7 @@ fn draw_graph_in_panel(
                 background_color: Color::WHITE.into(),
                 ..default()
             });
-            if game_history.entries.len() < 2 {
+            if training_session.records.len() < 2 {
                 parent.spawn(
                     TextBundle::from_section(
                         "In attesa di dati...",
@@ -1963,21 +2154,13 @@ fn draw_graph_in_panel(
             }
 
             // --- CALCOLO RANGE DATI ---
-            let min_gen = game_history
-                .entries
-                .first()
-                .map(|e| e.generation)
-                .unwrap_or(0) as f32;
-            let max_gen = game_history
-                .entries
-                .last()
-                .map(|e| e.generation)
-                .unwrap_or(1) as f32;
+            let min_gen = training_session.records.first().map(|e| e.gen).unwrap_or(0) as f32;
+            let max_gen = training_session.records.last().map(|e| e.gen).unwrap_or(1) as f32;
             let range_gen = (max_gen - min_gen).max(1.0);
-            let max_score = game_history
-                .entries
+            let max_score = training_session
+                .records
                 .iter()
-                .map(|e| e.high_score)
+                .map(|e| e.max_score)
                 .max()
                 .unwrap_or(10)
                 .max(10) as f32;
@@ -1996,31 +2179,32 @@ fn draw_graph_in_panel(
             };
 
             // --- DISEGNO LINEE ---
-            for i in 0..game_history.entries.len().saturating_sub(1) {
-                let e1 = &game_history.entries[i];
-                let e2 = &game_history.entries[i + 1];
-                let x1 = get_x(e1.generation);
-                let x2 = get_x(e2.generation);
+            for i in 0..training_session.records.len().saturating_sub(1) {
+                let e1 = &training_session.records[i];
+                let e2 = &training_session.records[i + 1];
+                let x1 = get_x(e1.gen);
+                let x2 = get_x(e2.gen);
                 let width = (x2 - x1).max(1.0);
 
                 // Definizione datasets con i loro fattori di scala specifici
+                // Nota: Usiamo max_score e avg_score dalla nuova struct GenerationRecord
                 let sets = [
                     (
-                        e1.high_score as f32,
-                        e2.high_score as f32,
+                        e1.max_score as f32,
+                        e2.max_score as f32,
                         Color::rgb(1.0, 0.3, 0.3),
                         max_score,
                     ),
                     (
-                        e1.total_score as f32 / PARALLEL_SNAKES as f32,
-                        e2.total_score as f32 / PARALLEL_SNAKES as f32,
+                        e1.avg_score,
+                        e2.avg_score,
                         Color::rgb(0.3, 1.0, 0.3),
                         max_score,
                     ),
                     // La linea blu usa PARALLEL_SNAKES come scala massima
                     (
-                        e1.alive_snakes as f32,
-                        e2.alive_snakes as f32,
+                        e1.min_score as f32,
+                        e2.min_score as f32,
                         Color::rgb(0.3, 0.5, 1.0),
                         PARALLEL_SNAKES as f32,
                     ),
@@ -2061,6 +2245,105 @@ fn draw_graph_in_panel(
                     }
                 }
             }
+
+            // === LEGENDA DEI COLORI ===
+            let legend_y = margin_bottom - 5.0;
+
+            let legend_start_x = margin_left;
+            let item_spacing = (graph_width / 3.0).max(80.0);
+
+            // Max Score - Rosso
+            let x = legend_start_x;
+            parent.spawn(NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x),
+                    bottom: Val::Px(legend_y - 8.0),
+                    width: Val::Px(12.0),
+                    height: Val::Px(12.0),
+                    ..default()
+                },
+                background_color: Color::rgb(1.0, 0.3, 0.3).into(),
+                ..default()
+            });
+            parent.spawn(
+                TextBundle::from_section(
+                    "Max Score",
+                    TextStyle {
+                        font_size: 11.0,
+                        color: Color::rgb(0.8, 0.8, 0.8),
+                        ..default()
+                    },
+                )
+                .with_style(Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x + 16.0),
+                    bottom: Val::Px(legend_y - 8.0),
+                    ..default()
+                }),
+            );
+
+            // Avg Score - Verde
+            let x = legend_start_x + item_spacing;
+            parent.spawn(NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x),
+                    bottom: Val::Px(legend_y - 8.0),
+                    width: Val::Px(12.0),
+                    height: Val::Px(12.0),
+                    ..default()
+                },
+                background_color: Color::rgb(0.3, 1.0, 0.3).into(),
+                ..default()
+            });
+            parent.spawn(
+                TextBundle::from_section(
+                    "Avg Score",
+                    TextStyle {
+                        font_size: 11.0,
+                        color: Color::rgb(0.8, 0.8, 0.8),
+                        ..default()
+                    },
+                )
+                .with_style(Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x + 16.0),
+                    bottom: Val::Px(legend_y - 8.0),
+                    ..default()
+                }),
+            );
+
+            // Min Score - Blu
+            let x = legend_start_x + (item_spacing * 2.0);
+            parent.spawn(NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x),
+                    bottom: Val::Px(legend_y - 8.0),
+                    width: Val::Px(12.0),
+                    height: Val::Px(12.0),
+                    ..default()
+                },
+                background_color: Color::rgb(0.3, 0.5, 1.0).into(),
+                ..default()
+            });
+            parent.spawn(
+                TextBundle::from_section(
+                    "Min Score",
+                    TextStyle {
+                        font_size: 11.0,
+                        color: Color::rgb(0.8, 0.8, 0.8),
+                        ..default()
+                    },
+                )
+                .with_style(Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(x + 16.0),
+                    bottom: Val::Px(legend_y - 8.0),
+                    ..default()
+                }),
+            );
         });
     }
 }
