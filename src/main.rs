@@ -54,9 +54,21 @@ struct WindowSettings {
 struct MeshCache {
     segment_mesh: Handle<Mesh>,
     food_mesh: Handle<Mesh>,
-    snake_materials: Vec<Handle<ColorMaterial>>,
     food_material: Handle<ColorMaterial>,
     head_material: Handle<ColorMaterial>,
+}
+
+#[derive(Resource)]
+struct CollisionSettings {
+    snake_vs_snake: bool,
+}
+
+impl Default for CollisionSettings {
+    fn default() -> Self {
+        Self {
+            snake_vs_snake: false,
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -209,6 +221,11 @@ struct SnakeInstance {
 }
 
 impl SnakeInstance {
+    fn generate_random_color() -> Color {
+        let mut rng = rand::thread_rng();
+        Color::rgb(rng.gen(), rng.gen(), rng.gen())
+    }
+
     fn get_random_spawn_data(grid: &GridDimensions) -> (Position, Direction) {
         let mut rng = rand::thread_rng();
         let margin = 3; // Margine dai bordi
@@ -235,13 +252,6 @@ impl SnakeInstance {
         let mut snake = VecDeque::new();
         snake.push_back(spawn_pos);
 
-        let colors = [
-            Color::rgb(0.0, 0.8, 0.0), // Verde
-            Color::rgb(0.0, 0.6, 1.0), // Blu
-            Color::rgb(1.0, 0.6, 0.0), // Arancione
-            Color::rgb(0.8, 0.0, 0.8), // Viola
-        ];
-
         Self {
             id,
             snake,
@@ -253,7 +263,7 @@ impl SnakeInstance {
             is_game_over: false,
             steps_without_food: 0,
             score: 0,
-            color: colors[id % colors.len()],
+            color: Self::generate_random_color(),
         }
     }
 
@@ -270,6 +280,8 @@ impl SnakeInstance {
             x: (spawn_pos.x + 5) % grid.width,
             y: (spawn_pos.y + 5) % grid.height,
         };
+        // Genera nuovo colore casuale per la nuova generazione
+        self.color = Self::generate_random_color();
     }
 }
 
@@ -606,18 +618,31 @@ struct StatsText;
 #[derive(Component)]
 struct LeaderboardText;
 
-fn spawn_stats_ui(commands: &mut Commands) {
+fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
     // CLASSIFICA IN ALTO A SINISTRA (verticale)
-    commands.spawn((
-        TextBundle::from_section(
-            "🏆 LEADERBOARD\n",
+    let mut leaderboard_sections = vec![TextSection::new(
+        "🏆 LEADERBOARD\n",
+        TextStyle {
+            font_size: 18.0,
+            color: Color::GOLD,
+            ..default()
+        },
+    )];
+
+    // Crea una sezione per ogni snake con il suo colore
+    for snake in game.snakes.iter() {
+        leaderboard_sections.push(TextSection::new(
+            "", // Testo inizialmente vuoto, verrà aggiornato in update_stats_ui
             TextStyle {
-                font_size: 18.0,
-                color: Color::GOLD,
+                font_size: 15.0,
+                color: snake.color,
                 ..default()
             },
-        )
-        .with_style(Style {
+        ));
+    }
+
+    commands.spawn((
+        TextBundle::from_sections(leaderboard_sections).with_style(Style {
             position_type: PositionType::Absolute,
             top: Val::Px(10.0),
             left: Val::Px(10.0),
@@ -671,6 +696,7 @@ fn update_stats_ui(
     brain: Res<DqnBrain>,
     mut stats: ResMut<TrainingStats>,
     game_stats: Res<GameStats>,
+    collision_settings: Res<CollisionSettings>,
 ) {
     // Aggiorna tempo di training
     let now = Instant::now();
@@ -693,30 +719,10 @@ fn update_stats_ui(
     let seconds = total_secs % 60;
 
     // CLASSIFICA DINAMICA: ordina snake per punteggio (decrescente)
-    let mut snake_scores: Vec<(usize, u32, bool)> = game
-        .snakes
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (i, s.score, s.is_game_over))
-        .collect();
+    let mut snake_data: Vec<(usize, &SnakeInstance)> = game.snakes.iter().enumerate().collect();
 
     // Ordina per score decrescente
-    snake_scores.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // Mostra top 10 snake in VERTICALE (per classifica in alto)
-    const TOP_N: usize = 10;
-    let top_snakes = &snake_scores[..snake_scores.len().min(TOP_N)];
-
-    let leaderboard_text: String = std::iter::once("🏆 LEADERBOARD\n".to_string())
-        .chain(top_snakes.iter().map(|(idx, score, dead)| {
-            let status = if *dead { "💀" } else { "🐍" };
-            let rank = match snake_scores.iter().position(|(i, _, _)| *i == *idx) {
-                Some(pos) => pos + 1,
-                None => 0,
-            };
-            format!("{:2}. S{:02} {}{:3}\n", rank, idx + 1, status, score)
-        }))
-        .collect::<String>();
+    snake_data.sort_by(|a, b| b.1.score.cmp(&a.1.score));
 
     // Conta vivi e morti
     let alive_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
@@ -725,9 +731,28 @@ fn update_stats_ui(
     // Usa il high score persistente se maggiore
     let persistent_high = game_stats.high_score.max(game.high_score);
 
-    // Aggiorna classifica in ALTO
+    // Aggiorna classifica in ALTO - una sezione per ogni snake
     if let Ok(mut lb_text) = leaderboard_query.get_single_mut() {
-        lb_text.sections[0].value = leaderboard_text;
+        // Aggiorna ogni sezione (0 è l'header, 1-N sono gli snake)
+        for (rank, (original_idx, snake)) in snake_data.iter().enumerate() {
+            let section_idx = rank + 1; // +1 perché la sezione 0 è l'header
+            if section_idx < lb_text.sections.len() {
+                let status = if snake.is_game_over { "💀" } else { "🐍" };
+                lb_text.sections[section_idx].value = format!(
+                    "{:2}. S{:02} {}{:3}\n",
+                    rank + 1,
+                    original_idx + 1,
+                    status,
+                    snake.score
+                );
+                // Colore: grigio se morto, altrimenti il colore dello snake
+                lb_text.sections[section_idx].style.color = if snake.is_game_over {
+                    Color::GRAY
+                } else {
+                    snake.color
+                };
+            }
+        }
     }
 
     // Aggiorna stats in BASSO
@@ -746,9 +771,18 @@ fn update_stats_ui(
             (game_stats.total_training_time_secs + total_secs) % 60,
             stats.fps
         );
+        let collision_status = if collision_settings.snake_vs_snake {
+            "💥ON"
+        } else {
+            "○OFF"
+        };
         st_text.sections[2].value = format!(
-            "🐍:{} 💀:{} | Food: {}  Games: {}  [F] Full  [ESC] Save",
-            alive_count, dead_count, game_stats.total_food_eaten, game_stats.total_games_played
+            "🐍:{} 💀:{} | Food: {}  Games: {}  [C]Col:{}  [F]Full  [ESC]Save",
+            alive_count,
+            dead_count,
+            game_stats.total_food_eaten,
+            game_stats.total_games_played,
+            collision_status
         );
     }
 }
@@ -787,27 +821,12 @@ fn setup(
     let segment_mesh = meshes.add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0));
     let food_mesh = meshes.add(Circle::new(BLOCK_SIZE / 2.0));
 
-    // Colori per ogni snake
-    let colors = vec![
-        Color::rgb(0.0, 1.0, 0.0), // Verde
-        Color::rgb(0.0, 1.0, 1.0), // Ciano
-        Color::rgb(1.0, 0.0, 1.0), // Magenta
-        Color::rgb(1.0, 1.0, 0.0), // Giallo
-        Color::rgb(1.0, 0.5, 0.0), // Arancione
-        Color::rgb(0.5, 0.0, 1.0), // Viola
-        Color::rgb(0.0, 0.5, 1.0), // Azzurro
-        Color::rgb(1.0, 0.0, 0.5), // Rosa
-        Color::rgb(0.5, 1.0, 0.0), // Lime
-        Color::rgb(0.0, 0.8, 0.4), // Verde acqua
-        Color::rgb(0.8, 0.4, 0.0), // Marrone-arancio
-        Color::rgb(0.4, 0.0, 0.8), // Indaco
-        Color::rgb(0.8, 0.0, 0.4), // Rubino
-        Color::rgb(0.4, 0.8, 0.0), // Verde oliva
-        Color::rgb(0.0, 0.4, 0.8), // Blu cobalto
-        Color::rgb(0.8, 0.8, 0.4), // Giallo chiaro
-    ];
-
-    let snake_materials: Vec<_> = colors.iter().map(|&color| materials.add(color)).collect();
+    // Crea GameState prima per avere i colori casuali degli snake
+    let grid = GridDimensions {
+        width: grid_width,
+        height: grid_height,
+    };
+    let game_state = GameState::new(&grid);
 
     let food_material = materials.add(Color::rgb(1.0, 0.0, 0.0)); // Rosso
     let head_material = materials.add(Color::rgb(1.0, 1.0, 1.0)); // Bianco
@@ -815,10 +834,11 @@ fn setup(
     commands.insert_resource(MeshCache {
         segment_mesh,
         food_mesh,
-        snake_materials,
         food_material,
         head_material,
     });
+
+    commands.insert_resource(CollisionSettings::default());
 
     let brain = if Path::new("snake_brain.json").exists() {
         match DqnBrain::load("snake_brain.json") {
@@ -852,11 +872,8 @@ fn setup(
 
     commands.insert_resource(grid);
 
-    // Crea GameState con le dimensioni corrette
-    commands.insert_resource(GameState::new(&GridDimensions {
-        width: grid_width,
-        height: grid_height,
-    }));
+    // Inserisci GameState creato precedentemente con i colori casuali
+    commands.insert_resource(game_state);
 
     commands.insert_resource(TrainingStats {
         total_training_time: Duration::from_secs(0),
@@ -912,11 +929,20 @@ fn setup(
     };
     commands.insert_resource(game_history);
 
-    spawn_stats_ui(&mut commands);
+    // NOTA: spawn_stats_ui deve essere chiamato DOPO che game_state è stato creato
+    // ma PRIMA che venga inserito come risorsa (per evitare il borrow checker)
+    // In realtà, dato che abbiamo bisogno di accedere ai dati degli snake,
+    // creiamo la UI dopo aver inserito la risorsa e la leggiamo nella query
 }
 
 /// Ottimizzato: restituisce array in stack invece di Vec (zero allocazioni heap)
-fn get_state(snake: &SnakeInstance, grid: &GridDimensions) -> [f32; STATE_SIZE] {
+fn get_state(
+    snake: &SnakeInstance,
+    all_snakes: &[SnakeInstance],
+    snake_idx: usize,
+    grid: &GridDimensions,
+    check_other_snakes: bool,
+) -> [f32; STATE_SIZE] {
     let head = snake.snake[0];
 
     let dir_onehot = match snake.direction {
@@ -934,9 +960,15 @@ fn get_state(snake: &SnakeInstance, grid: &GridDimensions) -> [f32; STATE_SIZE] 
     let left_dir = snake.direction.turn_left();
     let right_dir = snake.direction.turn_right();
 
-    let danger_straight = is_collision(snake, snake.direction, grid);
-    let danger_left = is_collision(snake, left_dir, grid);
-    let danger_right = is_collision(snake, right_dir, grid);
+    // Pericolo base: bordi e se stesso
+    let danger_straight = is_collision(snake, snake.direction, grid)
+        || (check_other_snakes
+            && is_collision_with_others(snake, snake.direction, all_snakes, snake_idx));
+    let danger_left = is_collision(snake, left_dir, grid)
+        || (check_other_snakes && is_collision_with_others(snake, left_dir, all_snakes, snake_idx));
+    let danger_right = is_collision(snake, right_dir, grid)
+        || (check_other_snakes
+            && is_collision_with_others(snake, right_dir, all_snakes, snake_idx));
 
     [
         danger_left as i32 as f32,
@@ -951,6 +983,31 @@ fn get_state(snake: &SnakeInstance, grid: &GridDimensions) -> [f32; STATE_SIZE] 
         food_up,
         food_down,
     ]
+}
+
+/// Controlla collisione con altri snake (usato dallo stato quando collisioni sono attive)
+fn is_collision_with_others(
+    snake: &SnakeInstance,
+    direction: Direction,
+    all_snakes: &[SnakeInstance],
+    self_idx: usize,
+) -> bool {
+    let head = snake.snake[0];
+    let (dx, dy) = direction.as_vec();
+    let next_pos = Position {
+        x: head.x + dx,
+        y: head.y + dy,
+    };
+
+    for (idx, other) in all_snakes.iter().enumerate() {
+        if idx != self_idx && !other.is_game_over {
+            if other.snake.contains(&next_pos) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn is_collision(snake: &SnakeInstance, direction: Direction, grid: &GridDimensions) -> bool {
@@ -1005,6 +1062,7 @@ fn game_loop(
     mut game_history: ResMut<GameHistory>,
     stats: Res<TrainingStats>,
     grid: Res<GridDimensions>,
+    collision_settings: Res<CollisionSettings>,
 ) {
     config.speed_timer.tick(time.delta());
     if !config.speed_timer.finished() {
@@ -1027,7 +1085,13 @@ fn game_loop(
         active_count += 1;
 
         // Usa array fisso (zero allocazioni heap)
-        let state = get_state(&game.snakes[snake_idx], &grid);
+        let state = get_state(
+            &game.snakes[snake_idx],
+            &game.snakes,
+            snake_idx,
+            &grid,
+            collision_settings.snake_vs_snake,
+        );
 
         let mut rng = rand::thread_rng();
         let action_idx = if rng.gen::<f32>() < brain.epsilon {
@@ -1062,12 +1126,26 @@ fn game_loop(
         let mut reward: f32 = 0.0;
         let mut done = false;
 
-        if new_head.x < 0
+        // Controlla collisione con bordi e se stesso
+        let mut collision = new_head.x < 0
             || new_head.x >= grid.width
             || new_head.y < 0
             || new_head.y >= grid.height
-            || game.snakes[snake_idx].snake.contains(&new_head)
-        {
+            || game.snakes[snake_idx].snake.contains(&new_head);
+
+        // Controlla collisione con altri snake (se abilitata)
+        if !collision && collision_settings.snake_vs_snake {
+            for (other_idx, other_snake) in game.snakes.iter().enumerate() {
+                if other_idx != snake_idx && !other_snake.is_game_over {
+                    if other_snake.snake.contains(&new_head) {
+                        collision = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if collision {
             reward = -10.0;
             done = true;
             game.snakes[snake_idx].is_game_over = true;
@@ -1117,7 +1195,13 @@ fn game_loop(
             state,
             action_idx,
             reward,
-            next_state: get_state(&game.snakes[snake_idx], &grid),
+            next_state: get_state(
+                &game.snakes[snake_idx],
+                &game.snakes,
+                snake_idx,
+                &grid,
+                collision_settings.snake_vs_snake,
+            ),
             done,
             new_head,
             ate_food,
@@ -1203,6 +1287,7 @@ fn render_system(
     windows: Query<&Window>,
     grid: Res<GridDimensions>,
     mesh_cache: Res<MeshCache>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     q_segments: Query<Entity, With<SnakeSegment>>,
     q_food: Query<Entity, With<Food>>,
 ) {
@@ -1224,15 +1309,14 @@ fn render_system(
 
     // Usa mesh cache (zero allocazioni GPU per frame!)
     // NOTA: Salta gli snake morti (is_game_over = true)
-    for (snake_idx, snake) in game.snakes.iter().enumerate() {
+    for snake in game.snakes.iter() {
         // Salta snake morti - non renderizzare né snake né cibo
         if snake.is_game_over {
             continue;
         }
 
-        // Prendi il materiale corretto per questo snake
-        let body_material =
-            mesh_cache.snake_materials[snake_idx % mesh_cache.snake_materials.len()].clone();
+        // Crea materiale con il colore ATTUALE dello snake (cambia ad ogni reset!)
+        let body_material = materials.add(snake.color);
 
         for (i, pos) in snake.snake.iter().enumerate() {
             // Testa = bianca, corpo = colore dello snake
@@ -1285,6 +1369,7 @@ fn handle_input(
     stats: Res<TrainingStats>,
     mut window_settings: ResMut<WindowSettings>,
     mut windows: Query<&mut Window>,
+    mut collision_settings: ResMut<CollisionSettings>,
 ) {
     if keyboard_input.just_pressed(KeyCode::Escape) {
         // Aggiorna statistiche finali
@@ -1317,6 +1402,18 @@ fn handle_input(
         println!("========================\n");
 
         app_exit_events.send(AppExit);
+    }
+
+    if keyboard_input.just_pressed(KeyCode::KeyC) {
+        collision_settings.snake_vs_snake = !collision_settings.snake_vs_snake;
+        println!(
+            "Collisioni snake-vs-snake: {}",
+            if collision_settings.snake_vs_snake {
+                "ABILITATE"
+            } else {
+                "DISABILITATE"
+            }
+        );
     }
 
     if keyboard_input.just_pressed(KeyCode::KeyF) {
@@ -1364,6 +1461,7 @@ fn main() {
         }))
         .add_event::<AppExit>()
         .add_systems(Startup, setup)
+        .add_systems(Startup, spawn_stats_ui.after(setup))
         .add_systems(
             Update,
             (handle_input, on_window_resize, game_loop, render_system).chain(),
