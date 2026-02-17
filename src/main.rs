@@ -22,6 +22,7 @@ const LEARNING_RATE: f32 = 0.0005;
 const HIDDEN_NODES: usize = 128;
 const TARGET_UPDATE_FREQ: usize = 100;
 const STATE_SIZE: usize = 11;
+const TRAIN_INTERVAL: usize = 100; // Train every N global iterations for continuous learning
 
 /// Configurazione parallelism - numero serpenti = core CPU
 #[derive(Resource, Clone)]
@@ -92,6 +93,94 @@ struct MeshCache {
     head_material: Handle<ColorMaterial>,
 }
 
+/// Object pool for snake segment entities to avoid despawning/spawning churn
+#[derive(Resource, Default)]
+struct SegmentPool {
+    /// Pool of available entities per snake (indexed by snake_id)
+    /// Each snake has its own pool of segment entities
+    pools: Vec<Vec<Entity>>,
+    /// Tracks how many segments are currently active per snake
+    active_counts: Vec<usize>,
+}
+
+impl SegmentPool {
+    fn new(snake_count: usize) -> Self {
+        Self {
+            pools: vec![Vec::new(); snake_count],
+            active_counts: vec![0; snake_count],
+        }
+    }
+
+    /// Get or create a segment entity for a snake at a specific segment index
+    fn get_or_spawn(
+        &mut self,
+        commands: &mut Commands,
+        snake_id: usize,
+        segment_idx: usize,
+        mesh: Handle<Mesh>,
+        material: Handle<ColorMaterial>,
+        transform: Transform,
+    ) -> Entity {
+        // Ensure pool exists for this snake
+        if snake_id >= self.pools.len() {
+            self.pools.resize_with(snake_id + 1, Vec::new);
+            self.active_counts.resize(snake_id + 1, 0);
+        }
+
+        let pool = &mut self.pools[snake_id];
+
+        if segment_idx < pool.len() {
+            // Reuse existing entity - update transform and material only
+            // Don't re-insert the full bundle to avoid duplicate Visibility component
+            let entity = pool[segment_idx];
+            commands
+                .entity(entity)
+                .insert((mesh, material, transform, Visibility::Visible));
+            entity
+        } else {
+            // Spawn new entity
+            let entity = commands
+                .spawn((
+                    MaterialMesh2dBundle {
+                        mesh: mesh.into(),
+                        material,
+                        transform,
+                        ..default()
+                    },
+                    SnakeSegment,
+                    SnakeId(snake_id),
+                ))
+                .id();
+            pool.push(entity);
+            entity
+        }
+    }
+
+    /// Hide excess segments that are no longer needed
+    fn hide_excess(&mut self, commands: &mut Commands, snake_id: usize, needed_count: usize) {
+        if snake_id >= self.pools.len() {
+            return;
+        }
+
+        let pool = &self.pools[snake_id];
+        for i in needed_count..pool.len() {
+            commands.entity(pool[i]).insert(Visibility::Hidden);
+        }
+
+        if snake_id < self.active_counts.len() {
+            self.active_counts[snake_id] = needed_count;
+        }
+    }
+
+    /// Update active count for a snake
+    fn set_active_count(&mut self, snake_id: usize, count: usize) {
+        if snake_id >= self.active_counts.len() {
+            self.active_counts.resize(snake_id + 1, 0);
+        }
+        self.active_counts[snake_id] = count;
+    }
+}
+
 #[derive(Resource)]
 struct CollisionSettings {
     snake_vs_snake: bool,
@@ -102,6 +191,66 @@ impl Default for CollisionSettings {
         Self {
             snake_vs_snake: false,
         }
+    }
+}
+
+/// GridMap for O(1) collision detection
+/// Uses a flattened Vec<u8> where index = y * width + x
+/// 0 = empty, 1+ = snake id + 1 (to distinguish from empty)
+#[derive(Resource)]
+struct GridMap {
+    width: i32,
+    height: i32,
+    data: Vec<u8>,
+}
+
+impl GridMap {
+    fn new(width: i32, height: i32) -> Self {
+        let size = (width * height) as usize;
+        Self {
+            width,
+            height,
+            data: vec![0; size],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.data.fill(0);
+    }
+
+    fn get(&self, x: i32, y: i32) -> u8 {
+        if x < 0 || x >= self.width || y < 0 || y >= self.height {
+            return 1; // Treat out of bounds as collision
+        }
+        let idx = (y * self.width + x) as usize;
+        self.data[idx]
+    }
+
+    fn set(&mut self, x: i32, y: i32, value: u8) {
+        if x < 0 || x >= self.width || y < 0 || y >= self.height {
+            return;
+        }
+        let idx = (y * self.width + x) as usize;
+        self.data[idx] = value;
+    }
+
+    /// Check collision at position in O(1) - includes collisions with other snakes
+    fn is_collision(&self, x: i32, y: i32, self_snake_id: usize) -> bool {
+        if x < 0 || x >= self.width || y < 0 || y >= self.height {
+            return true; // Wall collision
+        }
+        let idx = (y * self.width + x) as usize;
+        let cell = self.data[idx];
+        // Collision if cell is occupied by another snake (different id)
+        cell != 0 && cell != (self_snake_id + 1) as u8
+    }
+
+    /// Check collision at position in O(1) - wall only, ignores other snakes
+    fn is_collision_no_snakes(&self, x: i32, y: i32) -> bool {
+        if x < 0 || x >= self.width || y < 0 || y >= self.height {
+            return true; // Wall collision only
+        }
+        false
     }
 }
 
@@ -119,6 +268,16 @@ struct TrainingStats {
     fps: f32,
     last_fps_update: Instant,
     frame_count: u32,
+}
+
+/// App start time for calculating current session duration
+#[derive(Resource)]
+struct AppStartTime(Instant);
+
+impl Default for AppStartTime {
+    fn default() -> Self {
+        Self(Instant::now())
+    }
 }
 
 /// Holds ALL historical data (past sessions + current session).
@@ -956,10 +1115,10 @@ fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
         StatsText,
     ));
 
-    // COMANDI
+    // COMANDI - Permanently visible with all hotkeys
     commands.spawn((
         TextBundle::from_section(
-            "[R]Turbo  [G]Graph  [F]Full  [ESC]Exit", // Testo corretto
+            "[R]Render:ON  [G]Graph  [F]Fullscreen  [C]Collision:OFF  [ESC]Exit",
             TextStyle {
                 font_size: 14.0,
                 color: Color::GRAY,
@@ -1006,18 +1165,31 @@ fn update_stats_ui(
     stats: Res<TrainingStats>,
     game_stats: Res<GameStats>,
     collision_settings: Res<CollisionSettings>,
-    render_config: Res<RenderConfig>, // Aggiunto
+    render_config: Res<RenderConfig>,
+    app_start_time: Res<AppStartTime>,
+    global_history: Res<GlobalTrainingHistory>,
 ) {
-    // ... (codice tempo e FPS invariato) ...
+    // FPS Calculation
     let now = Instant::now();
-    let elapsed = now.duration_since(stats.last_update);
-    // ... [Il calcolo FPS resta uguale, ometto per brevità] ...
+    let _elapsed = now.duration_since(stats.last_update);
 
-    // Ricalcolo variabili per brevità del copincolla (assicurati di avere queste nel tuo codice originale o copiale da lì)
-    let total_secs = stats.total_training_time.as_secs();
-    let hours = total_secs / 3600;
-    let minutes = (total_secs % 3600) / 60;
-    let seconds = total_secs % 60;
+    // --- CORRECTED TIMER CALCULATION ---
+    // Total Time = Loaded History Time + Current Session Time
+    // Current Session Time = Instant::now() - app_start_time
+    let current_session_duration = now.duration_since(app_start_time.0);
+    let total_training_time =
+        Duration::from_secs(global_history.accumulated_time_secs) + current_session_duration;
+
+    let session_secs = current_session_duration.as_secs();
+    let session_hours = session_secs / 3600;
+    let session_minutes = (session_secs % 3600) / 60;
+    let session_seconds = session_secs % 60;
+
+    let total_secs = total_training_time.as_secs();
+    let total_hours = total_secs / 3600;
+    let total_minutes = (total_secs % 3600) / 60;
+    let total_seconds = total_secs % 60;
+
     let persistent_high = game_stats.high_score.max(game.high_score);
     let alive_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
     let dead_count = game.snakes.len() - alive_count;
@@ -1054,14 +1226,15 @@ fn update_stats_ui(
             "H: {:3}  G: {:5}  Best: {:3}\n",
             game.high_score, game.total_iterations, persistent_high
         );
+        // FIXED: Total Time = Loaded History Time + Current Session Time
         st_text.sections[1].value = format!(
-            "Time: {:02}:{:02}:{:02}  Total: {:02}:{:02}:{:02}  FPS: {:5.1}\n",
-            hours,
-            minutes,
-            seconds,
-            (game_stats.total_training_time_secs + total_secs) / 3600,
-            ((game_stats.total_training_time_secs + total_secs) % 3600) / 60,
-            (game_stats.total_training_time_secs + total_secs) % 60,
+            "Session: {:02}:{:02}:{:02}  Total: {:02}:{:02}:{:02}  FPS: {:5.1}\n",
+            session_hours,
+            session_minutes,
+            session_seconds,
+            total_hours,
+            total_minutes,
+            total_seconds,
             stats.fps
         );
         // ASCII puro anche qui
@@ -1071,11 +1244,18 @@ fn update_stats_ui(
         );
     }
 
-    // COMANDI
+    // COMANDI - Permanently visible with all hotkeys
     if let Ok(mut cmd_text) = commands_query.get_single_mut() {
         let render_status = if render_config.enabled { "ON" } else { "TURBO" };
-        cmd_text.sections[0].value =
-            format!("[R]Render:{}  [G]Graph  [F]Full  [ESC]Exit", render_status);
+        let collision_status = if collision_settings.snake_vs_snake {
+            "ON"
+        } else {
+            "OFF"
+        };
+        cmd_text.sections[0].value = format!(
+            "[R]Render:{}  [G]Graph  [F]Fullscreen  [C]Collision:{}  [ESC]Exit",
+            render_status, collision_status
+        );
     }
 }
 
@@ -1127,6 +1307,16 @@ fn setup(
     commands.insert_resource(GraphPanelState::default());
     commands.insert_resource(RenderConfig::default());
 
+    // Initialize GridMap for O(1) collision detection
+    commands.insert_resource(GridMap::new(grid_width, grid_height));
+
+    // Initialize SegmentPool for object-pooled rendering
+    let parallel_config = ParallelConfig::new();
+    commands.insert_resource(SegmentPool::new(parallel_config.snake_count));
+
+    // Initialize AppStartTime for correct timer calculations
+    commands.insert_resource(AppStartTime::default());
+
     // 1. Load Global History (Past) - Aggregates ALL previous sessions for the UI
     let (global_history, last_gen) = load_global_history();
     let accumulated_time = global_history.accumulated_time_secs;
@@ -1159,10 +1349,7 @@ fn setup(
         brain.iterations = last_gen;
     }
 
-    // Crea configurazione parallelism - numero serpenti = core CPU
-    let parallel_config = ParallelConfig::new();
-
-    // Crea GameState
+    // Crea GameState (uses already-created parallel_config)
     let grid = GridDimensions {
         width: grid_width,
         height: grid_height,
@@ -1333,6 +1520,13 @@ struct StepResult {
     ate_food: bool,
 }
 
+/// Decision result from parallel inference
+struct Decision {
+    snake_idx: usize,
+    action_idx: usize,
+    state: [f32; STATE_SIZE],
+}
+
 fn game_loop(
     time: Res<Time>,
     mut config: ResMut<GameConfig>,
@@ -1346,6 +1540,7 @@ fn game_loop(
     collision_settings: Res<CollisionSettings>,
     parallel_config: Res<ParallelConfig>,
     render_config: Res<RenderConfig>,
+    mut grid_map: ResMut<GridMap>,
 ) {
     // FPS Calculation
     stats.frame_count += 1;
@@ -1357,7 +1552,7 @@ fn game_loop(
         stats.frame_count = 0;
     }
 
-    // --- HYBRID LOOP LOGIC ---
+    // --- DYNAMIC LOOP LOGIC ---
 
     if render_config.enabled {
         // MODE A: Visual (Render ON) - Respect the Timer
@@ -1377,32 +1572,45 @@ fn game_loop(
             &collision_settings,
             &parallel_config,
             &mut stats,
+            &mut grid_map,
         );
     } else {
-        // MODE B: Turbo (Render OFF) - Time Budget Loop
-        // Use 14ms out of 16ms (assuming 60fps target) for pure calculation.
-        // Leaves 2ms for OS window handling to keep the app responsive.
-        let frame_budget = Duration::from_millis(14);
-        let start_compute = Instant::now();
+        // MODE B: Turbo (Render OFF) - Dynamic Time Budget Loop
+        // Target ~30 FPS for UI responsiveness = 33ms per frame
+        // Leave ~3ms buffer for system responsiveness
+        let ui_target = Duration::from_millis(33);
+        let buffer = Duration::from_millis(3);
+        let start = Instant::now();
 
-        // Run as many steps as possible within the budget
-        while start_compute.elapsed() < frame_budget {
-            run_simulation_step(
-                &mut game,
-                &mut brain,
-                &mut game_stats,
-                &mut training_session,
-                &mut global_history,
-                &config,
-                &grid,
-                &collision_settings,
-                &parallel_config,
-                &mut stats,
-            );
+        // Run simulation steps in batches to reduce overhead
+        const BATCH_SIZE: usize = 10;
 
-            // Manually accumulate training time (approximate delta per step or just accumulate actual elapsed)
-            stats.total_training_time += Duration::from_micros(100);
+        loop {
+            // Run a batch of simulation steps
+            for _ in 0..BATCH_SIZE {
+                run_simulation_step(
+                    &mut game,
+                    &mut brain,
+                    &mut game_stats,
+                    &mut training_session,
+                    &mut global_history,
+                    &config,
+                    &grid,
+                    &collision_settings,
+                    &parallel_config,
+                    &mut stats,
+                    &mut grid_map,
+                );
+            }
+
+            // Break if we are close to the UI deadline
+            if start.elapsed() >= ui_target.saturating_sub(buffer) {
+                break;
+            }
         }
+
+        // Accumulate actual training time
+        stats.total_training_time += start.elapsed();
     }
 }
 
@@ -1412,53 +1620,103 @@ fn run_simulation_step(
     brain: &mut DqnBrain,
     game_stats: &mut GameStats,
     training_session: &mut TrainingSession,
-    global_history: &mut GlobalTrainingHistory, // Add this parameter
-    config: &GameConfig,                        // Added config for session path
+    global_history: &mut GlobalTrainingHistory,
+    config: &GameConfig,
     grid: &GridDimensions,
     collision_settings: &CollisionSettings,
     parallel_config: &ParallelConfig,
     stats: &mut TrainingStats,
+    grid_map: &mut GridMap,
 ) {
     let mut all_dead = true;
     let mut active_count = 0;
-    let mut step_results: Vec<StepResult> = Vec::with_capacity(parallel_config.snake_count);
 
-    // Process every snake
-    for snake_idx in 0..game.snakes.len() {
-        if game.snakes[snake_idx].is_game_over {
-            continue;
+    // --- PHASE 1: PARALLEL INFERENCE (Decision Making) ---
+    // Collect active snake indices first to avoid borrow issues
+    let active_snakes: Vec<usize> = game
+        .snakes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.is_game_over)
+        .map(|(idx, _)| idx)
+        .collect();
+
+    if active_snakes.is_empty() {
+        // Handle end of generation
+        handle_generation_end(
+            game,
+            brain,
+            game_stats,
+            training_session,
+            global_history,
+            config,
+            parallel_config,
+            stats,
+            grid,
+        );
+        return;
+    }
+
+    // Parallel read-only pass: Make decisions using current state
+    let decisions: Vec<Decision> = active_snakes
+        .par_iter()
+        .map(|&snake_idx| {
+            let snake = &game.snakes[snake_idx];
+
+            // Get State - pure function, thread-safe
+            let state = get_state_gridmap(snake, grid_map, grid, collision_settings.snake_vs_snake);
+
+            // Decide Action (Epsilon Greedy)
+            let mut rng = rand::thread_rng();
+            let action_idx = if rng.gen::<f32>() < brain.epsilon {
+                rng.gen_range(0..3)
+            } else {
+                let q_vals = brain.forward_array(&state);
+                let mut max_idx = 0;
+                let mut max_val = q_vals[0];
+                for i in 1..3 {
+                    if q_vals[i] > max_val {
+                        max_val = q_vals[i];
+                        max_idx = i;
+                    }
+                }
+                max_idx
+            };
+
+            Decision {
+                snake_idx,
+                action_idx,
+                state,
+            }
+        })
+        .collect();
+
+    // --- PHASE 2: SEQUENTIAL WRITE PASS ---
+    // Apply movements, collision logic, and reward assignment
+
+    // Clear GridMap for this step
+    grid_map.clear();
+
+    // First, populate GridMap with current snake positions
+    for (idx, snake) in game.snakes.iter().enumerate() {
+        if !snake.is_game_over {
+            for pos in snake.snake.iter() {
+                grid_map.set(pos.x, pos.y, (idx + 1) as u8);
+            }
         }
+    }
+
+    let mut step_results: Vec<StepResult> = Vec::with_capacity(decisions.len());
+
+    for decision in decisions {
+        let snake_idx = decision.snake_idx;
+        let action_idx = decision.action_idx;
+        let state = decision.state;
 
         all_dead = false;
         active_count += 1;
 
-        // Get State
-        let state = get_state(
-            &game.snakes[snake_idx],
-            &game.snakes,
-            snake_idx,
-            &grid,
-            collision_settings.snake_vs_snake,
-        );
-
-        // Decide Action (Epsilon Greedy)
-        let mut rng = rand::thread_rng();
-        let action_idx = if rng.gen::<f32>() < brain.epsilon {
-            rng.gen_range(0..3)
-        } else {
-            let q_vals = brain.forward_array(&state);
-            let mut max_idx = 0;
-            let mut max_val = q_vals[0];
-            for i in 1..3 {
-                if q_vals[i] > max_val {
-                    max_val = q_vals[i];
-                    max_idx = i;
-                }
-            }
-            max_idx
-        };
-
-        // Move Snake
+        // Move Snake based on decision
         match action_idx {
             1 => game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_right(),
             2 => game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_left(),
@@ -1475,23 +1733,12 @@ fn run_simulation_step(
         let mut reward: f32 = 0.0;
         let mut done = false;
 
-        // Collision Logic
-        let mut collision = new_head.x < 0
-            || new_head.x >= grid.width
-            || new_head.y < 0
-            || new_head.y >= grid.height
-            || game.snakes[snake_idx].snake.contains(&new_head);
-
-        if !collision && collision_settings.snake_vs_snake {
-            for (other_idx, other_snake) in game.snakes.iter().enumerate() {
-                if other_idx != snake_idx && !other_snake.is_game_over {
-                    if other_snake.snake.contains(&new_head) {
-                        collision = true;
-                        break;
-                    }
-                }
-            }
-        }
+        // --- GridMap O(1) Collision Detection ---
+        let collision = if collision_settings.snake_vs_snake {
+            grid_map.is_collision(new_head.x, new_head.y, snake_idx)
+        } else {
+            grid_map.is_collision_no_snakes(new_head.x, new_head.y)
+        } || game.snakes[snake_idx].snake.contains(&new_head); // Self-collision check
 
         if collision {
             reward = -10.0;
@@ -1506,7 +1753,13 @@ fn run_simulation_step(
             }
             game.snakes[snake_idx].food = spawn_food(&game.snakes[snake_idx], &grid);
             game.snakes[snake_idx].steps_without_food = 0;
+
+            // Update GridMap with new head position
+            grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
         } else {
+            // Store old tail position for GridMap update
+            let old_tail = game.snakes[snake_idx].snake.back().copied();
+
             game.snakes[snake_idx].snake.push_front(new_head);
             game.snakes[snake_idx].snake.pop_back();
 
@@ -1532,6 +1785,12 @@ fn run_simulation_step(
                     reward -= 0.15;
                 }
             }
+
+            // Update GridMap: add new head, remove old tail
+            grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
+            if let Some(tail) = old_tail {
+                grid_map.set(tail.x, tail.y, 0);
+            }
         }
 
         let ate_food = new_head == game.snakes[snake_idx].food;
@@ -1540,11 +1799,10 @@ fn run_simulation_step(
             state,
             action_idx,
             reward,
-            next_state: get_state(
+            next_state: get_state_gridmap(
                 &game.snakes[snake_idx],
-                &game.snakes,
-                snake_idx,
-                &grid,
+                grid_map,
+                grid,
                 collision_settings.snake_vs_snake,
             ),
             done,
@@ -1564,110 +1822,207 @@ fn run_simulation_step(
         );
     }
 
+    // --- CONTINUOUS TRAINING ---
+    // Train every N iterations, not just at generation end
+    brain.iterations += 1;
+    if brain.iterations % TRAIN_INTERVAL as u32 == 0 {
+        brain.train();
+    }
+
     // End of Generation Logic
     if all_dead {
-        let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
-        game_stats.total_food_eaten += food_eaten as u64;
-
-        for (i, snake) in game.snakes.iter().enumerate() {
-            if i < game_stats.best_score_per_snake.len() {
-                game_stats.best_score_per_snake[i] =
-                    game_stats.best_score_per_snake[i].max(snake.score);
-            }
-        }
-
-        let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
-        let max_score = current_scores.iter().copied().max().unwrap_or(0);
-        let min_score = current_scores.iter().copied().min().unwrap_or(0);
-        let avg_score = current_scores.iter().sum::<u32>() as f32 / current_scores.len() as f32;
-
-        let record = GenerationRecord {
-            gen: game.total_iterations,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            avg_score,
-            max_score,
-            min_score,
-            avg_loss: brain.loss,
-            epsilon: brain.epsilon,
-        };
-
-        // 1. Add to GLOBAL HISTORY (For Graph & Continuity)
-        global_history.records.push(record.clone());
-
-        // 2. Add to CURRENT SESSION (For File Saving)
-        training_session.add_record(record);
-
-        // Calculate ONLY current session duration for the file
-        training_session.total_time_secs = stats
-            .total_training_time
-            .as_secs()
-            .saturating_sub(global_history.accumulated_time_secs);
-
-        // Save only the current session file
-        if let Err(e) =
-            training_session.save(config.session_path.to_str().unwrap_or("session.json"))
-        {
-            eprintln!("Errore salvataggio sessione: {}", e);
-        }
-
-        if game.total_iterations % 100 == 0 {
-            if let Err(e) = brain.save(brain_path().to_str().unwrap_or("brain.json")) {
-                eprintln!("Errore salvataggio modello: {}", e);
-            }
-        }
-
-        for snake in game.snakes.iter_mut() {
-            snake.reset(&grid);
-        }
-        game.total_iterations += 1;
-        brain.iterations = game.total_iterations;
-
-        brain.train();
-        brain.epsilon = (brain.epsilon * 0.995).max(0.01);
-
-        game_stats.total_generations = game.total_iterations;
-        game_stats.high_score = game_stats.high_score.max(game.high_score);
-        game_stats.total_games_played += parallel_config.snake_count as u64;
-
-        let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
-        println!(
-            "Gen: {}, Active: {}/{}, Total Score: {}, High: {}, Eps: {:.3}, Loss: {:.5}",
-            game.total_iterations,
-            active_count,
-            parallel_config.snake_count,
-            total_score,
-            game.high_score,
-            brain.epsilon,
-            brain.loss
+        handle_generation_end(
+            game,
+            brain,
+            game_stats,
+            training_session,
+            global_history,
+            config,
+            parallel_config,
+            stats,
+            grid,
         );
     }
+}
+
+// Handle end of generation - reset snakes, save data, etc.
+fn handle_generation_end(
+    game: &mut GameState,
+    brain: &mut DqnBrain,
+    game_stats: &mut GameStats,
+    training_session: &mut TrainingSession,
+    global_history: &mut GlobalTrainingHistory,
+    config: &GameConfig,
+    parallel_config: &ParallelConfig,
+    stats: &mut TrainingStats,
+    grid: &GridDimensions,
+) {
+    let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
+    game_stats.total_food_eaten += food_eaten as u64;
+
+    for (i, snake) in game.snakes.iter().enumerate() {
+        if i < game_stats.best_score_per_snake.len() {
+            game_stats.best_score_per_snake[i] =
+                game_stats.best_score_per_snake[i].max(snake.score);
+        }
+    }
+
+    let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
+    let max_score = current_scores.iter().copied().max().unwrap_or(0);
+    let min_score = current_scores.iter().copied().min().unwrap_or(0);
+    let avg_score = current_scores.iter().sum::<u32>() as f32 / current_scores.len() as f32;
+
+    let record = GenerationRecord {
+        gen: game.total_iterations,
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        avg_score,
+        max_score,
+        min_score,
+        avg_loss: brain.loss,
+        epsilon: brain.epsilon,
+    };
+
+    // 1. Add to GLOBAL HISTORY (For Graph & Continuity)
+    global_history.records.push(record.clone());
+
+    // 2. Add to CURRENT SESSION (For File Saving)
+    training_session.add_record(record);
+
+    // Calculate ONLY current session duration for the file
+    training_session.total_time_secs = stats
+        .total_training_time
+        .as_secs()
+        .saturating_sub(global_history.accumulated_time_secs);
+
+    // Save only the current session file
+    if let Err(e) = training_session.save(config.session_path.to_str().unwrap_or("session.json")) {
+        eprintln!("Errore salvataggio sessione: {}", e);
+    }
+
+    if game.total_iterations % 100 == 0 {
+        if let Err(e) = brain.save(brain_path().to_str().unwrap_or("brain.json")) {
+            eprintln!("Errore salvataggio modello: {}", e);
+        }
+    }
+
+    for snake in game.snakes.iter_mut() {
+        snake.reset(grid);
+    }
+    game.total_iterations += 1;
+    brain.iterations = game.total_iterations;
+
+    // Train at generation end as well
+    brain.train();
+    brain.epsilon = (brain.epsilon * 0.995).max(0.01);
+
+    game_stats.total_generations = game.total_iterations;
+    game_stats.high_score = game_stats.high_score.max(game.high_score);
+    game_stats.total_games_played += parallel_config.snake_count as u64;
+
+    let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
+    let active_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
+    println!(
+        "Gen: {}, Active: {}/{}, Total Score: {}, High: {}, Eps: {:.3}, Loss: {:.5}",
+        game.total_iterations,
+        active_count,
+        parallel_config.snake_count,
+        total_score,
+        game.high_score,
+        brain.epsilon,
+        brain.loss
+    );
+}
+
+/// Optimized state function using GridMap for O(1) collision detection
+fn get_state_gridmap(
+    snake: &SnakeInstance,
+    grid_map: &GridMap,
+    grid: &GridDimensions,
+    check_other_snakes: bool,
+) -> [f32; STATE_SIZE] {
+    let head = snake.snake[0];
+
+    let dir_onehot = match snake.direction {
+        Direction::Up => [1.0, 0.0, 0.0, 0.0],
+        Direction::Right => [0.0, 1.0, 0.0, 0.0],
+        Direction::Down => [0.0, 0.0, 1.0, 0.0],
+        Direction::Left => [0.0, 0.0, 0.0, 1.0],
+    };
+
+    let food_left = if snake.food.x < head.x { 1.0 } else { 0.0 };
+    let food_right = if snake.food.x > head.x { 1.0 } else { 0.0 };
+    let food_up = if snake.food.y > head.y { 1.0 } else { 0.0 };
+    let food_down = if snake.food.y < head.y { 1.0 } else { 0.0 };
+
+    let left_dir = snake.direction.turn_left();
+    let right_dir = snake.direction.turn_right();
+
+    // GridMap O(1) collision detection
+    // Only check other snakes if collision_setting is enabled
+    let (dx, dy) = snake.direction.as_vec();
+    let danger_straight = if check_other_snakes {
+        grid_map.is_collision(head.x + dx, head.y + dy, snake.id)
+    } else {
+        grid_map.is_collision_no_snakes(head.x + dx, head.y + dy)
+    } || snake.snake.contains(&Position {
+        x: head.x + dx,
+        y: head.y + dy,
+    });
+
+    let (ldx, ldy) = left_dir.as_vec();
+    let danger_left = if check_other_snakes {
+        grid_map.is_collision(head.x + ldx, head.y + ldy, snake.id)
+    } else {
+        grid_map.is_collision_no_snakes(head.x + ldx, head.y + ldy)
+    } || snake.snake.contains(&Position {
+        x: head.x + ldx,
+        y: head.y + ldy,
+    });
+
+    let (rdx, rdy) = right_dir.as_vec();
+    let danger_right = if check_other_snakes {
+        grid_map.is_collision(head.x + rdx, head.y + rdy, snake.id)
+    } else {
+        grid_map.is_collision_no_snakes(head.x + rdx, head.y + rdy)
+    } || snake.snake.contains(&Position {
+        x: head.x + rdx,
+        y: head.y + rdy,
+    });
+
+    [
+        danger_left as i32 as f32,
+        danger_straight as i32 as f32,
+        danger_right as i32 as f32,
+        dir_onehot[0],
+        dir_onehot[1],
+        dir_onehot[2],
+        dir_onehot[3],
+        food_left,
+        food_right,
+        food_up,
+        food_down,
+    ]
 }
 
 fn render_system(
     mut commands: Commands,
     game: Res<GameState>,
     windows: Query<&Window>,
-    grid: Res<GridDimensions>,
     mesh_cache: Res<MeshCache>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    q_segments: Query<Entity, With<SnakeSegment>>,
-    q_food: Query<Entity, With<Food>>,
+    mut segment_pool: ResMut<SegmentPool>,
     render_config: Res<RenderConfig>,
+    q_food: Query<Entity, With<Food>>,
 ) {
     // Skip rendering when disabled (training-only mode)
     if !render_config.enabled {
         return;
     }
 
-    // Ottimizzazione: despawn solo se necessario (non ogni frame)
-    // In realtà per Bevy è meglio despawn/ricreate per oggetti dinamici
-    // Ma usiamo le mesh cached per evitare allocazioni GPU
-    for e in q_segments.iter() {
-        commands.entity(e).despawn();
-    }
+    // Despawn all food entities from previous frame
     for e in q_food.iter() {
         commands.entity(e).despawn();
     }
@@ -1681,17 +2036,20 @@ fn render_system(
     let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
     let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
 
-    // Usa mesh cache (zero allocazioni GPU per frame!)
-    // NOTA: Salta gli snake morti (is_game_over = true)
+    // Object-pooled rendering: Reuse entities instead of despawning/spawning
     for snake in game.snakes.iter() {
         // Salta snake morti - non renderizzare né snake né cibo
         if snake.is_game_over {
+            // Hide all segments for dead snakes
+            segment_pool.hide_excess(&mut commands, snake.id, 0);
             continue;
         }
 
         // Crea materiale con il colore ATTUALE dello snake (cambia ad ogni reset!)
         let body_material = materials.add(snake.color);
+        let snake_len = snake.snake.len();
 
+        // Update or spawn segments for active snake positions
         for (i, pos) in snake.snake.iter().enumerate() {
             // Testa = bianca, corpo = colore dello snake
             let material = if i == 0 {
@@ -1700,22 +2058,30 @@ fn render_system(
                 body_material.clone()
             };
 
-            commands.spawn((
-                MaterialMesh2dBundle {
-                    mesh: mesh_cache.segment_mesh.clone().into(),
-                    material,
-                    transform: Transform::from_xyz(
-                        offset_x + (pos.x as f32 * BLOCK_SIZE),
-                        offset_y - (pos.y as f32 * BLOCK_SIZE),
-                        0.0,
-                    ),
-                    ..default()
-                },
-                SnakeSegment,
-                SnakeId(snake.id),
-            ));
+            let transform = Transform::from_xyz(
+                offset_x + (pos.x as f32 * BLOCK_SIZE),
+                offset_y - (pos.y as f32 * BLOCK_SIZE),
+                0.0,
+            );
+
+            // Use object pool to get or spawn segment entity
+            segment_pool.get_or_spawn(
+                &mut commands,
+                snake.id,
+                i,
+                mesh_cache.segment_mesh.clone(),
+                material,
+                transform,
+            );
         }
 
+        // Hide excess segments if snake got shorter
+        segment_pool.hide_excess(&mut commands, snake.id, snake_len);
+        segment_pool.set_active_count(snake.id, snake_len);
+
+        // Render food for this snake (food uses separate spawning, could be pooled too)
+        // For now, we spawn food each frame since there's one per snake
+        // This is acceptable as food count = snake count (constant)
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: mesh_cache.food_mesh.clone().into(),
@@ -2090,20 +2456,19 @@ fn spawn_graph_panel(
 fn toggle_graph_panel(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut graph_state: ResMut<GraphPanelState>,
-    mut render_config: ResMut<RenderConfig>,
     windows: Query<&Window>,
 ) {
     if keyboard_input.just_pressed(KeyCode::KeyG) {
         // Logica toggle: Finestra Normale -> Fullscreen -> Nascosto
+        // IMPORTANT: G key only controls graph visibility, NOT rendering state
+        // Rendering state is controlled separately by R key
         if !graph_state.visible && !graph_state.fullscreen {
             // Prima pressione: mostra grafico a finestra
             graph_state.visible = true;
             graph_state.fullscreen = false;
-            render_config.enabled = true;
         } else if graph_state.visible && !graph_state.fullscreen {
-            // Seconda pressione: passa a fullscreen (rendering disabilitato)
+            // Seconda pressione: passa a fullscreen
             graph_state.fullscreen = true;
-            render_config.enabled = false;
 
             // Imposta dimensioni fullscreen dalla finestra
             if let Ok(window) = windows.get_single() {
@@ -2114,14 +2479,13 @@ fn toggle_graph_panel(
             // Terza pressione: nascondi tutto
             graph_state.visible = false;
             graph_state.fullscreen = false;
-            render_config.enabled = true;
         }
 
         // Ridisegna sempre quando il pannello cambia stato
         graph_state.needs_redraw = true;
 
         println!(
-            "Grafico: {} (render: {})",
+            "Grafico: {}",
             if graph_state.visible {
                 if graph_state.fullscreen {
                     "FULLSCREEN"
@@ -2130,8 +2494,7 @@ fn toggle_graph_panel(
                 }
             } else {
                 "NASCOSTO"
-            },
-            if render_config.enabled { "ON" } else { "OFF" }
+            }
         );
     }
 }
@@ -2139,13 +2502,13 @@ fn toggle_graph_panel(
 fn update_graph_panel_visibility(
     mut commands: Commands,
     mut graph_state: ResMut<GraphPanelState>,
-    render_config: Res<RenderConfig>, // Add this resource to system params
     panel_query: Query<Entity, With<GraphPanel>>,
 ) {
     let panel_exists = !panel_query.is_empty();
 
-    // VISIBILITY RULE: User Preference OR Turbo Mode forced override
-    let should_be_visible = graph_state.visible || !render_config.enabled;
+    // VISIBILITY RULE: Only user preference via G key
+    // Graph visibility is now independent of rendering state
+    let should_be_visible = graph_state.visible;
 
     if should_be_visible && !panel_exists {
         // OPEN
@@ -2270,13 +2633,11 @@ fn draw_graph_in_panel(
     mut commands: Commands,
     mut graph_state: ResMut<GraphPanelState>,
     global_history: Res<GlobalTrainingHistory>,
-    render_config: Res<RenderConfig>, // Assicurati di avere questa risorsa
     content_query: Query<Entity, With<GraphPanelContent>>,
     children_query: Query<&Children>,
 ) {
-    let should_be_visible = graph_state.visible || !render_config.enabled;
-
-    if !should_be_visible || graph_state.collapsed {
+    // Graph visibility is independent of rendering state
+    if !graph_state.visible || graph_state.collapsed {
         return;
     }
 
