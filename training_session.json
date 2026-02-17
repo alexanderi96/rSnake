@@ -1,0 +1,113 @@
+{
+  "total_time_secs": 0,
+  "records": [
+    {
+      "gen": 0,
+      "timestamp": 1771283187,
+      "avg_score": 0.4375,
+      "max_score": 2,
+      "alive_count": 6,
+      "avg_loss": 0.0,
+      "epsilon": 1.0
+    },
+    {
+      "gen": 1,
+      "timestamp": 1771283191,
+      "avg_score": 0.0625,
+      "max_score": 1,
+      "alive_count": 1,
+      "avg_loss": 0.8313518,
+      "epsilon": 0.995
+    },
+    {
+      "gen": 2,
+      "timestamp": 1771283196,
+      "avg_score": 0.0625,
+      "max_score": 1,
+      "alive_count": 1,
+      "avg_loss": 1.2396958,
+      "epsilon": 0.990025
+    },
+    {
+      "gen": 3,
+      "timestamp": 1771283205,
+      "avg_score": 0.0,
+      "max_score": 0,
+      "alive_count": 0,
+      "avg_loss": 1.6544302,
+      "epsilon": 0.9850749
+    },
+    {
+      "gen": 4,
+      "timestamp": 1771283212,
+      "avg_score": 0.0625,
+      "max_score": 1,
+      "alive_count": 1,
+      "avg_loss": 0.034042846,
+      "epsilon": 0.9801495
+    },
+    {
+      "gen": 5,
+      "timestamp": 1771283220,
+      "avg_score": 0.1875,
+      "max_score": 1,
+      "alive_count": 3,
+      "avg_loss": 0.043150354,
+      "epsilon": 0.97524875
+    },
+    {
+      "gen": 6,
+      "timestamp": 1771283224,
+      "avg_score": 0.0625,
+      "max_score": 1,
+      "alive_count": 1,
+      "avg_loss": 1.2468114,
+      "epsilon": 0.9703725
+    },
+    {
+      "gen": 7,
+      "timestamp": 1771283232,
+      "avg_score": 0.3125,
+      "max_score": 3,
+      "alive_count": 3,
+      "avg_loss": 1.6357453,
+      "epsilon": 0.9655206
+    },
+    {
+      "gen": 8,
+      "timestamp": 1771283244,
+      "avg_score": 0.0625,
+      "max_score": 1,
+      "alive_count": 1,
+      "avg_loss": 1.6375304,
+      "epsilon": 0.960693
+    },
+    {
+      "gen": 9,
+      "timestamp": 1771283256,
+      "avg_score": 0.0,
+      "max_score": 0,
+      "alive_count": 0,
+      "avg_loss": 2.0319958,
+      "epsilon": 0.9558895
+    },
+    {
+      "gen": 10,
+      "timestamp": 1771283261,
+      "avg_score": 0.0,
+      "max_score": 0,
+      "alive_count": 0,
+      "avg_loss": 0.4289854,
+      "epsilon": 0.95111006
+    },
+    {
+      "gen": 10,
+      "timestamp": 1771283285,
+      "avg_score": 0.1875,
+      "max_score": 2,
+      "alive_count": 2,
+      "avg_loss": 0.0,
+      "epsilon": 0.9463545
+    }
+  ]
+}
