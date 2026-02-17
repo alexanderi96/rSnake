@@ -294,7 +294,8 @@ struct GameStats {
     high_score: u32,
     total_games_played: u64,
     total_food_eaten: u64,
-    total_training_time_secs: u64,
+    // REMOVED: total_training_time_secs - calculated at runtime
+    // Total time = GlobalTrainingHistory.accumulated_time_secs + (now - app_start_time)
     best_score_per_snake: Vec<u32>,
     last_saved: Option<String>,
 }
@@ -593,7 +594,6 @@ impl GameStats {
             high_score: 0,
             total_games_played: 0,
             total_food_eaten: 0,
-            total_training_time_secs: 0,
             best_score_per_snake: vec![0; num_snakes],
             last_saved: None,
         }
@@ -613,10 +613,9 @@ impl GameStats {
         Ok(stats)
     }
 
-    fn update(&mut self, game: &GameState, training_time: Duration) {
+    fn update(&mut self, game: &GameState) {
         self.total_generations = game.total_iterations;
         self.high_score = game.high_score.max(self.high_score);
-        self.total_training_time_secs = training_time.as_secs();
 
         // Aggiorna best score per ogni snake
         for (i, snake) in game.snakes.iter().enumerate() {
@@ -2107,25 +2106,27 @@ fn handle_input(
     mut training_session: ResMut<TrainingSession>,
     config: Res<GameConfig>,
     game: Res<GameState>,
-    stats: Res<TrainingStats>,
     mut window_settings: ResMut<WindowSettings>,
     mut windows: Query<&mut Window>,
     mut collision_settings: ResMut<CollisionSettings>,
-    mut render_config: ResMut<RenderConfig>,  // Aggiunto
-    mut graph_state: ResMut<GraphPanelState>, // Aggiunto
+    mut render_config: ResMut<RenderConfig>,
+    mut graph_state: ResMut<GraphPanelState>,
+    app_start_time: Res<AppStartTime>,
+    global_history: Res<GlobalTrainingHistory>,
 ) {
     // [ESC] SALVA E ESCI
     if keyboard_input.just_pressed(KeyCode::Escape) {
         // Aggiorna statistiche finali
-        game_stats.update(&game, stats.total_training_time);
+        game_stats.update(&game);
 
         // Salva brain.json (unico per run)
         if let Err(e) = brain.save(brain_path().to_str().unwrap_or("brain.json")) {
             eprintln!("Errore salvataggio modello: {}", e);
         }
 
-        // Salva sessione corrente
-        training_session.total_time_secs = stats.total_training_time.as_secs();
+        // Salva sessione corrente - calcola solo il tempo di questa sessione
+        let current_session_duration = Instant::now().duration_since(app_start_time.0);
+        training_session.total_time_secs = current_session_duration.as_secs();
         training_session.compress_history();
         if let Err(e) =
             training_session.save(config.session_path.to_str().unwrap_or("session.json"))
@@ -2133,13 +2134,19 @@ fn handle_input(
             eprintln!("Errore salvataggio sessione: {}", e);
         }
 
+        // Calcola tempi a runtime
+        let current_session_duration = Instant::now().duration_since(app_start_time.0);
+        let total_training_time =
+            Duration::from_secs(global_history.accumulated_time_secs) + current_session_duration;
+
         println!("\n=== RIEPILOGO SESSIONE ===");
         println!("Generazioni totali: {}", game_stats.total_generations);
         println!("High Score: {}", game_stats.high_score);
         println!(
-            "Tempo di training: {}s",
-            game_stats.total_training_time_secs
+            "Tempo sessione corrente: {}s",
+            current_session_duration.as_secs()
         );
+        println!("Tempo totale (runtime): {}s", total_training_time.as_secs());
         println!("Records in sessione: {}", training_session.records.len());
         println!("Salvato in: {}", get_or_create_run_dir().display());
         println!("========================\n");
@@ -2915,7 +2922,9 @@ fn main() {
         )
         .add_systems(
             Update,
-            draw_graph_in_panel.after(update_graph_panel_visibility),
+            draw_graph_in_panel
+                .after(update_graph_panel_visibility)
+                .after(sync_graph_panel_layout),
         )
         .run();
 }
