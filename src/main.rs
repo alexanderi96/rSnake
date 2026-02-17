@@ -2208,27 +2208,28 @@ fn on_window_resize(
     mut resize_events: EventReader<bevy::window::WindowResized>,
     mut grid: ResMut<GridDimensions>,
     mut game: ResMut<GameState>,
+    mut grid_map: ResMut<GridMap>, // <--- AGGIUNGI QUESTO
     mut graph_state: ResMut<GraphPanelState>,
 ) {
     for event in resize_events.read() {
         let (new_width, new_height) = calculate_grid_dimensions(event.width, event.height);
 
-        // Aggiorna le dimensioni della griglia
         grid.width = new_width;
         grid.height = new_height;
 
-        // Resetta tutti gli snake con le nuove dimensioni
+        // FIX CRITICO: Ri-inizializza il GridMap con le nuove dimensioni!
+        *grid_map = GridMap::new(new_width, new_height);
+
+        // Forza il reset degli snake sulla nuova griglia
         for snake in game.snakes.iter_mut() {
             snake.reset(&grid);
         }
 
-        // Aggiorna dimensioni grafico se in fullscreen
-        if graph_state.fullscreen {
-            graph_state.size = Vec2::new(event.width, event.height - 60.0);
-            graph_state.needs_redraw = true;
-        }
-
-        println!("Griglia ridimensionata: {}x{}", grid.width, grid.height);
+        graph_state.needs_redraw = true;
+        println!(
+            "Resized: GridMap re-initialized to {}x{}",
+            new_width, new_height
+        );
     }
 }
 
