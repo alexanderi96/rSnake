@@ -121,6 +121,14 @@ struct TrainingStats {
     frame_count: u32,
 }
 
+/// Holds ALL historical data (past sessions + current session).
+/// Used ONLY for the Graph UI and Total Time display.
+#[derive(Resource, Default)]
+struct GlobalTrainingHistory {
+    pub records: Vec<GenerationRecord>,
+    pub accumulated_time_secs: u64, // Sum of all previous sessions' time
+}
+
 #[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
 struct GameStats {
     total_generations: u32,
@@ -323,6 +331,52 @@ fn session_path(filename: &str) -> std::path::PathBuf {
 fn new_session_path() -> std::path::PathBuf {
     let timestamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
     session_path(format!("{}.json", timestamp).as_str())
+}
+
+/// Scans the sessions/ directory and aggregates all past data for the UI.
+fn load_global_history() -> (GlobalTrainingHistory, u32) {
+    let sessions_dir = get_or_create_run_dir().join("sessions");
+    let mut global_history = GlobalTrainingHistory::default();
+    let mut max_gen = 0;
+
+    println!("📂 Scanning sessions in: {}", sessions_dir.display());
+
+    if let Ok(entries) = std::fs::read_dir(sessions_dir) {
+        let mut paths: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |ext| ext == "json"))
+            .collect();
+
+        // Sort by filename (timestamp) to ensure chronological order in the graph
+        paths.sort();
+
+        for path in paths {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(session) = serde_json::from_str::<TrainingSession>(&content) {
+                    global_history.accumulated_time_secs += session.total_time_secs;
+
+                    for record in session.records {
+                        if record.gen > max_gen {
+                            max_gen = record.gen;
+                        }
+                        global_history.records.push(record);
+                    }
+                }
+            }
+        }
+    }
+
+    // Ensure records are sorted by generation
+    global_history.records.sort_by_key(|r| r.gen);
+
+    println!(
+        "✅ Global History Loaded: {} records, {}s total",
+        global_history.records.len(),
+        global_history.accumulated_time_secs
+    );
+
+    (global_history, max_gen)
 }
 
 // =============================================================================
@@ -1073,64 +1127,52 @@ fn setup(
     commands.insert_resource(GraphPanelState::default());
     commands.insert_resource(RenderConfig::default());
 
-    // Carica TrainingSession - ogni sessione è un file separato
+    // 1. Load Global History (Past) - Aggregates ALL previous sessions for the UI
+    let (global_history, last_gen) = load_global_history();
+    let accumulated_time = global_history.accumulated_time_secs;
+
+    // 2. Setup Current Session (Fresh for saving new data)
     let session_file = new_session_path();
-    let mut training_session = if session_file.exists() {
-        match TrainingSession::load(session_file.to_str().unwrap_or("session.json")) {
-            Ok(session) => {
-                println!(
-                    "📊 Sessione caricata: {} records da {}",
-                    session.records.len(),
-                    session_file.display()
-                );
-                session
-            }
-            Err(e) => {
-                eprintln!("Errore caricamento sessione: {}, creo nuova", e);
-                TrainingSession::new()
-            }
-        }
-    } else {
-        println!("📊 Nuova sessione: {}", session_file.display());
-        TrainingSession::new()
-    };
+    let training_session = TrainingSession::new();
+    println!("📊 New session file: {}", session_file.display());
 
-    // Nota: session_file viene passato tramite GameConfig
-
+    // 3. Load Brain
     let mut brain = if brain_path().exists() {
         match DqnBrain::load(brain_path().to_str().unwrap_or("brain.json")) {
             Ok(b) => {
-                println!("Modello esistente caricato!");
+                println!("🧠 Model loaded!");
                 b
             }
             Err(e) => {
-                eprintln!("Errore caricamento modello: {}, creo nuovo brain", e);
+                eprintln!("Error loading model: {}, creating new brain", e);
                 DqnBrain::new()
             }
         }
     } else {
-        println!("Nessun modello trovato, inizializzo nuovo brain");
+        println!("No model found, initializing new brain");
         DqnBrain::new()
     };
+
+    // Sync brain iterations with history
+    if last_gen > 0 {
+        println!("🔄 Sync: Resuming from generation {}", last_gen);
+        brain.iterations = last_gen;
+    }
 
     // Crea configurazione parallelism - numero serpenti = core CPU
     let parallel_config = ParallelConfig::new();
 
-    // Crea GameState DOPO aver caricato TrainingSession
+    // Crea GameState
     let grid = GridDimensions {
         width: grid_width,
         height: grid_height,
     };
     let mut game_state = GameState::new(&grid, parallel_config.snake_count);
+    game_state.total_iterations = last_gen; // Resume generation count
 
-    // FIX SINCRONIZZAZIONE: Se c'è uno storico, sincronizza il contatore
-    if let Some(last_gen) = training_session.last_generation() {
-        println!("🔄 Sync: Riprendo dalla generazione {}", last_gen);
-        game_state.total_iterations = last_gen;
-        brain.iterations = last_gen;
-    }
-
-    commands.insert_resource(training_session);
+    // 4. Insert Resources
+    commands.insert_resource(global_history); // For Graph UI
+    commands.insert_resource(training_session); // For Saving
     commands.insert_resource(brain);
     commands.insert_resource(GameConfig {
         speed_timer: Timer::from_seconds(0.001, TimerMode::Repeating),
@@ -1151,8 +1193,9 @@ fn setup(
     // Inserisci GameState creato precedentemente con i colori casuali
     commands.insert_resource(game_state);
 
+    // Initialize TrainingStats with accumulated time!
     commands.insert_resource(TrainingStats {
-        total_training_time: Duration::from_secs(0),
+        total_training_time: Duration::from_secs(accumulated_time),
         last_update: Instant::now(),
         parallel_threads: rayon::current_num_threads(),
         fps: 0.0,
@@ -1297,6 +1340,7 @@ fn game_loop(
     mut brain: ResMut<DqnBrain>,
     mut game_stats: ResMut<GameStats>,
     mut training_session: ResMut<TrainingSession>,
+    mut global_history: ResMut<GlobalTrainingHistory>,
     mut stats: ResMut<TrainingStats>,
     grid: Res<GridDimensions>,
     collision_settings: Res<CollisionSettings>,
@@ -1327,6 +1371,7 @@ fn game_loop(
             &mut brain,
             &mut game_stats,
             &mut training_session,
+            &mut global_history,
             &config,
             &grid,
             &collision_settings,
@@ -1347,6 +1392,7 @@ fn game_loop(
                 &mut brain,
                 &mut game_stats,
                 &mut training_session,
+                &mut global_history,
                 &config,
                 &grid,
                 &collision_settings,
@@ -1366,7 +1412,8 @@ fn run_simulation_step(
     brain: &mut DqnBrain,
     game_stats: &mut GameStats,
     training_session: &mut TrainingSession,
-    config: &GameConfig, // Added config for session path
+    global_history: &mut GlobalTrainingHistory, // Add this parameter
+    config: &GameConfig,                        // Added config for session path
     grid: &GridDimensions,
     collision_settings: &CollisionSettings,
     parallel_config: &ParallelConfig,
@@ -1546,13 +1593,20 @@ fn run_simulation_step(
             avg_loss: brain.loss,
             epsilon: brain.epsilon,
         };
+
+        // 1. Add to GLOBAL HISTORY (For Graph & Continuity)
+        global_history.records.push(record.clone());
+
+        // 2. Add to CURRENT SESSION (For File Saving)
         training_session.add_record(record);
 
-        // Comprimi ogni volta che salviamo (ogni generazione) o ogni X generazioni
-        if game.total_iterations % 50 == 0 {
-            training_session.compress_history();
-        }
+        // Calculate ONLY current session duration for the file
+        training_session.total_time_secs = stats
+            .total_training_time
+            .as_secs()
+            .saturating_sub(global_history.accumulated_time_secs);
 
+        // Save only the current session file
         if let Err(e) =
             training_session.save(config.session_path.to_str().unwrap_or("session.json"))
         {
@@ -2215,7 +2269,7 @@ fn update_collapse_button_text(
 fn draw_graph_in_panel(
     mut commands: Commands,
     mut graph_state: ResMut<GraphPanelState>,
-    training_session: Res<TrainingSession>,
+    global_history: Res<GlobalTrainingHistory>, // Use Global History
     parallel_config: Res<ParallelConfig>,
     render_config: Res<RenderConfig>, // Add this resource to system params
     content_query: Query<Entity, With<GraphPanelContent>>,
@@ -2227,7 +2281,7 @@ fn draw_graph_in_panel(
     if !should_be_visible || graph_state.collapsed {
         return;
     }
-    let data_changed = training_session.records.len() != graph_state.last_entry_count;
+    let data_changed = global_history.records.len() != graph_state.last_entry_count;
     if !graph_state.needs_redraw && !data_changed && graph_state.last_entry_count != 0 {
         return;
     }
@@ -2241,7 +2295,7 @@ fn draw_graph_in_panel(
         }
     }
     graph_state.needs_redraw = false;
-    graph_state.last_entry_count = training_session.records.len();
+    graph_state.last_entry_count = global_history.records.len();
 
     for content_entity in content_query.iter() {
         // ... (Definizione margini e dimensioni invariata) ...
@@ -2290,7 +2344,7 @@ fn draw_graph_in_panel(
                 background_color: Color::WHITE.into(),
                 ..default()
             });
-            if training_session.records.len() < 2 {
+            if global_history.records.len() < 2 {
                 parent.spawn(
                     TextBundle::from_section(
                         "In attesa di dati...",
@@ -2311,10 +2365,10 @@ fn draw_graph_in_panel(
             }
 
             // --- CALCOLO RANGE DATI ---
-            let min_gen = training_session.records.first().map(|e| e.gen).unwrap_or(0) as f32;
-            let max_gen = training_session.records.last().map(|e| e.gen).unwrap_or(1) as f32;
+            let min_gen = global_history.records.first().map(|e| e.gen).unwrap_or(0) as f32;
+            let max_gen = global_history.records.last().map(|e| e.gen).unwrap_or(1) as f32;
             let range_gen = (max_gen - min_gen).max(1.0);
-            let max_score = training_session
+            let max_score = global_history
                 .records
                 .iter()
                 .map(|e| e.max_score)
@@ -2336,9 +2390,9 @@ fn draw_graph_in_panel(
             };
 
             // --- DISEGNO LINEE ---
-            for i in 0..training_session.records.len().saturating_sub(1) {
-                let e1 = &training_session.records[i];
-                let e2 = &training_session.records[i + 1];
+            for i in 0..global_history.records.len().saturating_sub(1) {
+                let e1 = &global_history.records[i];
+                let e2 = &global_history.records[i + 1];
                 let x1 = get_x(e1.gen);
                 let x2 = get_x(e2.gen);
                 let width = (x2 - x1).max(1.0);
