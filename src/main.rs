@@ -51,7 +51,7 @@ impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            steps_per_frame: 50, // Valore default per il "Turbo"
+            steps_per_frame: 100, // Fallback/Reference value
         }
     }
 }
@@ -1297,13 +1297,13 @@ fn game_loop(
     mut brain: ResMut<DqnBrain>,
     mut game_stats: ResMut<GameStats>,
     mut training_session: ResMut<TrainingSession>,
-    mut stats: ResMut<TrainingStats>, // ResMut per aggiornare stats
+    mut stats: ResMut<TrainingStats>,
     grid: Res<GridDimensions>,
     collision_settings: Res<CollisionSettings>,
     parallel_config: Res<ParallelConfig>,
-    render_config: Res<RenderConfig>, // Aggiunto
+    render_config: Res<RenderConfig>,
 ) {
-    // --- 1. GESTIONE FPS E TEMPO ---
+    // FPS Calculation
     stats.frame_count += 1;
     let now = Instant::now();
     if now.duration_since(stats.last_fps_update).as_secs_f32() >= 1.0 {
@@ -1313,249 +1313,282 @@ fn game_loop(
         stats.frame_count = 0;
     }
 
-    // --- 2. LOGICA TURBO / VELOCITÀ ---
-    let steps_to_run;
+    // --- HYBRID LOOP LOGIC ---
 
     if render_config.enabled {
-        // Modalità Normale (Render ON): Rispetta il Timer per non andare troppo veloce visivamente
+        // MODE A: Visual (Render ON) - Respect the Timer
         config.speed_timer.tick(time.delta());
         if !config.speed_timer.finished() {
             return;
         }
-        steps_to_run = 1; // 1 step logico per frame renderizzato
-
-        // Aggiorna tempo training reale
-        stats.total_training_time += time.delta();
+        // Run 1 step per visual frame update
+        run_simulation_step(
+            &mut game,
+            &mut brain,
+            &mut game_stats,
+            &mut training_session,
+            &config,
+            &grid,
+            &collision_settings,
+            &parallel_config,
+            &mut stats,
+        );
     } else {
-        // Modalità Turbo (Render OFF): Ignora il timer!
-        // Esegue N step logici per ogni frame dell'applicazione
-        steps_to_run = render_config.steps_per_frame;
+        // MODE B: Turbo (Render OFF) - Time Budget Loop
+        // Use 14ms out of 16ms (assuming 60fps target) for pure calculation.
+        // Leaves 2ms for OS window handling to keep the app responsive.
+        let frame_budget = Duration::from_millis(14);
+        let start_compute = Instant::now();
 
-        // Simulazione del tempo trascorso (o usa tempo reale se preferisci)
-        // Usiamo tempo reale del delta frame per accuratezza
-        stats.total_training_time += time.delta();
+        // Run as many steps as possible within the budget
+        while start_compute.elapsed() < frame_budget {
+            run_simulation_step(
+                &mut game,
+                &mut brain,
+                &mut game_stats,
+                &mut training_session,
+                &config,
+                &grid,
+                &collision_settings,
+                &parallel_config,
+                &mut stats,
+            );
+
+            // Manually accumulate training time (approximate delta per step or just accumulate actual elapsed)
+            stats.total_training_time += Duration::from_micros(100);
+        }
     }
+}
 
-    // --- 3. CICLO DI SIMULAZIONE (Eseguito 1 o 50 volte) ---
-    for _ in 0..steps_to_run {
-        // [INIZIO LOGICA ORIGINALE] ----------------------------------------
+// Helper function to encapsulate ONE simulation step
+fn run_simulation_step(
+    game: &mut GameState,
+    brain: &mut DqnBrain,
+    game_stats: &mut GameStats,
+    training_session: &mut TrainingSession,
+    config: &GameConfig, // Added config for session path
+    grid: &GridDimensions,
+    collision_settings: &CollisionSettings,
+    parallel_config: &ParallelConfig,
+    stats: &mut TrainingStats,
+) {
+    let mut all_dead = true;
+    let mut active_count = 0;
+    let mut step_results: Vec<StepResult> = Vec::with_capacity(parallel_config.snake_count);
 
-        let mut all_dead = true;
-        let mut active_count = 0;
-        let mut step_results: Vec<StepResult> = Vec::with_capacity(parallel_config.snake_count);
+    // Process every snake
+    for snake_idx in 0..game.snakes.len() {
+        if game.snakes[snake_idx].is_game_over {
+            continue;
+        }
 
-        // Processa ogni snake
-        for snake_idx in 0..game.snakes.len() {
-            if game.snakes[snake_idx].is_game_over {
-                continue;
+        all_dead = false;
+        active_count += 1;
+
+        // Get State
+        let state = get_state(
+            &game.snakes[snake_idx],
+            &game.snakes,
+            snake_idx,
+            &grid,
+            collision_settings.snake_vs_snake,
+        );
+
+        // Decide Action (Epsilon Greedy)
+        let mut rng = rand::thread_rng();
+        let action_idx = if rng.gen::<f32>() < brain.epsilon {
+            rng.gen_range(0..3)
+        } else {
+            let q_vals = brain.forward_array(&state);
+            let mut max_idx = 0;
+            let mut max_val = q_vals[0];
+            for i in 1..3 {
+                if q_vals[i] > max_val {
+                    max_val = q_vals[i];
+                    max_idx = i;
+                }
             }
+            max_idx
+        };
 
-            all_dead = false;
-            active_count += 1;
+        // Move Snake
+        match action_idx {
+            1 => game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_right(),
+            2 => game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_left(),
+            _ => {}
+        }
 
-            let state = get_state(
+        let (dx, dy) = game.snakes[snake_idx].direction.as_vec();
+        let new_head = Position {
+            x: game.snakes[snake_idx].snake[0].x + dx,
+            y: game.snakes[snake_idx].snake[0].y + dy,
+        };
+
+        game.snakes[snake_idx].steps_without_food += 1;
+        let mut reward: f32 = 0.0;
+        let mut done = false;
+
+        // Collision Logic
+        let mut collision = new_head.x < 0
+            || new_head.x >= grid.width
+            || new_head.y < 0
+            || new_head.y >= grid.height
+            || game.snakes[snake_idx].snake.contains(&new_head);
+
+        if !collision && collision_settings.snake_vs_snake {
+            for (other_idx, other_snake) in game.snakes.iter().enumerate() {
+                if other_idx != snake_idx && !other_snake.is_game_over {
+                    if other_snake.snake.contains(&new_head) {
+                        collision = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if collision {
+            reward = -10.0;
+            done = true;
+            game.snakes[snake_idx].is_game_over = true;
+        } else if new_head == game.snakes[snake_idx].food {
+            reward = 10.0 + (game.snakes[snake_idx].score as f32 * 0.5);
+            game.snakes[snake_idx].snake.push_front(new_head);
+            game.snakes[snake_idx].score += 1;
+            if game.snakes[snake_idx].score > game.high_score {
+                game.high_score = game.snakes[snake_idx].score;
+            }
+            game.snakes[snake_idx].food = spawn_food(&game.snakes[snake_idx], &grid);
+            game.snakes[snake_idx].steps_without_food = 0;
+        } else {
+            game.snakes[snake_idx].snake.push_front(new_head);
+            game.snakes[snake_idx].snake.pop_back();
+
+            let max_steps = (grid.width * grid.height) as u32;
+            reward -= 0.01 * (game.snakes[snake_idx].steps_without_food as f32 / 100.0);
+
+            if game.snakes[snake_idx].steps_without_food > max_steps {
+                reward = -10.0;
+                done = true;
+                game.snakes[snake_idx].is_game_over = true;
+            } else {
+                reward += 0.001;
+                let head = &game.snakes[snake_idx].snake[0];
+                let old_dist_sq = ((head.x - dx - game.snakes[snake_idx].food.x).pow(2)
+                    + (head.y - dy - game.snakes[snake_idx].food.y).pow(2))
+                    as f32;
+                let new_dist_sq = ((head.x - game.snakes[snake_idx].food.x).pow(2)
+                    + (head.y - game.snakes[snake_idx].food.y).pow(2))
+                    as f32;
+                if new_dist_sq < old_dist_sq {
+                    reward += 0.1;
+                } else {
+                    reward -= 0.15;
+                }
+            }
+        }
+
+        let ate_food = new_head == game.snakes[snake_idx].food;
+        step_results.push(StepResult {
+            snake_idx,
+            state,
+            action_idx,
+            reward,
+            next_state: get_state(
                 &game.snakes[snake_idx],
                 &game.snakes,
                 snake_idx,
                 &grid,
                 collision_settings.snake_vs_snake,
-            );
+            ),
+            done,
+            new_head,
+            ate_food,
+        });
+    }
 
-            let mut rng = rand::thread_rng();
-            let action_idx = if rng.gen::<f32>() < brain.epsilon {
-                rng.gen_range(0..3)
-            } else {
-                let q_vals = brain.forward_array(&state);
-                let mut max_idx = 0;
-                let mut max_val = q_vals[0];
-                for i in 1..3 {
-                    if q_vals[i] > max_val {
-                        max_val = q_vals[i];
-                        max_idx = i;
-                    }
-                }
-                max_idx
-            };
+    // Apply Memories
+    for result in step_results {
+        brain.remember_array(
+            result.state,
+            result.action_idx,
+            result.reward,
+            result.next_state,
+            result.done,
+        );
+    }
 
-            match action_idx {
-                1 => {
-                    game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_right()
-                }
-                2 => {
-                    game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_left()
-                }
-                _ => {}
+    // End of Generation Logic
+    if all_dead {
+        let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
+        game_stats.total_food_eaten += food_eaten as u64;
+
+        for (i, snake) in game.snakes.iter().enumerate() {
+            if i < game_stats.best_score_per_snake.len() {
+                game_stats.best_score_per_snake[i] =
+                    game_stats.best_score_per_snake[i].max(snake.score);
             }
-
-            let (dx, dy) = game.snakes[snake_idx].direction.as_vec();
-            let new_head = Position {
-                x: game.snakes[snake_idx].snake[0].x + dx,
-                y: game.snakes[snake_idx].snake[0].y + dy,
-            };
-
-            game.snakes[snake_idx].steps_without_food += 1;
-            let mut reward: f32 = 0.0;
-            let mut done = false;
-
-            let mut collision = new_head.x < 0
-                || new_head.x >= grid.width
-                || new_head.y < 0
-                || new_head.y >= grid.height
-                || game.snakes[snake_idx].snake.contains(&new_head);
-
-            if !collision && collision_settings.snake_vs_snake {
-                for (other_idx, other_snake) in game.snakes.iter().enumerate() {
-                    if other_idx != snake_idx && !other_snake.is_game_over {
-                        if other_snake.snake.contains(&new_head) {
-                            collision = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if collision {
-                reward = -10.0;
-                done = true;
-                game.snakes[snake_idx].is_game_over = true;
-            } else if new_head == game.snakes[snake_idx].food {
-                reward = 10.0 + (game.snakes[snake_idx].score as f32 * 0.5);
-                game.snakes[snake_idx].snake.push_front(new_head);
-                game.snakes[snake_idx].score += 1;
-                if game.snakes[snake_idx].score > game.high_score {
-                    game.high_score = game.snakes[snake_idx].score;
-                }
-                game.snakes[snake_idx].food = spawn_food(&game.snakes[snake_idx], &grid);
-                game.snakes[snake_idx].steps_without_food = 0;
-            } else {
-                game.snakes[snake_idx].snake.push_front(new_head);
-                game.snakes[snake_idx].snake.pop_back();
-
-                let max_steps = (grid.width * grid.height) as u32;
-                reward -= 0.01 * (game.snakes[snake_idx].steps_without_food as f32 / 100.0);
-
-                if game.snakes[snake_idx].steps_without_food > max_steps {
-                    reward = -10.0;
-                    done = true;
-                    game.snakes[snake_idx].is_game_over = true;
-                } else {
-                    reward += 0.001;
-                    let head = &game.snakes[snake_idx].snake[0];
-                    let old_dist_sq = ((head.x - dx - game.snakes[snake_idx].food.x).pow(2)
-                        + (head.y - dy - game.snakes[snake_idx].food.y).pow(2))
-                        as f32;
-                    let new_dist_sq = ((head.x - game.snakes[snake_idx].food.x).pow(2)
-                        + (head.y - game.snakes[snake_idx].food.y).pow(2))
-                        as f32;
-                    if new_dist_sq < old_dist_sq {
-                        reward += 0.1;
-                    } else {
-                        reward -= 0.15;
-                    }
-                }
-            }
-
-            let ate_food = new_head == game.snakes[snake_idx].food;
-            step_results.push(StepResult {
-                snake_idx,
-                state,
-                action_idx,
-                reward,
-                next_state: get_state(
-                    &game.snakes[snake_idx],
-                    &game.snakes,
-                    snake_idx,
-                    &grid,
-                    collision_settings.snake_vs_snake,
-                ),
-                done,
-                new_head,
-                ate_food,
-            });
         }
 
-        for result in step_results {
-            brain.remember_array(
-                result.state,
-                result.action_idx,
-                result.reward,
-                result.next_state,
-                result.done,
-            );
+        let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
+        let max_score = current_scores.iter().copied().max().unwrap_or(0);
+        let min_score = current_scores.iter().copied().min().unwrap_or(0);
+        let avg_score = current_scores.iter().sum::<u32>() as f32 / current_scores.len() as f32;
+
+        let record = GenerationRecord {
+            gen: game.total_iterations,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            avg_score,
+            max_score,
+            min_score,
+            avg_loss: brain.loss,
+            epsilon: brain.epsilon,
+        };
+        training_session.add_record(record);
+
+        // Comprimi ogni volta che salviamo (ogni generazione) o ogni X generazioni
+        if game.total_iterations % 50 == 0 {
+            training_session.compress_history();
         }
 
-        if all_dead {
-            let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
-            game_stats.total_food_eaten += food_eaten as u64;
-
-            for (i, snake) in game.snakes.iter().enumerate() {
-                if i < game_stats.best_score_per_snake.len() {
-                    game_stats.best_score_per_snake[i] =
-                        game_stats.best_score_per_snake[i].max(snake.score);
-                }
-            }
-
-            let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
-            // Rimosso game_history.add_entry che era duplicato/inutile
-
-            let max_score = current_scores.iter().copied().max().unwrap_or(0);
-            let min_score = current_scores.iter().copied().min().unwrap_or(0);
-            let avg_score = current_scores.iter().sum::<u32>() as f32 / current_scores.len() as f32;
-
-            let record = GenerationRecord {
-                gen: game.total_iterations,
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                avg_score,
-                max_score,
-                min_score,
-                avg_loss: brain.loss,
-                epsilon: brain.epsilon,
-            };
-            training_session.add_record(record);
-            training_session.total_time_secs = stats.total_training_time.as_secs();
-
-            if let Err(e) =
-                training_session.save(config.session_path.to_str().unwrap_or("session.json"))
-            {
-                eprintln!("Errore salvataggio sessione: {}", e);
-            }
-
-            if game.total_iterations % 100 == 0 {
-                if let Err(e) = brain.save(brain_path().to_str().unwrap_or("brain.json")) {
-                    eprintln!("Errore salvataggio modello: {}", e);
-                }
-            }
-
-            for snake in game.snakes.iter_mut() {
-                snake.reset(&grid);
-            }
-            game.total_iterations += 1;
-            brain.iterations = game.total_iterations;
-
-            brain.train();
-            brain.epsilon = (brain.epsilon * 0.995).max(0.01);
-
-            game_stats.total_generations = game.total_iterations;
-            game_stats.high_score = game_stats.high_score.max(game.high_score);
-            game_stats.total_games_played += parallel_config.snake_count as u64;
-
-            let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
-            println!(
-                "Gen: {}, Active: {}/{}, Total Score: {}, High: {}, Eps: {:.3}, Loss: {:.5}",
-                game.total_iterations,
-                active_count,
-                parallel_config.snake_count,
-                total_score,
-                game.high_score,
-                brain.epsilon,
-                brain.loss
-            );
+        if let Err(e) =
+            training_session.save(config.session_path.to_str().unwrap_or("session.json"))
+        {
+            eprintln!("Errore salvataggio sessione: {}", e);
         }
 
-        // [FINE LOGICA ORIGINALE] ----------------------------------------
+        if game.total_iterations % 100 == 0 {
+            if let Err(e) = brain.save(brain_path().to_str().unwrap_or("brain.json")) {
+                eprintln!("Errore salvataggio modello: {}", e);
+            }
+        }
+
+        for snake in game.snakes.iter_mut() {
+            snake.reset(&grid);
+        }
+        game.total_iterations += 1;
+        brain.iterations = game.total_iterations;
+
+        brain.train();
+        brain.epsilon = (brain.epsilon * 0.995).max(0.01);
+
+        game_stats.total_generations = game.total_iterations;
+        game_stats.high_score = game_stats.high_score.max(game.high_score);
+        game_stats.total_games_played += parallel_config.snake_count as u64;
+
+        let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
+        println!(
+            "Gen: {}, Active: {}/{}, Total Score: {}, High: {}, Eps: {:.3}, Loss: {:.5}",
+            game.total_iterations,
+            active_count,
+            parallel_config.snake_count,
+            total_score,
+            game.high_score,
+            brain.epsilon,
+            brain.loss
+        );
     }
 }
 
@@ -1707,32 +1740,27 @@ fn handle_input(
         );
     }
 
-    // [R] RENDER / TURBO MODE (NUOVO)
+    // [R] Render / Turbo Mode Toggle
     if keyboard_input.just_pressed(KeyCode::KeyR) {
         render_config.enabled = !render_config.enabled;
         println!(
             "Rendering: {}",
             if render_config.enabled {
-                "ON (Normal Speed)"
+                "ON (Normal)"
             } else {
-                "OFF (Turbo Speed)"
+                "OFF (Turbo)"
             }
         );
-
-        // Se disattivo il render (Turbo), apro automaticamente il grafico per vedere i progressi
-        if !render_config.enabled {
-            graph_state.visible = true;
-            graph_state.needs_redraw = true;
-        }
+        // Note: We don't change graph_state.visible here. The display logic handles the override.
     }
 
-    // [G] GRAPH TOGGLE
+    // [G] Graph Visibility Toggle (User Preference)
     if keyboard_input.just_pressed(KeyCode::KeyG) {
         graph_state.visible = !graph_state.visible;
         graph_state.needs_redraw = true;
     }
 
-    // [F] FULLSCREEN
+    // [F] Fullscreen Toggle
     if keyboard_input.just_pressed(KeyCode::KeyF) {
         window_settings.is_fullscreen = !window_settings.is_fullscreen;
         let mut window = windows.single_mut();
@@ -1741,13 +1769,10 @@ fn handle_input(
         } else {
             WindowMode::Windowed
         };
-
-        // Se vado in fullscreen, assicuro che il grafico sia visibile
+        // Ensure graph is visible in fullscreen
         if window_settings.is_fullscreen {
             graph_state.visible = true;
             graph_state.needs_redraw = true;
-            // Opzionale: Disabilita render in fullscreen per max performance
-            // render_config.enabled = false;
         }
     }
 }
@@ -2059,23 +2084,23 @@ fn toggle_graph_panel(
 
 fn update_graph_panel_visibility(
     mut commands: Commands,
-    mut graph_state: ResMut<GraphPanelState>, // Nota: ResMut qui serviva!
+    mut graph_state: ResMut<GraphPanelState>,
+    render_config: Res<RenderConfig>, // Add this resource to system params
     panel_query: Query<Entity, With<GraphPanel>>,
 ) {
     let panel_exists = !panel_query.is_empty();
 
-    if graph_state.visible && !panel_exists {
-        // APERTURA: Resetta il flag di redraw per forzare il disegno delle linee
-        graph_state.needs_redraw = true;
-        // Importante: resettiamo anche questo per essere sicuri
-        graph_state.last_entry_count = 0;
+    // VISIBILITY RULE: User Preference OR Turbo Mode forced override
+    let should_be_visible = graph_state.visible || !render_config.enabled;
 
-        // Ora possiamo passare una Res immutabile a spawn_graph_panel
-        // (Bevy permette di "downgrade" da ResMut a Res automaticamente o tramite into())
+    if should_be_visible && !panel_exists {
+        // OPEN
+        graph_state.needs_redraw = true;
+        graph_state.last_entry_count = 0;
         let state_res = graph_state.into();
         spawn_graph_panel(commands, state_res, panel_query);
-    } else if !graph_state.visible && panel_exists {
-        // CHIUSURA
+    } else if !should_be_visible && panel_exists {
+        // CLOSE
         for entity in panel_query.iter() {
             commands.entity(entity).despawn_recursive();
         }
@@ -2192,11 +2217,14 @@ fn draw_graph_in_panel(
     mut graph_state: ResMut<GraphPanelState>,
     training_session: Res<TrainingSession>,
     parallel_config: Res<ParallelConfig>,
+    render_config: Res<RenderConfig>, // Add this resource to system params
     content_query: Query<Entity, With<GraphPanelContent>>,
     children_query: Query<&Children>,
 ) {
-    // ... (Controlli di visibilità e redraw invariati) ...
-    if !graph_state.visible || graph_state.collapsed {
+    // Check strict visibility rule
+    let should_be_visible = graph_state.visible || !render_config.enabled;
+
+    if !should_be_visible || graph_state.collapsed {
         return;
     }
     let data_changed = training_session.records.len() != graph_state.last_entry_count;
@@ -2335,7 +2363,7 @@ fn draw_graph_in_panel(
                         e1.min_score as f32,
                         e2.min_score as f32,
                         Color::rgb(0.3, 0.5, 1.0),
-                        parallel_config.snake_count as f32,
+                        max_score, // <--- CAMBIA QUESTO (Era parallel_config.snake_count)
                     ),
                 ];
 
