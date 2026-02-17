@@ -21,7 +21,7 @@ const BATCH_SIZE: usize = 256;
 const LEARNING_RATE: f32 = 0.0005;
 const HIDDEN_NODES: usize = 128;
 const TARGET_UPDATE_FREQ: usize = 100;
-const STATE_SIZE: usize = 11;
+const STATE_SIZE: usize = 16;
 const TRAIN_INTERVAL: usize = 100; // Train every N global iterations for continuous learning
 
 /// Configurazione parallelism - numero serpenti = core CPU
@@ -766,6 +766,24 @@ impl Direction {
     }
 }
 
+/// Generate relative coordinate offsets based on current heading
+/// Returns 8 directions: Forward, Forward-Right, Right, Back-Right, Back, Back-Left, Left, Forward-Left
+fn get_egocentric_directions(current_dir: Direction) -> [(i32, i32); 8] {
+    let (fx, fy) = current_dir.as_vec(); // Forward vector
+    let (rx, ry) = current_dir.turn_right().as_vec(); // Right vector
+
+    [
+        (fx, fy),             // 0: Forward
+        (fx + rx, fy + ry),   // 1: Forward-Right
+        (rx, ry),             // 2: Right
+        (-fx + rx, -fy + ry), // 3: Back-Right
+        (-fx, -fy),           // 4: Back
+        (-fx - rx, -fy - ry), // 5: Back-Left
+        (-rx, -ry),           // 6: Left
+        (fx - rx, fy - ry),   // 7: Forward-Left
+    ]
+}
+
 // --- MICRO-DQN (IMPLEMENTAZIONE MANUALE) ---
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Layer {
@@ -1401,100 +1419,6 @@ fn setup(
     // creiamo la UI dopo aver inserito la risorsa e la leggiamo nella query
 }
 
-/// Ottimizzato: restituisce array in stack invece di Vec (zero allocazioni heap)
-fn get_state(
-    snake: &SnakeInstance,
-    all_snakes: &[SnakeInstance],
-    snake_idx: usize,
-    grid: &GridDimensions,
-    check_other_snakes: bool,
-) -> [f32; STATE_SIZE] {
-    let head = snake.snake[0];
-
-    let dir_onehot = match snake.direction {
-        Direction::Up => [1.0, 0.0, 0.0, 0.0],
-        Direction::Right => [0.0, 1.0, 0.0, 0.0],
-        Direction::Down => [0.0, 0.0, 1.0, 0.0],
-        Direction::Left => [0.0, 0.0, 0.0, 1.0],
-    };
-
-    let food_left = if snake.food.x < head.x { 1.0 } else { 0.0 };
-    let food_right = if snake.food.x > head.x { 1.0 } else { 0.0 };
-    let food_up = if snake.food.y > head.y { 1.0 } else { 0.0 };
-    let food_down = if snake.food.y < head.y { 1.0 } else { 0.0 };
-
-    let left_dir = snake.direction.turn_left();
-    let right_dir = snake.direction.turn_right();
-
-    // Pericolo base: bordi e se stesso
-    let danger_straight = is_collision(snake, snake.direction, grid)
-        || (check_other_snakes
-            && is_collision_with_others(snake, snake.direction, all_snakes, snake_idx));
-    let danger_left = is_collision(snake, left_dir, grid)
-        || (check_other_snakes && is_collision_with_others(snake, left_dir, all_snakes, snake_idx));
-    let danger_right = is_collision(snake, right_dir, grid)
-        || (check_other_snakes
-            && is_collision_with_others(snake, right_dir, all_snakes, snake_idx));
-
-    [
-        danger_left as i32 as f32,
-        danger_straight as i32 as f32,
-        danger_right as i32 as f32,
-        dir_onehot[0],
-        dir_onehot[1],
-        dir_onehot[2],
-        dir_onehot[3],
-        food_left,
-        food_right,
-        food_up,
-        food_down,
-    ]
-}
-
-/// Controlla collisione con altri snake (usato dallo stato quando collisioni sono attive)
-fn is_collision_with_others(
-    snake: &SnakeInstance,
-    direction: Direction,
-    all_snakes: &[SnakeInstance],
-    self_idx: usize,
-) -> bool {
-    let head = snake.snake[0];
-    let (dx, dy) = direction.as_vec();
-    let next_pos = Position {
-        x: head.x + dx,
-        y: head.y + dy,
-    };
-
-    for (idx, other) in all_snakes.iter().enumerate() {
-        if idx != self_idx && !other.is_game_over {
-            if other.snake.contains(&next_pos) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-fn is_collision(snake: &SnakeInstance, direction: Direction, grid: &GridDimensions) -> bool {
-    let head = snake.snake[0];
-    let (dx, dy) = direction.as_vec();
-    let next_pos = Position {
-        x: head.x + dx,
-        y: head.y + dy,
-    };
-
-    if next_pos.x < 0 || next_pos.x >= grid.width || next_pos.y < 0 || next_pos.y >= grid.height {
-        return true;
-    }
-
-    if snake.snake.contains(&next_pos) {
-        return true;
-    }
-
-    false
-}
-
 fn spawn_food(snake: &SnakeInstance, grid: &GridDimensions) -> Position {
     let mut rng = rand::thread_rng();
     loop {
@@ -1628,10 +1552,8 @@ fn run_simulation_step(
     grid_map: &mut GridMap,
 ) {
     let mut all_dead = true;
-    let mut active_count = 0;
 
-    // --- PHASE 1: PARALLEL INFERENCE (Decision Making) ---
-    // Collect active snake indices first to avoid borrow issues
+    // --- FASE 1: INFERENZA PARALLELA ---
     let active_snakes: Vec<usize> = game
         .snakes
         .iter()
@@ -1641,7 +1563,6 @@ fn run_simulation_step(
         .collect();
 
     if active_snakes.is_empty() {
-        // Handle end of generation
         handle_generation_end(
             game,
             brain,
@@ -1656,30 +1577,23 @@ fn run_simulation_step(
         return;
     }
 
-    // Parallel read-only pass: Make decisions using current state
     let decisions: Vec<Decision> = active_snakes
         .par_iter()
         .map(|&snake_idx| {
             let snake = &game.snakes[snake_idx];
-
-            // Get State - pure function, thread-safe
             let state = get_state_gridmap(snake, grid_map, grid, collision_settings.snake_vs_snake);
 
-            // Decide Action (Epsilon Greedy)
             let mut rng = rand::thread_rng();
             let action_idx = if rng.gen::<f32>() < brain.epsilon {
                 rng.gen_range(0..3)
             } else {
                 let q_vals = brain.forward_array(&state);
-                let mut max_idx = 0;
-                let mut max_val = q_vals[0];
-                for i in 1..3 {
-                    if q_vals[i] > max_val {
-                        max_val = q_vals[i];
-                        max_idx = i;
-                    }
-                }
-                max_idx
+                q_vals
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap()
             };
 
             Decision {
@@ -1690,13 +1604,8 @@ fn run_simulation_step(
         })
         .collect();
 
-    // --- PHASE 2: SEQUENTIAL WRITE PASS ---
-    // Apply movements, collision logic, and reward assignment
-
-    // Clear GridMap for this step
+    // --- FASE 2: APPLICAZIONE LOGICA E REWARD (SEQUENZIALE) ---
     grid_map.clear();
-
-    // First, populate GridMap with current snake positions
     for (idx, snake) in game.snakes.iter().enumerate() {
         if !snake.is_game_over {
             for pos in snake.snake.iter() {
@@ -1713,86 +1622,94 @@ fn run_simulation_step(
         let state = decision.state;
 
         all_dead = false;
-        active_count += 1;
+        let snake_ref = &mut game.snakes[snake_idx];
 
-        // Move Snake based on decision
+        // Salviamo la distanza prima del movimento per calcolare la progressione
+        let old_dist_sq = ((snake_ref.snake[0].x - snake_ref.food.x).pow(2)
+            + (snake_ref.snake[0].y - snake_ref.food.y).pow(2)) as f32;
+
+        // Movimento
         match action_idx {
-            1 => game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_right(),
-            2 => game.snakes[snake_idx].direction = game.snakes[snake_idx].direction.turn_left(),
+            1 => snake_ref.direction = snake_ref.direction.turn_right(),
+            2 => snake_ref.direction = snake_ref.direction.turn_left(),
             _ => {}
         }
 
-        let (dx, dy) = game.snakes[snake_idx].direction.as_vec();
+        let (dx, dy) = snake_ref.direction.as_vec();
         let new_head = Position {
-            x: game.snakes[snake_idx].snake[0].x + dx,
-            y: game.snakes[snake_idx].snake[0].y + dy,
+            x: snake_ref.snake[0].x + dx,
+            y: snake_ref.snake[0].y + dy,
         };
 
-        game.snakes[snake_idx].steps_without_food += 1;
+        snake_ref.steps_without_food += 1;
         let mut reward: f32 = 0.0;
         let mut done = false;
 
-        // --- GridMap O(1) Collision Detection ---
+        // Collision detection
         let collision = if collision_settings.snake_vs_snake {
             grid_map.is_collision(new_head.x, new_head.y, snake_idx)
         } else {
             grid_map.is_collision_no_snakes(new_head.x, new_head.y)
-        } || game.snakes[snake_idx].snake.contains(&new_head); // Self-collision check
+        } || snake_ref.snake.contains(&new_head);
 
         if collision {
-            reward = -10.0;
+            reward = -15.0; // Penalità morte aumentata
             done = true;
-            game.snakes[snake_idx].is_game_over = true;
-        } else if new_head == game.snakes[snake_idx].food {
-            reward = 10.0 + (game.snakes[snake_idx].score as f32 * 0.5);
-            game.snakes[snake_idx].snake.push_front(new_head);
-            game.snakes[snake_idx].score += 1;
-            if game.snakes[snake_idx].score > game.high_score {
-                game.high_score = game.snakes[snake_idx].score;
+            snake_ref.is_game_over = true;
+        } else if new_head == snake_ref.food {
+            // Reward Cibo: Bilanciato tra fisso e bonus lunghezza
+            reward = 12.0 + (snake_ref.score as f32 * 0.2);
+            snake_ref.snake.push_front(new_head);
+            snake_ref.score += 1;
+            if snake_ref.score > game.high_score {
+                game.high_score = snake_ref.score;
             }
-            game.snakes[snake_idx].food = spawn_food(&game.snakes[snake_idx], &grid);
-            game.snakes[snake_idx].steps_without_food = 0;
-
-            // Update GridMap with new head position
+            snake_ref.food = spawn_food(snake_ref, grid);
+            snake_ref.steps_without_food = 0;
             grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
         } else {
-            // Store old tail position for GridMap update
-            let old_tail = game.snakes[snake_idx].snake.back().copied();
+            // --- LOGICA DI REWARD PER MOVIMENTO (Il cuore del problema) ---
 
-            game.snakes[snake_idx].snake.push_front(new_head);
-            game.snakes[snake_idx].snake.pop_back();
+            // 1. Penalità temporale (Costo di Esistenza)
+            // Più è affamato, più la penalità aumenta per spingerlo a rischiare
+            let max_steps = (grid.width * grid.height) as f32;
+            let hunger_ratio = snake_ref.steps_without_food as f32 / max_steps;
+            reward -= 0.01 + (hunger_ratio * 0.05);
 
-            let max_steps = (grid.width * grid.height) as u32;
-            reward -= 0.01 * (game.snakes[snake_idx].steps_without_food as f32 / 100.0);
-
-            if game.snakes[snake_idx].steps_without_food > max_steps {
-                reward = -10.0;
-                done = true;
-                game.snakes[snake_idx].is_game_over = true;
-            } else {
-                reward += 0.001;
-                let head = &game.snakes[snake_idx].snake[0];
-                let old_dist_sq = ((head.x - dx - game.snakes[snake_idx].food.x).pow(2)
-                    + (head.y - dy - game.snakes[snake_idx].food.y).pow(2))
-                    as f32;
-                let new_dist_sq = ((head.x - game.snakes[snake_idx].food.x).pow(2)
-                    + (head.y - game.snakes[snake_idx].food.y).pow(2))
-                    as f32;
-                if new_dist_sq < old_dist_sq {
-                    reward += 0.1;
-                } else {
-                    reward -= 0.15;
-                }
+            // 2. Penalità per sterzata (Anti-Loop)
+            // Girare costa un pochino. Questo favorisce traiettorie dritte verso il cibo.
+            if action_idx != 0 {
+                reward -= 0.02;
             }
 
-            // Update GridMap: add new head, remove old tail
+            // 3. Reward di Prossimità (Potential-based)
+            let new_dist_sq = ((new_head.x - snake_ref.food.x).pow(2)
+                + (new_head.y - snake_ref.food.y).pow(2)) as f32;
+
+            if new_dist_sq < old_dist_sq {
+                reward += 0.15; // Si è avvicinato
+            } else {
+                reward -= 0.20; // Si è allontanato (punizione maggiore del premio)
+            }
+
+            // Aggiorna corpo
+            let old_tail = snake_ref.snake.back().copied();
+            snake_ref.snake.push_front(new_head);
+            snake_ref.snake.pop_back();
+
+            // Timeout affamamento
+            if snake_ref.steps_without_food > (grid.width * grid.height) as u32 {
+                reward = -10.0;
+                done = true;
+                snake_ref.is_game_over = true;
+            }
+
             grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
             if let Some(tail) = old_tail {
                 grid_map.set(tail.x, tail.y, 0);
             }
         }
 
-        let ate_food = new_head == game.snakes[snake_idx].food;
         step_results.push(StepResult {
             snake_idx,
             state,
@@ -1806,11 +1723,11 @@ fn run_simulation_step(
             ),
             done,
             new_head,
-            ate_food,
+            ate_food: new_head == game.snakes[snake_idx].food,
         });
     }
 
-    // Apply Memories
+    // Salvataggio in memoria e training continuo
     for result in step_results {
         brain.remember_array(
             result.state,
@@ -1821,14 +1738,11 @@ fn run_simulation_step(
         );
     }
 
-    // --- CONTINUOUS TRAINING ---
-    // Train every N iterations, not just at generation end
     brain.iterations += 1;
     if brain.iterations % TRAIN_INTERVAL as u32 == 0 {
         brain.train();
     }
 
-    // End of Generation Logic
     if all_dead {
         handle_generation_end(
             game,
@@ -1935,75 +1849,69 @@ fn handle_generation_end(
     );
 }
 
-/// Optimized state function using GridMap for O(1) collision detection
+/// Grid-Agnostic Ego-Centric State Function
+/// Uses 8-directional raycasting relative to snake's current heading
+/// State[0..7]: Obstacle radar (1.0 / distance)
+/// State[8..15]: Target radar (1.0 / distance in active sector)
 fn get_state_gridmap(
     snake: &SnakeInstance,
     grid_map: &GridMap,
     grid: &GridDimensions,
     check_other_snakes: bool,
 ) -> [f32; STATE_SIZE] {
+    let mut state = [0.0f32; STATE_SIZE];
     let head = snake.snake[0];
+    let ego_dirs = get_egocentric_directions(snake.direction);
 
-    let dir_onehot = match snake.direction {
-        Direction::Up => [1.0, 0.0, 0.0, 0.0],
-        Direction::Right => [0.0, 1.0, 0.0, 0.0],
-        Direction::Down => [0.0, 0.0, 1.0, 0.0],
-        Direction::Left => [0.0, 0.0, 0.0, 1.0],
-    };
+    // --- 1. RADAR OSTACOLI (0..8) ---
+    for (i, (dx, dy)) in ego_dirs.iter().enumerate() {
+        let mut dist_val = 0.0;
+        let mut curr_x = head.x;
+        let mut curr_y = head.y;
 
-    let food_left = if snake.food.x < head.x { 1.0 } else { 0.0 };
-    let food_right = if snake.food.x > head.x { 1.0 } else { 0.0 };
-    let food_up = if snake.food.y > head.y { 1.0 } else { 0.0 };
-    let food_down = if snake.food.y < head.y { 1.0 } else { 0.0 };
+        for d in 1..15 {
+            // Ridotto raggio per focus locale
+            curr_x += dx;
+            curr_y += dy;
+            if curr_x < 0
+                || curr_x >= grid.width
+                || curr_y < 0
+                || curr_y >= grid.height
+                || grid_map.get(curr_x, curr_y) != 0
+            {
+                dist_val = 1.0 / (d as f32);
+                break;
+            }
+        }
+        state[i] = dist_val;
+    }
 
-    let left_dir = snake.direction.turn_left();
-    let right_dir = snake.direction.turn_right();
+    // --- 2. TARGET RADAR (8..15) ---
+    let dx_glob = (snake.food.x - head.x) as f32;
+    let dy_glob = (snake.food.y - head.y) as f32;
+    let dist_target = (dx_glob.powi(2) + dy_glob.powi(2)).sqrt().max(1.0);
 
-    // GridMap O(1) collision detection
-    // Only check other snakes if collision_setting is enabled
-    let (dx, dy) = snake.direction.as_vec();
-    let danger_straight = if check_other_snakes {
-        grid_map.is_collision(head.x + dx, head.y + dy, snake.id)
-    } else {
-        grid_map.is_collision_no_snakes(head.x + dx, head.y + dy)
-    } || snake.snake.contains(&Position {
-        x: head.x + dx,
-        y: head.y + dy,
-    });
+    // Proiezioni egocentriche (Avanti e Destra)
+    let (fx, fy) = snake.direction.as_vec();
+    let (rx, ry) = snake.direction.turn_right().as_vec();
+    let local_f = (dx_glob * fx as f32 + dy_glob * fy as f32) / dist_target;
+    let local_r = (dx_glob * rx as f32 + dy_glob * ry as f32) / dist_target;
 
-    let (ldx, ldy) = left_dir.as_vec();
-    let danger_left = if check_other_snakes {
-        grid_map.is_collision(head.x + ldx, head.y + ldy, snake.id)
-    } else {
-        grid_map.is_collision_no_snakes(head.x + ldx, head.y + ldy)
-    } || snake.snake.contains(&Position {
-        x: head.x + ldx,
-        y: head.y + ldy,
-    });
+    // Inseriamo i valori di allineamento direttamente nello stato
+    state[8] = local_f; // Quanto il cibo è "davanti" (-1 a 1)
+    state[9] = local_r; // Quanto il cibo è "a destra" (-1 a 1)
 
-    let (rdx, rdy) = right_dir.as_vec();
-    let danger_right = if check_other_snakes {
-        grid_map.is_collision(head.x + rdx, head.y + rdy, snake.id)
-    } else {
-        grid_map.is_collision_no_snakes(head.x + rdx, head.y + rdy)
-    } || snake.snake.contains(&Position {
-        x: head.x + rdx,
-        y: head.y + rdy,
-    });
+    // Settore angolare (mappato su 4 canali invece di 8 per densità)
+    let angle = local_r.atan2(local_f);
+    let sector = (((angle / std::f32::consts::PI) * 2.0 + 4.5) as usize) % 4;
+    state[10 + sector] = 1.0;
 
-    [
-        danger_left as i32 as f32,
-        danger_straight as i32 as f32,
-        danger_right as i32 as f32,
-        dir_onehot[0],
-        dir_onehot[1],
-        dir_onehot[2],
-        dir_onehot[3],
-        food_left,
-        food_right,
-        food_up,
-        food_down,
-    ]
+    // --- 3. MEMORIA DI MOVIMENTO (14..16) ---
+    // Aggiungiamo la lunghezza relativa e i passi senza cibo
+    state[14] = (snake.snake.len() as f32 / 50.0).min(1.0);
+    state[15] = (snake.steps_without_food as f32 / (grid.width * grid.height) as f32).min(1.0);
+
+    state
 }
 
 fn render_system(
