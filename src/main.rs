@@ -2269,24 +2269,24 @@ fn update_collapse_button_text(
 fn draw_graph_in_panel(
     mut commands: Commands,
     mut graph_state: ResMut<GraphPanelState>,
-    global_history: Res<GlobalTrainingHistory>, // Use Global History
-    parallel_config: Res<ParallelConfig>,
-    render_config: Res<RenderConfig>, // Add this resource to system params
+    global_history: Res<GlobalTrainingHistory>,
+    render_config: Res<RenderConfig>, // Assicurati di avere questa risorsa
     content_query: Query<Entity, With<GraphPanelContent>>,
     children_query: Query<&Children>,
 ) {
-    // Check strict visibility rule
     let should_be_visible = graph_state.visible || !render_config.enabled;
 
     if !should_be_visible || graph_state.collapsed {
         return;
     }
+
+    // Ridisegna solo se i dati sono cambiati o se forzato
     let data_changed = global_history.records.len() != graph_state.last_entry_count;
     if !graph_state.needs_redraw && !data_changed && graph_state.last_entry_count != 0 {
         return;
     }
 
-    // ... (Pulizia figli invariata) ...
+    // --- 1. PULIZIA ---
     for content_entity in content_query.iter() {
         if let Ok(children) = children_query.get(content_entity) {
             for &child in children.iter() {
@@ -2294,20 +2294,27 @@ fn draw_graph_in_panel(
             }
         }
     }
+
     graph_state.needs_redraw = false;
     graph_state.last_entry_count = global_history.records.len();
 
+    // Se non ci sono dati, esci
+    if global_history.records.is_empty() {
+        return;
+    }
+
+    // --- 2. CONFIGURAZIONE LAYOUT ---
     for content_entity in content_query.iter() {
-        // ... (Definizione margini e dimensioni invariata) ...
         let margin_left = 40.0;
         let margin_bottom = 30.0;
         let margin_top = 20.0;
         let margin_right = 20.0;
+
         let graph_width = (graph_state.size.x - margin_left - margin_right).max(1.0);
-        let graph_height = (graph_state.size.y - 30.0 - margin_bottom - margin_top).max(1.0);
+        let graph_height = (graph_state.size.y - margin_bottom - margin_top).max(1.0);
 
         commands.entity(content_entity).with_children(|parent| {
-            // ... (Disegno Sfondo, Assi e check "In attesa di dati" invariati) ...
+            // Sfondo semitrasparente
             parent.spawn(NodeBundle {
                 style: Style {
                     position_type: PositionType::Absolute,
@@ -2317,241 +2324,167 @@ fn draw_graph_in_panel(
                     height: Val::Px(graph_height),
                     ..default()
                 },
-                background_color: Color::rgba(0.0, 0.0, 0.0, 0.3).into(),
+                background_color: Color::rgba(0.0, 0.0, 0.0, 0.5).into(),
                 ..default()
             });
-            parent.spawn(NodeBundle {
-                style: Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(margin_left),
-                    bottom: Val::Px(margin_bottom),
-                    width: Val::Px(2.0),
-                    height: Val::Px(graph_height),
-                    ..default()
-                },
-                background_color: Color::WHITE.into(),
-                ..default()
-            });
-            parent.spawn(NodeBundle {
-                style: Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(margin_left),
-                    bottom: Val::Px(margin_bottom),
-                    width: Val::Px(graph_width),
-                    height: Val::Px(2.0),
-                    ..default()
-                },
-                background_color: Color::WHITE.into(),
-                ..default()
-            });
-            if global_history.records.len() < 2 {
-                parent.spawn(
-                    TextBundle::from_section(
-                        "In attesa di dati...",
-                        TextStyle {
-                            font_size: 20.0,
-                            color: Color::GRAY,
-                            ..default()
-                        },
-                    )
-                    .with_style(Style {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(margin_left + 10.0),
-                        top: Val::Px(50.0),
-                        ..default()
-                    }),
-                );
-                return;
+
+            // --- 3. ALGORITMO DI BUCKETING (AGGREGAZIONE) ---
+            // Definiamo quanti "pixel" o "colonne" visive vogliamo al massimo.
+            // 2.0 pixel di larghezza per barra è un buon compromesso tra densità e performance.
+            let bar_width_px = 2.0;
+            let max_bars = (graph_width / bar_width_px).floor() as usize;
+
+            let total_records = global_history.records.len();
+
+            // Calcoliamo la dimensione del chunk (quanti dati reali finiscono in una barra visiva)
+            // Se abbiamo meno dati delle barre disponibili, chunk_size sarà 1.
+            let chunk_size = (total_records as f32 / max_bars as f32).ceil() as usize;
+            let chunk_size = chunk_size.max(1);
+
+            // Dati aggregati da disegnare
+            struct AggregatedPoint {
+                avg: f32,
+                max: u32,
+                min: u32,
             }
 
-            // --- CALCOLO RANGE DATI ---
-            let min_gen = global_history.records.first().map(|e| e.gen).unwrap_or(0) as f32;
-            let max_gen = global_history.records.last().map(|e| e.gen).unwrap_or(1) as f32;
-            let range_gen = (max_gen - min_gen).max(1.0);
-            let max_score = global_history
+            let mut visual_points = Vec::new();
+
+            // Calcolo del MAX SCORE globale per la scala Y
+            let global_max_score = global_history
                 .records
                 .iter()
-                .map(|e| e.max_score)
+                .map(|r| r.max_score)
                 .max()
                 .unwrap_or(10)
                 .max(10) as f32;
 
-            // Helper X (invariato)
-            let get_x = |gen: u32| -> f32 {
-                margin_left + ((gen as f32 - min_gen) / range_gen * graph_width)
-            };
+            // Iteriamo sui chunk
+            for chunk in global_history.records.chunks(chunk_size) {
+                if chunk.is_empty() {
+                    continue;
+                }
 
-            // --- LA FIX E' QUI ---
-            // Prima: let get_y = |val: f32| -> f32 { let ratio = (val / max_score)... }
-            // Adesso: Accetta `scale_max` come parametro!
-            let get_y = |val: f32, scale_max: f32| -> f32 {
-                let ratio = (val / scale_max).clamp(0.0, 1.0);
-                margin_bottom + (ratio * graph_height)
-            };
+                // QUI sta la magia: invece di prendere il primo elemento,
+                // calcoliamo le statistiche del chunk.
+                let max_in_chunk = chunk.iter().map(|r| r.max_score).max().unwrap_or(0);
+                let min_in_chunk = chunk.iter().map(|r| r.min_score).min().unwrap_or(0);
+                let sum_avg: f32 = chunk.iter().map(|r| r.avg_score).sum();
+                let avg_in_chunk = sum_avg / chunk.len() as f32;
 
-            // --- DISEGNO LINEE ---
-            for i in 0..global_history.records.len().saturating_sub(1) {
-                let e1 = &global_history.records[i];
-                let e2 = &global_history.records[i + 1];
-                let x1 = get_x(e1.gen);
-                let x2 = get_x(e2.gen);
-                let width = (x2 - x1).max(1.0);
+                visual_points.push(AggregatedPoint {
+                    avg: avg_in_chunk,
+                    max: max_in_chunk,
+                    min: min_in_chunk,
+                });
+            }
 
-                // Definizione datasets con i loro fattori di scala specifici
-                // Nota: Usiamo max_score e avg_score dalla nuova struct GenerationRecord
-                let sets = [
-                    (
-                        e1.max_score as f32,
-                        e2.max_score as f32,
-                        Color::rgb(1.0, 0.3, 0.3),
-                        max_score,
-                    ),
-                    (
-                        e1.avg_score,
-                        e2.avg_score,
-                        Color::rgb(0.3, 1.0, 0.3),
-                        max_score,
-                    ),
-                    // La linea blu usa snake_count come scala massima
-                    (
-                        e1.min_score as f32,
-                        e2.min_score as f32,
-                        Color::rgb(0.3, 0.5, 1.0),
-                        max_score, // <--- CAMBIA QUESTO (Era parallel_config.snake_count)
-                    ),
-                ];
+            // --- 4. RENDERING UNIFORME ---
+            let num_visual_points = visual_points.len();
+            // Ricalcoliamo la larghezza esatta per riempire tutto lo spazio
+            let exact_bar_width = graph_width / num_visual_points as f32;
 
-                for (val1, val2, color, scale_max) in sets {
-                    // --- USARE IL PARAMETRO scale_max QUI ---
-                    let y1 = get_y(val1, scale_max);
-                    let y2 = get_y(val2, scale_max);
+            for (i, point) in visual_points.iter().enumerate() {
+                let x_pos = margin_left + (i as f32 * exact_bar_width);
 
-                    // (Resto del disegno segmenti invariato)
+                // Funzione helper per la Y
+                let get_height = |val: f32| -> f32 {
+                    let ratio = (val / global_max_score).clamp(0.0, 1.0);
+                    ratio * graph_height
+                };
+
+                let h_max = get_height(point.max as f32);
+                let h_avg = get_height(point.avg);
+                let h_min = get_height(point.min as f32);
+
+                // Disegniamo 3 layer per ogni "colonna" temporale
+                // Usiamo un leggero gap tra le barre se sono larghe, altrimenti no
+                let display_width = if exact_bar_width > 2.0 {
+                    exact_bar_width - 1.0
+                } else {
+                    exact_bar_width
+                };
+
+                // 1. Barra del MASSIMO (Rosso scuro/trasparente background)
+                // Rappresenta il potenziale raggiunto in quel periodo
+                if h_max > 0.0 {
                     parent.spawn(NodeBundle {
                         style: Style {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(x1),
-                            bottom: Val::Px(y1),
-                            width: Val::Px(width),
-                            height: Val::Px(2.0),
+                            left: Val::Px(x_pos),
+                            bottom: Val::Px(margin_bottom),
+                            width: Val::Px(display_width),
+                            height: Val::Px(h_max),
                             ..default()
                         },
-                        background_color: color.into(),
+                        background_color: Color::rgba(1.0, 0.2, 0.2, 0.3).into(), // Rosso semitrasparente
                         ..default()
                     });
-                    let h_diff = (y2 - y1).abs();
-                    if h_diff > 0.5 {
-                        parent.spawn(NodeBundle {
-                            style: Style {
-                                position_type: PositionType::Absolute,
-                                left: Val::Px(x2),
-                                bottom: Val::Px(y1.min(y2)),
-                                width: Val::Px(2.0),
-                                height: Val::Px(h_diff + 2.0),
-                                ..default()
-                            },
-                            background_color: color.into(),
+
+                    // "Tappo" del massimo (pixel solido in alto per vedere bene lo spike)
+                    parent.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x_pos),
+                            bottom: Val::Px(margin_bottom + h_max - 1.0), // In cima alla barra
+                            width: Val::Px(display_width),
+                            height: Val::Px(display_width.max(2.0)), // Un quadratino visibile
                             ..default()
-                        });
-                    }
+                        },
+                        background_color: Color::rgba(1.0, 0.2, 0.2, 1.0).into(), // Rosso solido
+                        ..default()
+                    });
+                }
+
+                // 2. Barra della MEDIA (Verde)
+                // Sovrapposta, mostra la consistenza
+                if h_avg > 0.0 {
+                    parent.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x_pos),
+                            bottom: Val::Px(margin_bottom),
+                            width: Val::Px(display_width),
+                            height: Val::Px(h_avg),
+                            ..default()
+                        },
+                        background_color: Color::rgba(0.2, 1.0, 0.2, 0.5).into(),
+                        ..default()
+                    });
+                }
+
+                // 3. Barra del MINIMO (Blu) - opzionale, per vedere i fail
+                if h_min > 0.0 {
+                    parent.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x_pos),
+                            bottom: Val::Px(margin_bottom),
+                            width: Val::Px(display_width),
+                            height: Val::Px(h_min),
+                            ..default()
+                        },
+                        background_color: Color::rgba(0.3, 0.3, 1.0, 0.6).into(),
+                        ..default()
+                    });
                 }
             }
 
-            // === LEGENDA DEI COLORI ===
-            let legend_y = margin_bottom - 5.0;
-
-            let legend_start_x = margin_left;
-            let item_spacing = (graph_width / 3.0).max(80.0);
-
-            // Max Score - Rosso
-            let x = legend_start_x;
-            parent.spawn(NodeBundle {
-                style: Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(x),
-                    bottom: Val::Px(legend_y - 8.0),
-                    width: Val::Px(12.0),
-                    height: Val::Px(12.0),
-                    ..default()
-                },
-                background_color: Color::rgb(1.0, 0.3, 0.3).into(),
-                ..default()
-            });
+            // --- 5. ETICHETTE E TESTI ---
+            // Max Score Label
             parent.spawn(
                 TextBundle::from_section(
-                    "Max Score",
+                    format!("Max: {:.0}", global_max_score),
                     TextStyle {
-                        font_size: 11.0,
-                        color: Color::rgb(0.8, 0.8, 0.8),
+                        font_size: 12.0,
+                        color: Color::GRAY,
                         ..default()
                     },
                 )
                 .with_style(Style {
                     position_type: PositionType::Absolute,
-                    left: Val::Px(x + 16.0),
-                    bottom: Val::Px(legend_y - 8.0),
-                    ..default()
-                }),
-            );
-
-            // Avg Score - Verde
-            let x = legend_start_x + item_spacing;
-            parent.spawn(NodeBundle {
-                style: Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(x),
-                    bottom: Val::Px(legend_y - 8.0),
-                    width: Val::Px(12.0),
-                    height: Val::Px(12.0),
-                    ..default()
-                },
-                background_color: Color::rgb(0.3, 1.0, 0.3).into(),
-                ..default()
-            });
-            parent.spawn(
-                TextBundle::from_section(
-                    "Avg Score",
-                    TextStyle {
-                        font_size: 11.0,
-                        color: Color::rgb(0.8, 0.8, 0.8),
-                        ..default()
-                    },
-                )
-                .with_style(Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(x + 16.0),
-                    bottom: Val::Px(legend_y - 8.0),
-                    ..default()
-                }),
-            );
-
-            // Min Score - Blu
-            let x = legend_start_x + (item_spacing * 2.0);
-            parent.spawn(NodeBundle {
-                style: Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(x),
-                    bottom: Val::Px(legend_y - 8.0),
-                    width: Val::Px(12.0),
-                    height: Val::Px(12.0),
-                    ..default()
-                },
-                background_color: Color::rgb(0.3, 0.5, 1.0).into(),
-                ..default()
-            });
-            parent.spawn(
-                TextBundle::from_section(
-                    "Min Score",
-                    TextStyle {
-                        font_size: 11.0,
-                        color: Color::rgb(0.8, 0.8, 0.8),
-                        ..default()
-                    },
-                )
-                .with_style(Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(x + 16.0),
-                    bottom: Val::Px(legend_y - 8.0),
+                    left: Val::Px(margin_left),
+                    top: Val::Px(margin_top),
                     ..default()
                 }),
             );
