@@ -1,26 +1,23 @@
 use bevy::prelude::*;
 use burn::{
-    backend::{
-        wgpu::{Wgpu, WgpuDevice}, // Rimosso AutoGraphicsApi non necessario
-        Autodiff,
-    },
-    module::Module,
+    backend::{ndarray::NdArrayDevice, Autodiff, NdArray},
+    module::Module, // ← questa riga mancava
     nn::loss::MseLoss,
-    optim::{
-        adaptor::OptimizerAdaptor, Adam, AdamConfig, GradientsParams, Optimizer, SimpleOptimizer,
-    },
-    record::{BinFileRecorder, FullPrecisionSettings, Recorder},
-    tensor::{backend::Backend, Int, Tensor},
+    optim::{AdamConfig, GradientsParams, Optimizer},
+    record::{FullPrecisionSettings, NamedMpkFileRecorder},
+    tensor::{Int, Tensor},
 };
 use std::collections::VecDeque;
 
 use crate::model::DqnModel;
 use crate::snake::{BATCH_SIZE, MEMORY_SIZE, STATE_SIZE, TARGET_UPDATE_FREQ};
 
-// FIX 1: Definizione Backend aggiornata per Burn 0.16
-// Wgpu ora ha default corretti (GraphicsApi, f32, i32) che evitano l'errore di FloatElement
-type MyBackend = Autodiff<Wgpu>;
-type MyDevice = <MyBackend as Backend>::Device;
+type MyBackend = Autodiff<NdArray>;
+type MyDevice = NdArrayDevice;
+
+// OptimizerAdaptor e Adam sono inferiti dal tipo restituito da AdamConfig::new().init()
+type MyOptimizer =
+    burn::optim::adaptor::OptimizerAdaptor<burn::optim::Adam, DqnModel<MyBackend>, MyBackend>;
 
 pub type Experience = ([f32; STATE_SIZE], usize, f32, [f32; STATE_SIZE], bool);
 
@@ -66,14 +63,12 @@ impl ReplayBuffer {
     }
 
     pub fn sample(&self, batch_size: usize) -> Vec<Experience> {
-        use rand::seq::SliceRandom;
+        use rand::seq::index;
         let mut rng = rand::thread_rng();
-        self.buffer
+        let len = self.buffer.len();
+        index::sample(&mut rng, len, batch_size)
             .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .choose_multiple(&mut rng, batch_size)
-            .cloned()
+            .map(|i| self.buffer[i])
             .collect()
     }
 
@@ -87,7 +82,7 @@ pub struct DqnAgent {
     pub config: AgentConfig,
     pub online_model: DqnModel<MyBackend>,
     pub target_model: DqnModel<MyBackend>,
-    pub optimizer: OptimizerAdaptor<Adam, DqnModel<MyBackend>, MyBackend>,
+    pub optimizer: MyOptimizer,
     pub replay_buffer: ReplayBuffer,
     pub epsilon: f32,
     pub loss: f32,
@@ -96,22 +91,17 @@ pub struct DqnAgent {
     pub device: MyDevice,
 }
 
-// FIX 2: Implementazione unsafe di Sync per Bevy
-// I tensori Burn/WGPU usano interni non-Sync (RefCell/OnceCell).
-// Poiché Bevy gestisce l'accesso esclusivo tramite ResMut<DqnAgent>,
-// e non stiamo usando l'agente su thread multipli raw, questo è accettabile.
+// NdArray usa RefCell internamente → non è Sync di default.
+// Bevy accede tramite ResMut<DqnAgent> (accesso esclusivo), quindi è sicuro.
 unsafe impl Sync for DqnAgent {}
 
 impl DqnAgent {
     pub fn new(config: AgentConfig) -> Self {
-        // FIX 3: Sostituito BestAvailable (deprecato) con Default
-        let device = WgpuDevice::default();
-        println!("🚀 Initializing DqnAgent on device: {:?}", device);
+        let device = NdArrayDevice::Cpu;
+        println!("🚀 Initializing DqnAgent on NdArray CPU");
 
         let online_model = DqnModel::new(&device);
         let target_model = online_model.clone();
-
-        // Configurazione Optimizer
         let optimizer = AdamConfig::new().init();
 
         Self {
@@ -129,70 +119,42 @@ impl DqnAgent {
     }
 
     pub fn select_action(&self, state: [f32; STATE_SIZE]) -> usize {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-
-        if rng.gen::<f32>() < self.epsilon {
-            rng.gen_range(0..3)
-        } else {
-            // Inference diretta
-            let q_values = self.online_model.forward_single(state, &self.device);
-            q_values
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap()
-        }
+        self.select_actions_batch(vec![state])[0]
     }
 
-    /// Batch action selection for multiple states
-    /// Returns a vector of action indices, one for each input state
     pub fn select_actions_batch(&self, states: Vec<[f32; STATE_SIZE]>) -> Vec<usize> {
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let batch_size = states.len();
-
-        // Vector to store results
-        let mut actions = vec![0; batch_size];
-
-        // Track which indices need neural network inference (non-random)
+        let mut actions = vec![0usize; batch_size];
         let mut indices_to_infer: Vec<usize> = Vec::new();
         let mut states_to_infer: Vec<[f32; STATE_SIZE]> = Vec::new();
 
         for (i, _) in states.iter().enumerate() {
             if rng.gen::<f32>() < self.epsilon {
-                // Random action for exploration
                 actions[i] = rng.gen_range(0..3);
             } else {
-                // Mark for neural network inference
                 indices_to_infer.push(i);
                 states_to_infer.push(states[i]);
             }
         }
 
-        // If nothing to infer (all random), return immediately
         if states_to_infer.is_empty() {
             return actions;
         }
 
-        // BATCH INFERENCE: Single GPU pass for all non-random states
         let q_values_batch = self
             .online_model
             .forward_batch(&states_to_infer, &self.device);
 
-        // Assign computed actions to correct indices
         for (batch_idx, q_values) in q_values_batch.iter().enumerate() {
             let original_idx = indices_to_infer[batch_idx];
-
-            // Argmax: select action with highest Q-value
             let best_action = q_values
                 .iter()
                 .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .map(|(i, _)| i)
                 .unwrap();
-
             actions[original_idx] = best_action;
         }
 
@@ -207,7 +169,6 @@ impl DqnAgent {
         self.epsilon = (self.epsilon * self.config.epsilon_decay).max(self.config.epsilon_min);
     }
 
-    /// TRAINING SU GPU (Double DQN)
     pub fn train(&mut self) {
         if self.replay_buffer.len() < BATCH_SIZE {
             return;
@@ -226,38 +187,48 @@ impl DqnAgent {
             next_states.extend_from_slice(&ns);
             actions.push(a as i32);
             rewards.push(r);
-            dones.push(if d { 1.0 } else { 0.0 });
+            dones.push(if d { 1.0f32 } else { 0.0 });
         }
 
-        // Creazione tensori con TensorData per specificare correttamente le dimensioni
-        let state_data = burn::tensor::TensorData::new(states, [BATCH_SIZE, STATE_SIZE]);
-        let state_tensor = Tensor::<MyBackend, 2>::from_data(state_data, &self.device);
+        let state_tensor = Tensor::<MyBackend, 2>::from_data(
+            burn::tensor::TensorData::new(states, [BATCH_SIZE, STATE_SIZE]),
+            &self.device,
+        );
+        let next_state_tensor = Tensor::<MyBackend, 2>::from_data(
+            burn::tensor::TensorData::new(next_states, [BATCH_SIZE, STATE_SIZE]),
+            &self.device,
+        );
+        let action_tensor = Tensor::<MyBackend, 2, Int>::from_data(
+            burn::tensor::TensorData::new(actions, [BATCH_SIZE, 1]),
+            &self.device,
+        );
+        let reward_tensor = Tensor::<MyBackend, 1>::from_data(
+            burn::tensor::TensorData::new(rewards, [BATCH_SIZE]),
+            &self.device,
+        );
+        let done_tensor = Tensor::<MyBackend, 1>::from_data(
+            burn::tensor::TensorData::new(dones, [BATCH_SIZE]),
+            &self.device,
+        );
 
-        let next_state_data = burn::tensor::TensorData::new(next_states, [BATCH_SIZE, STATE_SIZE]);
-        let next_state_tensor = Tensor::<MyBackend, 2>::from_data(next_state_data, &self.device);
-
-        let action_data = burn::tensor::TensorData::new(actions, [BATCH_SIZE, 1]);
-        let action_tensor = Tensor::<MyBackend, 2, Int>::from_data(action_data, &self.device);
-
-        let reward_data = burn::tensor::TensorData::new(rewards, [BATCH_SIZE]);
-        let reward_tensor = Tensor::<MyBackend, 1>::from_data(reward_data, &self.device);
-
-        let done_data = burn::tensor::TensorData::new(dones, [BATCH_SIZE]);
-        let done_tensor = Tensor::<MyBackend, 1>::from_data(done_data, &self.device);
-
-        // Double DQN Logic
+        // Double DQN — target model (separato per stabilità)
         let next_q_target = self
             .target_model
             .forward(next_state_tensor.clone())
             .detach();
-        let next_q_online = self.online_model.forward(next_state_tensor).detach();
-        let next_actions = next_q_online.argmax(1).reshape([BATCH_SIZE, 1]);
 
+        // Un solo forward pass online su [next_states; states] concatenati
+        let combined_input = Tensor::cat(vec![next_state_tensor, state_tensor], 0);
+        let all_q_online = self.online_model.forward(combined_input);
+
+        let next_q_online = all_q_online.clone().slice([0..BATCH_SIZE, 0..3]).detach();
+        let q_values = all_q_online.slice([BATCH_SIZE..BATCH_SIZE * 2, 0..3]);
+
+        let next_actions = next_q_online.argmax(1).reshape([BATCH_SIZE, 1]);
         let max_next_q = next_q_target.gather(1, next_actions).squeeze(1);
         let target_q =
             reward_tensor + (max_next_q * done_tensor.neg().add_scalar(1.0) * self.config.gamma);
 
-        let q_values = self.online_model.forward(state_tensor);
         let current_q = q_values.gather(1, action_tensor).squeeze(1);
 
         let loss = MseLoss::new().forward(
@@ -283,36 +254,31 @@ impl DqnAgent {
         self.iterations += 1;
     }
 
-    /// SALVATAGGIO MODELLO
     pub fn save(&mut self, path: &str) -> std::io::Result<()> {
-        println!("💾 Saving model via Burn Recorder to: {}", path);
-        let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-
+        println!("💾 Saving model to: {}", path);
+        // NamedMpkFileRecorder è il recorder file-based disponibile senza feature wgpu
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
         self.online_model
             .clone()
             .save_file(path, &recorder)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-
+            .map_err(|e: burn::record::RecorderError| {
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            })?;
         Ok(())
     }
 
-    /// CARICAMENTO MODELLO
     pub fn load(path: &str) -> std::io::Result<Self> {
-        println!("📂 Loading model via Burn Recorder from: {}", path);
+        println!("📂 Loading model from: {}", path);
         let config = AgentConfig::new(1);
         let mut agent = DqnAgent::new(config);
-
-        let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-
-        // Carica i pesi nel modello online
+        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
         agent.online_model = agent
             .online_model
             .load_file(path, &recorder, &agent.device)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-
-        // Sincronizza il target model
+            .map_err(|e: burn::record::RecorderError| {
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            })?;
         agent.target_model = agent.online_model.clone();
-
         Ok(agent)
     }
 }

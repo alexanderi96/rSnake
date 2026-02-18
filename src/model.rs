@@ -42,6 +42,8 @@ impl<B: Backend> DqnModel<B> {
     }
 
     /// Forward pass for a single state (inference)
+    /// Note: Not used in hot loop - use forward_batch for batch inference to avoid GPU sync overhead
+    #[allow(dead_code)]
     pub fn forward_single(&self, state: [f32; 8], device: &B::Device) -> [f32; 3] {
         let input = Tensor::<B, 2>::from_floats([state], device);
         let output = self.forward(input);

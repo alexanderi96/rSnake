@@ -327,6 +327,7 @@ pub fn handle_input(
     mut app_exit_events: EventWriter<AppExit>,
     mut game_stats: ResMut<GameStats>,
     mut training_session: ResMut<TrainingSession>,
+    mut agent: ResMut<DqnAgent>,
     config: Res<GameConfig>,
     game: Res<GameState>,
     mut window_settings: ResMut<WindowSettings>,
@@ -342,6 +343,15 @@ pub fn handle_input(
 
     if keyboard_input.just_pressed(KeyCode::Escape) {
         game_stats.update(&game);
+
+        // FIX: Save brain model before exiting
+        let brain_path = crate::snake::brain_path();
+        println!("💾 Saving brain to: {}", brain_path.display());
+        if let Err(e) = agent.save(brain_path.to_str().unwrap_or("brain.bin")) {
+            eprintln!("⚠️ Error saving brain: {}", e);
+        } else {
+            println!("✅ Brain saved successfully!");
+        }
 
         let current_session_duration = Instant::now().duration_since(app_start_time.0);
         training_session.total_time_secs = current_session_duration.as_secs();
@@ -800,6 +810,21 @@ fn handle_generation_end(
     game_stats.total_generations = game.total_iterations;
     game_stats.high_score = game_stats.high_score.max(game.high_score);
     game_stats.total_games_played += parallel_config.snake_count as u64;
+
+    // FIX: Auto-save brain every N generations
+    if game.total_iterations % crate::snake::AUTO_SAVE_INTERVAL == 0 {
+        let brain_path = crate::snake::brain_path();
+        println!(
+            "💾 Auto-saving brain (gen {}) to: {}",
+            game.total_iterations,
+            brain_path.display()
+        );
+        if let Err(e) = agent.save(brain_path.to_str().unwrap_or("brain.bin")) {
+            eprintln!("⚠️ Error auto-saving brain: {}", e);
+        } else {
+            println!("✅ Brain auto-saved successfully!");
+        }
+    }
 
     let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
     let active_count = game.snakes.iter().filter(|s| !s.is_game_over).count();

@@ -9,6 +9,7 @@ pub const BATCH_SIZE: usize = 256;
 pub const TARGET_UPDATE_FREQ: usize = 100;
 pub const STATE_SIZE: usize = 8;
 pub const TRAIN_INTERVAL: usize = 100;
+pub const AUTO_SAVE_INTERVAL: u32 = 100; // Auto-save brain every N generations
 
 /// Configurazione parallelism - numero serpenti = core CPU
 #[derive(Resource, Clone)]
@@ -18,7 +19,7 @@ pub struct ParallelConfig {
 
 impl ParallelConfig {
     pub fn new() -> Self {
-        let snake_count = 50; //rayon::current_num_threads();
+        let snake_count = 100; //rayon::current_num_threads();
         println!(
             "CPU cores: {}, Parallel snakes: {}",
             snake_count, snake_count
@@ -527,6 +528,11 @@ pub fn get_state_egocentric(
     let head = snake.snake[0];
     let ego_dirs = get_egocentric_directions(snake.direction);
 
+    // OPTIMIZATION: Build HashSet of body segments once for O(1) lookups
+    // skip(1) excludes the head since we're checking positions ahead of it
+    let body_set: std::collections::HashSet<(i32, i32)> =
+        snake.snake.iter().skip(1).map(|p| (p.x, p.y)).collect();
+
     // Obstacle sensors (indices 0-3)
     for (i, (dx, dy)) in ego_dirs.iter().enumerate() {
         let mut dist_val = 0.0;
@@ -541,10 +547,8 @@ pub fn get_state_egocentric(
                 || curr_y < 0
                 || curr_y >= grid.height
                 || grid_map.get(curr_x, curr_y) != 0
-                || snake.snake.contains(&Position {
-                    x: curr_x,
-                    y: curr_y,
-                })
+                || body_set.contains(&(curr_x, curr_y))
+            // O(1) instead of O(n)
             {
                 dist_val = 1.0 / (d as f32);
                 break;

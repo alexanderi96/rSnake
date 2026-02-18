@@ -5,7 +5,12 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.13"
-burn = { version = "0.16", features = ["wgpu", "train", "autodiff"] }
+
+# NOTA: rimosso default-features = false — era la causa di tutti gli errori.
+# Disabilitava std, train, record e altri moduli interni necessari per optim/recorder.
+# Le feature "ndarray" + "autodiff" si affiancano ai default (std, train, ecc.)
+burn = { version = "0.16", features = ["ndarray", "autodiff"] }
+
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -13,7 +18,7 @@ rayon = "1.8"
 chrono = "0.4"
 uuid = { version = "1.8", features = ["v4"] }
 
-# Profiling dependencies
+# Profiling (opzionale)
 pprof = { version = "0.13", features = ["flamegraph", "protobuf-codec"], optional = true }
 
 [features]
