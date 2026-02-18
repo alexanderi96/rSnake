@@ -5,6 +5,9 @@ mod model;
 mod snake;
 mod ui;
 
+#[cfg(feature = "profiling")]
+mod profiling;
+
 use bevy::app::AppExit;
 use bevy::prelude::*;
 // use bevy::window::WindowMode; // Non strettamente necessario se non lo usi qui, ma lo lascio
@@ -18,6 +21,10 @@ use snake::{
 use ui::{GraphPanelState, UiPlugin, WindowSettings};
 
 fn main() {
+    // Initialize profiling if feature is enabled
+    #[cfg(feature = "profiling")]
+    let _profiling_guard = profiling::ProfilingGuard::new();
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {

@@ -13,7 +13,21 @@ rayon = "1.8"
 chrono = "0.4"
 uuid = { version = "1.8", features = ["v4"] }
 
+# Profiling dependencies
+pprof = { version = "0.13", features = ["flamegraph", "protobuf-codec"], optional = true }
+
+[features]
+default = []
+profiling = ["pprof"]
+
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
+
+[profile.profiling]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+debug = true

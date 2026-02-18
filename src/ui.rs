@@ -578,26 +578,31 @@ fn run_simulation_step(
         return;
     }
 
-    // Parallel inference for action selection (simplified - using random for now)
-    let decisions: Vec<Decision> = active_snakes
+    // 1. Calcolo degli stati in parallelo (Veloce)
+    let states: Vec<(usize, [f32; 8])> = active_snakes
         .par_iter()
         .map(|&snake_idx| {
             let snake = &game.snakes[snake_idx];
             let state = get_state_egocentric(snake, grid_map, grid);
+            (snake_idx, state)
+        })
+        .collect();
 
-            let mut rng = rand::thread_rng();
-            // For now, use random actions until we integrate Burn inference
-            let action_idx = if rng.gen::<f32>() < agent.epsilon {
-                rng.gen_range(0..3)
-            } else {
-                rng.gen_range(0..3) // Placeholder for Q-network inference
-            };
+    // 2. Decisione dell'Agente con BATCH INFERENCE
+    // Estrai solo gli stati puri per l'agente
+    let state_vectors: Vec<[f32; 8]> = states.iter().map(|(_, s)| *s).collect();
 
-            Decision {
-                snake_idx,
-                action_idx,
-                state,
-            }
+    // Ottieni tutte le decisioni in UN COLPO SOLO (batch GPU)
+    let action_indices = agent.select_actions_batch(state_vectors);
+
+    // Ricostruisci le decisioni associate all'ID del serpente
+    let decisions: Vec<Decision> = states
+        .iter()
+        .zip(action_indices.into_iter())
+        .map(|((snake_idx, state), action_idx)| Decision {
+            snake_idx: *snake_idx,
+            action_idx,
+            state: *state,
         })
         .collect();
 
@@ -712,8 +717,8 @@ fn run_simulation_step(
 
     agent.iterations += 1;
     if agent.iterations % TRAIN_INTERVAL as u32 == 0 {
-        // Training will be implemented with Burn
-        agent.train_cpu_stub();
+        // Chiama la funzione reale implementata in agent.rs
+        agent.train();
     }
 
     if all_dead {
@@ -789,7 +794,7 @@ fn handle_generation_end(
     game.total_iterations += 1;
     agent.iterations = game.total_iterations;
 
-    agent.train_cpu_stub();
+    agent.train(); // Training finale sulla memoria accumulata
     agent.decay_epsilon();
 
     game_stats.total_generations = game.total_iterations;

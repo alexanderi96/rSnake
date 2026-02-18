@@ -58,10 +58,11 @@ impl<B: Backend> DqnModel<B> {
             return Vec::new();
         }
 
-        // Convert to tensor [batch_size, 8]
+        // Convert to tensor [batch_size, 8] using TensorData for correct dimensions
         let flat: Vec<f32> = states.iter().flatten().copied().collect();
         let batch_size = states.len();
-        let input = Tensor::<B, 2>::from_floats(flat.as_slice(), device).reshape([batch_size, 8]);
+        let state_data = burn::tensor::TensorData::new(flat, [batch_size, 8]);
+        let input = Tensor::<B, 2>::from_data(state_data, device);
 
         let output = self.forward(input);
         let data = output.to_data();
