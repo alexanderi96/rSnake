@@ -1,0 +1,105 @@
+use burn::{
+    module::Module,
+    nn::{Linear, LinearConfig, Relu},
+    tensor::{backend::Backend, Tensor},
+};
+use serde::{Deserialize, Serialize};
+
+/// DQN Model using Burn
+/// Architecture: 8 inputs -> 128 hidden -> 3 outputs (Q-values for [Left, Right, Straight])
+#[derive(Module, Debug)]
+pub struct DqnModel<B: Backend> {
+    pub input: Linear<B>,
+    pub hidden: Linear<B>,
+    pub output: Linear<B>,
+    pub activation: Relu,
+}
+
+impl<B: Backend> DqnModel<B> {
+    /// Create a new DQN model with the given device
+    pub fn new(device: &B::Device) -> Self {
+        let input = LinearConfig::new(8, 128).init(device);
+        let hidden = LinearConfig::new(128, 128).init(device);
+        let output = LinearConfig::new(128, 3).init(device);
+
+        Self {
+            input,
+            hidden,
+            output,
+            activation: Relu::new(),
+        }
+    }
+
+    /// Forward pass through the network
+    /// Input: [batch_size, 8] - normalized sensor readings
+    /// Output: [batch_size, 3] - Q-values for each action
+    pub fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
+        let x = self.input.forward(input);
+        let x = self.activation.forward(x);
+        let x = self.hidden.forward(x);
+        let x = self.activation.forward(x);
+        self.output.forward(x)
+    }
+
+    /// Forward pass for a single state (inference)
+    pub fn forward_single(&self, state: [f32; 8], device: &B::Device) -> [f32; 3] {
+        let input = Tensor::<B, 2>::from_floats([state], device);
+        let output = self.forward(input);
+        let data = output.to_data();
+        let values = data.as_slice::<f32>().unwrap();
+        [values[0], values[1], values[2]]
+    }
+
+    /// Forward pass for batch inference
+    /// states: Vec of [f32; 8] sensor readings
+    /// Returns: Vec of [f32; 3] Q-values
+    pub fn forward_batch(&self, states: &[[f32; 8]], device: &B::Device) -> Vec<[f32; 3]> {
+        if states.is_empty() {
+            return Vec::new();
+        }
+
+        // Convert to tensor [batch_size, 8]
+        let flat: Vec<f32> = states.iter().flatten().copied().collect();
+        let batch_size = states.len();
+        let input = Tensor::<B, 2>::from_floats(flat.as_slice(), device).reshape([batch_size, 8]);
+
+        let output = self.forward(input);
+        let data = output.to_data();
+        let values = data.as_slice::<f32>().unwrap();
+
+        // Convert back to Vec<[f32; 3]>
+        (0..batch_size)
+            .map(|i| {
+                let offset = i * 3;
+                [values[offset], values[offset + 1], values[offset + 2]]
+            })
+            .collect()
+    }
+}
+
+/// Serializable model state for saving/loading
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelState {
+    pub input_weights: Vec<f32>,
+    pub input_bias: Vec<f32>,
+    pub hidden_weights: Vec<f32>,
+    pub hidden_bias: Vec<f32>,
+    pub output_weights: Vec<f32>,
+    pub output_bias: Vec<f32>,
+}
+
+impl ModelState {
+    /// Save to JSON file
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(&self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load from JSON file
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        let state: ModelState = serde_json::from_str(&json)?;
+        Ok(state)
+    }
+}
