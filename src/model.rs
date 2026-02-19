@@ -5,8 +5,10 @@ use burn::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::snake::STATE_SIZE;
+
 /// DQN Model using Burn
-/// Architecture: 8 inputs -> 128 hidden -> 3 outputs (Q-values for [Left, Right, Straight])
+/// Architecture: 34 inputs -> 128 hidden -> 3 outputs (Q-values for [Left, Right, Straight])
 #[derive(Module, Debug)]
 pub struct DqnModel<B: Backend> {
     pub input: Linear<B>,
@@ -18,7 +20,7 @@ pub struct DqnModel<B: Backend> {
 impl<B: Backend> DqnModel<B> {
     /// Create a new DQN model with the given device
     pub fn new(device: &B::Device) -> Self {
-        let input = LinearConfig::new(8, 128).init(device);
+        let input = LinearConfig::new(STATE_SIZE as usize, 128).init(device);
         let hidden = LinearConfig::new(128, 128).init(device);
         let output = LinearConfig::new(128, 3).init(device);
 
@@ -31,7 +33,7 @@ impl<B: Backend> DqnModel<B> {
     }
 
     /// Forward pass through the network
-    /// Input: [batch_size, 8] - normalized sensor readings
+    /// Input: [batch_size, 34] - normalized sensor readings with frame stacking
     /// Output: [batch_size, 3] - Q-values for each action
     pub fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.input.forward(input);
@@ -44,7 +46,7 @@ impl<B: Backend> DqnModel<B> {
     /// Forward pass for a single state (inference)
     /// Note: Not used in hot loop - use forward_batch for batch inference to avoid GPU sync overhead
     #[allow(dead_code)]
-    pub fn forward_single(&self, state: [f32; 8], device: &B::Device) -> [f32; 3] {
+    pub fn forward_single(&self, state: [f32; STATE_SIZE], device: &B::Device) -> [f32; 3] {
         let input = Tensor::<B, 2>::from_floats([state], device);
         let output = self.forward(input);
         let data = output.to_data();
@@ -53,17 +55,17 @@ impl<B: Backend> DqnModel<B> {
     }
 
     /// Forward pass for batch inference
-    /// states: Vec of [f32; 8] sensor readings
+    /// states: Vec of [f32; 34] sensor readings
     /// Returns: Vec of [f32; 3] Q-values
-    pub fn forward_batch(&self, states: &[[f32; 8]], device: &B::Device) -> Vec<[f32; 3]> {
+    pub fn forward_batch(&self, states: &[[f32; STATE_SIZE]], device: &B::Device) -> Vec<[f32; 3]> {
         if states.is_empty() {
             return Vec::new();
         }
 
-        // Convert to tensor [batch_size, 8] using TensorData for correct dimensions
+        // Convert to tensor [batch_size, STATE_SIZE] using TensorData for correct dimensions
         let flat: Vec<f32> = states.iter().flatten().copied().collect();
         let batch_size = states.len();
-        let state_data = burn::tensor::TensorData::new(flat, [batch_size, 8]);
+        let state_data = burn::tensor::TensorData::new(flat, [batch_size, STATE_SIZE]);
         let input = Tensor::<B, 2>::from_data(state_data, device);
 
         let output = self.forward(input);

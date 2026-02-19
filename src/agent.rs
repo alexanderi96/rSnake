@@ -20,7 +20,7 @@ type MyDevice = WgpuDevice;
 type MyOptimizer =
     burn::optim::adaptor::OptimizerAdaptor<burn::optim::Adam, DqnModel<MyBackend>, MyBackend>;
 
-pub type Experience = ([f32; STATE_SIZE], usize, f32, [f32; STATE_SIZE], bool);
+pub type Experience = ([f32; 34], usize, f32, [f32; 34], bool);
 
 #[derive(Clone, Debug)]
 pub struct AgentConfig {

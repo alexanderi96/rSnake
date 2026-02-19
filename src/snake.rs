@@ -8,7 +8,10 @@ pub const BLOCK_SIZE: f32 = 20.0;
 pub const MEMORY_SIZE: usize = 100_000;
 pub const BATCH_SIZE: usize = 256;
 pub const TARGET_UPDATE_FREQ: usize = 100;
-pub const STATE_SIZE: usize = 8;
+/// Base state size for a single frame (8 obstacle + 8 target direction + 1 distance)
+pub const BASE_STATE_SIZE: usize = 17;
+/// Total state size with frame stacking (current frame + previous frame)
+pub const STATE_SIZE: usize = BASE_STATE_SIZE * 2; // 34
 pub const AUTO_SAVE_INTERVAL: u32 = 100; // Auto-save brain every N generations
 
 /// Numero di thread/core del sistema - inizializzato una sola volta
@@ -406,6 +409,8 @@ pub struct SnakeInstance {
     pub score: u32,
     pub color: Color,
     pub epsilon: f32,
+    /// Previous frame state for temporal frame stacking [f32; 17]
+    pub previous_state: [f32; BASE_STATE_SIZE],
 }
 
 impl SnakeInstance {
@@ -461,6 +466,7 @@ impl SnakeInstance {
             score: 0,
             color: Self::generate_random_color(),
             epsilon,
+            previous_state: [0.0; BASE_STATE_SIZE],
         }
     }
 
@@ -478,6 +484,7 @@ impl SnakeInstance {
             y: (spawn_pos.y + 5) % grid.height,
         };
         self.color = Self::generate_random_color();
+        self.previous_state = [0.0; BASE_STATE_SIZE];
     }
 }
 
@@ -552,65 +559,182 @@ pub fn get_egocentric_directions(current_dir: Direction) -> [(i32, i32); 4] {
     ]
 }
 
-/// Get 8-dimensional egocentric state for DQN
-/// [obstacle_front, obstacle_right, obstacle_back, obstacle_left,
-///  food_front, food_right, food_back, food_left]
-pub fn get_state_egocentric(
+/// 8 compass directions (N, NE, E, SE, S, SW, W, NW)
+/// These are normalized direction vectors for raycasting
+const RAY_DIRECTIONS: [(i32, i32); 8] = [
+    (0, 1),   // N
+    (1, 1),   // NE
+    (1, 0),   // E
+    (1, -1),  // SE
+    (0, -1),  // S
+    (-1, -1), // SW
+    (-1, 0),  // W
+    (-1, 1),  // NW
+];
+
+/// Get egocentric ray directions based on snake's current heading.
+/// Returns the 8 compass directions rotated so that index 0 is always "forward".
+fn get_egocentric_rays(direction: Direction) -> [(i32, i32); 8] {
+    // Base directions: [N, NE, E, SE, S, SW, W, NW]
+    // We rotate this array based on snake's direction so that:
+    // - Index 0 is always Forward (where snake is looking)
+    // - Index 2 is always Right
+    // - Index 4 is always Back
+    // - Index 6 is always Left
+    match direction {
+        Direction::Up => RAY_DIRECTIONS, // N is forward
+        Direction::Right => [
+            RAY_DIRECTIONS[2], // E is forward (was index 2)
+            RAY_DIRECTIONS[3], // SE
+            RAY_DIRECTIONS[4], // S
+            RAY_DIRECTIONS[5], // SW
+            RAY_DIRECTIONS[6], // W
+            RAY_DIRECTIONS[7], // NW
+            RAY_DIRECTIONS[0], // N
+            RAY_DIRECTIONS[1], // NE
+        ],
+        Direction::Down => [
+            RAY_DIRECTIONS[4], // S is forward (was index 4)
+            RAY_DIRECTIONS[5], // SW
+            RAY_DIRECTIONS[6], // W
+            RAY_DIRECTIONS[7], // NW
+            RAY_DIRECTIONS[0], // N
+            RAY_DIRECTIONS[1], // NE
+            RAY_DIRECTIONS[2], // E
+            RAY_DIRECTIONS[3], // SE
+        ],
+        Direction::Left => [
+            RAY_DIRECTIONS[6], // W is forward (was index 6)
+            RAY_DIRECTIONS[7], // NW
+            RAY_DIRECTIONS[0], // N
+            RAY_DIRECTIONS[1], // NE
+            RAY_DIRECTIONS[2], // E
+            RAY_DIRECTIONS[3], // SE
+            RAY_DIRECTIONS[4], // S
+            RAY_DIRECTIONS[5], // SW
+        ],
+    }
+}
+
+/// Calculate current 17 sensors in pure read-only mode.
+/// This function is thread-safe and can be used with par_iter().
+///
+/// SENSORS ARE EGOCENTRIC (First-Person):
+/// - Sensor 0 (N) is always where the snake is looking (Forward)
+/// - Sensor 2 (E) is always to the snake's Right
+/// - Sensor 4 (S) is always Behind the snake
+/// - Sensor 6 (W) is always to the snake's Left
+///
+/// Sensors 0-7: Obstacle raycasting (8 directions) - value = 1.0 / distance
+/// Sensors 8-15: Target direction dot products (8 directions) - value = max(0.0, dot_product)
+/// Sensor 16: Target distance - value = 1.0 / absolute_distance
+pub fn get_current_17_state(
     snake: &SnakeInstance,
     grid_map: &GridMap,
     grid: &GridDimensions,
-) -> [f32; STATE_SIZE] {
-    let mut state = [0.0f32; STATE_SIZE];
+) -> [f32; BASE_STATE_SIZE] {
+    let mut current_state = [0.0f32; BASE_STATE_SIZE];
     let head = snake.snake[0];
-    let ego_dirs = get_egocentric_directions(snake.direction);
 
-    // OPTIMIZATION: Rimossa allocazione HashSet - Ora usa grid_map.get() per lookup O(1)
-    // Il GridMap contiene già la posizione di tutti i segmenti dei serpenti
+    // Get egocentric directions - rotated based on snake's heading
+    let ego_rays = get_egocentric_rays(snake.direction);
 
-    // Obstacle sensors (indices 0-3)
-    for (i, (dx, dy)) in ego_dirs.iter().enumerate() {
-        let mut dist_val = 0.0;
+    // === SENSORS 0-7: OBSTACLE RAYCASTING ===
+    // Cast rays in 8 directions and find first obstacle
+    for (i, (dx, dy)) in ego_rays.iter().enumerate() {
         let mut curr_x = head.x;
         let mut curr_y = head.y;
+        let mut distance = 1; // Start at 1 (adjacent cell)
 
-        for d in 1..=15 {
+        // Cast ray until we hit an obstacle or go out of bounds
+        loop {
             curr_x += dx;
             curr_y += dy;
-            // Usa grid_map.get() per O(1) lookup senza allocazioni heap
+
+            // Check bounds or collision
             if curr_x < 0
                 || curr_x >= grid.width
                 || curr_y < 0
                 || curr_y >= grid.height
                 || grid_map.is_collision(curr_x, curr_y, snake.id)
             {
-                dist_val = 1.0 / (d as f32);
+                // Found obstacle - value is inverse of distance
+                current_state[i] = 1.0 / (distance as f32);
+                break;
+            }
+
+            distance += 1;
+
+            // Safety limit - if we somehow don't hit anything in a reasonable distance
+            if distance > grid.width.max(grid.height) {
+                current_state[i] = 0.0;
                 break;
             }
         }
-        state[i] = dist_val;
     }
 
-    // Food sensors (indices 4-7) - Relative Radar System
-    // Transform food position from world coordinates to snake-relative coordinates
-    let world_dx = (snake.food.x - head.x) as f32;
-    let world_dy = (snake.food.y - head.y) as f32;
+    // === SENSORS 8-15: TARGET DIRECTION DOT PRODUCTS ===
+    // Calculate normalized vector from head to target
+    let target_dx = (snake.food.x - head.x) as f32;
+    let target_dy = (snake.food.y - head.y) as f32;
+    let target_dist = (target_dx * target_dx + target_dy * target_dy).sqrt();
 
-    // Get the snake's forward and right vectors in world space
-    let (forward_x, forward_y) = ego_dirs[0]; // Forward direction in world coords
-    let (right_x, right_y) = ego_dirs[1]; // Right direction in world coords
+    let target_vec = if target_dist > 0.0 {
+        (target_dx / target_dist, target_dy / target_dist)
+    } else {
+        (0.0, 0.0) // On top of target
+    };
 
-    // Rotate world vector to snake-relative coordinate system
-    // Relative X: projection onto Right axis (positive = right, negative = left)
-    // Relative Y: projection onto Forward axis (positive = forward, negative = back)
-    let relative_x = world_dx * (right_x as f32) + world_dy * (right_y as f32);
-    let relative_y = world_dx * (forward_x as f32) + world_dy * (forward_y as f32);
+    // Calculate dot product with each of the 8 EGOCENTRIC direction vectors
+    for (i, (dx, dy)) in ego_rays.iter().enumerate() {
+        // Normalize diagonal vectors (NE, SE, SW, NW)
+        let dir_len = ((*dx * *dx + *dy * *dy) as f32).sqrt();
+        let dir_vec = (*dx as f32 / dir_len, *dy as f32 / dir_len);
 
-    state[4] = if relative_y > 0.0 { 1.0 } else { 0.0 }; // Cibo Davanti
-    state[5] = if relative_x > 0.0 { 1.0 } else { 0.0 }; // Cibo a Destra
-    state[6] = if relative_y < 0.0 { 1.0 } else { 0.0 }; // Cibo Dietro
-    state[7] = if relative_x < 0.0 { 1.0 } else { 0.0 }; // Cibo a Sinistra
+        // Dot product = how aligned is the target with this direction
+        let dot_product = target_vec.0 * dir_vec.0 + target_vec.1 * dir_vec.1;
 
-    state
+        // Only positive values (target is in that general direction)
+        current_state[8 + i] = dot_product.max(0.0);
+    }
+
+    // === SENSOR 16: TARGET DISTANCE ===
+    current_state[16] = if target_dist > 0.0 {
+        1.0 / target_dist
+    } else {
+        1.0 // Maximum value when on top of target
+    };
+
+    current_state
+}
+
+/// Get 34-dimensional egocentric state for DQN with frame stacking
+/// First 17 values: current frame sensors
+/// Last 17 values: previous frame sensors
+///
+/// NOTE: This function updates previous_state. For parallel computation,
+/// use get_current_17_state() + manual frame stacking instead.
+pub fn get_state_egocentric(
+    snake: &mut SnakeInstance,
+    grid_map: &GridMap,
+    grid: &GridDimensions,
+) -> [f32; STATE_SIZE] {
+    // Calculate current 17 sensors (pure computation)
+    let current_state = get_current_17_state(snake, grid_map, grid);
+
+    // === FRAME STACKING: CONCATENATE CURRENT + PREVIOUS ===
+    let mut full_state = [0.0f32; STATE_SIZE];
+
+    // First 17: current state
+    full_state[0..BASE_STATE_SIZE].copy_from_slice(&current_state);
+
+    // Last 17: previous state
+    full_state[BASE_STATE_SIZE..STATE_SIZE].copy_from_slice(&snake.previous_state);
+
+    // Update previous state for next frame
+    snake.previous_state = current_state;
+
+    full_state
 }
 
 pub fn spawn_food(snake: &SnakeInstance, grid: &GridDimensions) -> Position {

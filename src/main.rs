@@ -16,10 +16,10 @@ use std::thread;
 
 use agent::{AgentConfig, DqnAgent};
 use snake::{
-    get_parallel_threads, get_state_egocentric, get_train_interval, spawn_food, CollisionSettings,
+    get_current_17_state, get_state_egocentric, get_train_interval, spawn_food, CollisionSettings,
     GameConfig, GameState, GameStats, GenerationRecord, GlobalTrainingHistory, GridDimensions,
     GridMap, ParallelConfig, Position, RenderConfig, SegmentPool, TrainingSession, TrainingStats,
-    BATCH_SIZE, BLOCK_SIZE,
+    BASE_STATE_SIZE, BATCH_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
 use types::{GameSnapshot, SnakeSnapshot};
 use ui::{ControlSender, ControlSignal, GraphPanelState, UiPlugin, WindowSettings};
@@ -335,10 +335,10 @@ fn build_snapshot(
 
 struct StepResult {
     snake_idx: usize,
-    state: [f32; 8],
+    state: [f32; 34],
     action_idx: usize,
     reward: f32,
-    next_state: [f32; 8],
+    next_state: [f32; 34],
     done: bool,
     ate_food: bool,
 }
@@ -346,7 +346,7 @@ struct StepResult {
 struct Decision {
     snake_idx: usize,
     action_idx: usize,
-    state: [f32; 8],
+    state: [f32; 34],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -394,18 +394,37 @@ fn run_simulation_step(
         return;
     }
 
-    // 1. Calcolo degli stati in parallelo (con epsilon individuali)
-    let states: Vec<(usize, [f32; 8], f32)> = active_snakes
+    // 1. COMPUTE PHASE - Calcolo parallelo puro (sola lettura)
+    // Restituisce: (snake_idx, stato_completo_34, nuovi_17_sensori, epsilon)
+    let computed_data: Vec<(usize, [f32; STATE_SIZE], [f32; BASE_STATE_SIZE], f32)> = active_snakes
         .par_iter()
         .map(|&snake_idx| {
             let snake = &game.snakes[snake_idx];
-            let state = get_state_egocentric(snake, grid_map, grid);
-            (snake_idx, state, snake.epsilon)
+
+            // Calcola solo i 17 sensori attuali in sola lettura (pure function)
+            let current_17 = get_current_17_state(snake, grid_map, grid);
+
+            // Costruisci l'array finale da 34 concatenando attuale e precedente
+            let mut state_34 = [0.0f32; STATE_SIZE];
+            state_34[..BASE_STATE_SIZE].copy_from_slice(&current_17);
+            state_34[BASE_STATE_SIZE..STATE_SIZE].copy_from_slice(&snake.previous_state);
+
+            (snake_idx, state_34, current_17, snake.epsilon)
         })
         .collect();
 
+    // 2. APPLY PHASE - Aggiornamento sequenziale veloce
+    let mut states: Vec<(usize, [f32; STATE_SIZE], f32)> = Vec::with_capacity(computed_data.len());
+    for (snake_idx, state_34, current_17, epsilon) in computed_data {
+        // Aggiorna la memoria del serpente per il frame successivo
+        game.snakes[snake_idx].previous_state = current_17;
+
+        // Prepara i dati per il batch inference
+        states.push((snake_idx, state_34, epsilon));
+    }
+
     // 2. Decisione dell'Agente con BATCH INFERENCE (usa epsilon individuali)
-    let states_with_eps: Vec<([f32; 8], f32)> = states.iter().map(|(_, s, e)| (*s, *e)).collect();
+    let states_with_eps: Vec<([f32; 34], f32)> = states.iter().map(|(_, s, e)| (*s, *e)).collect();
     let action_indices = agent.select_actions_batch(states_with_eps);
 
     // Ricostruisci le decisioni
@@ -465,15 +484,12 @@ fn run_simulation_step(
         } || snake_ref.snake.contains(&new_head);
 
         if collision {
-            reward = -1.0; // 2. Bilanciato a -1.0 per stabilità
+            reward = -1.0; // Death penalty
             done = true;
             snake_ref.is_game_over = true;
         } else if new_head == snake_ref.food {
-            // 3. Reward Scaling: Bonus basato sulla lunghezza del serpente.
-            // Esempio: serpente lungo 1 = bonus 0.0. Serpente lungo 20 = bonus ~1.0
-            let length_bonus = (snake_ref.snake.len() as f32 / 20.0).min(1.0);
-
-            reward = 1.0 + length_bonus; // Reward dinamico tra 1.0 e 2.0
+            // Constant food reward (removed length-based scaling for stable convergence)
+            reward = 1.0;
 
             snake_ref.snake.push_front(new_head);
             snake_ref.score += 1;
@@ -505,7 +521,7 @@ fn run_simulation_step(
             state,
             action_idx,
             reward,
-            next_state: get_state_egocentric(&game.snakes[snake_idx], grid_map, grid),
+            next_state: get_state_egocentric(snake_ref, grid_map, grid),
             done,
             ate_food: new_head == game.snakes[snake_idx].food,
         });
