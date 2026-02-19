@@ -21,7 +21,7 @@ use snake::{
     RenderConfig, SegmentPool, TrainingSession, TrainingStats, BLOCK_SIZE, TRAIN_INTERVAL,
 };
 use types::{GameSnapshot, SnakeSnapshot};
-use ui::{GraphPanelState, UiPlugin, WindowSettings};
+use ui::{ControlSender, ControlSignal, GraphPanelState, UiPlugin, WindowSettings};
 
 /// Resource wrapper for the crossbeam receiver
 #[derive(Resource)]
@@ -35,9 +35,12 @@ fn main() {
     // Create crossbeam channel for communication between RL thread and Bevy
     let (tx, rx) = bounded::<GameSnapshot>(2); // Buffer piccolo per non accumulare lag visivo
 
+    // Create control channel for sending commands to RL thread
+    let (control_tx, control_rx) = bounded::<ControlSignal>(10);
+
     // Avvia il thread RL separato
     thread::spawn(move || {
-        run_rl_thread(tx);
+        run_rl_thread(tx, control_rx);
     });
 
     App::new()
@@ -51,8 +54,9 @@ fn main() {
             ..default()
         }))
         .add_event::<AppExit>()
-        // Inserisci il receiver come resource prima di tutto
+        // Inserisci i receiver come resources prima di tutto
         .insert_resource(RenderReceiver(rx))
+        .insert_resource(ControlSender(control_tx))
         // Register plugins first (they add systems but don't run yet)
         .add_plugins(SnakePlugin)
         .add_plugins(UiPlugin)
@@ -139,7 +143,7 @@ fn setup(
 }
 
 /// Thread RL principale - Producer nel pattern Producer-Consumer
-fn run_rl_thread(tx: Sender<GameSnapshot>) {
+fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) {
     println!("🧠 RL Thread started - Running simulation at maximum speed");
 
     // --- AGENT INITIALIZATION ---
@@ -166,7 +170,7 @@ fn run_rl_thread(tx: Sender<GameSnapshot>) {
 
     // Create grid and game state
     // Usa dimensioni di default per il thread RL
-    let grid = GridDimensions {
+    let mut grid = GridDimensions {
         width: 40,
         height: 30,
     };
@@ -182,10 +186,44 @@ fn run_rl_thread(tx: Sender<GameSnapshot>) {
     let mut game_stats = GameStats::new(parallel_config.snake_count);
     let collision_settings = CollisionSettings::default();
     let mut grid_map = GridMap::new(grid.width, grid.height);
-    let start_time = std::time::Instant::now();
 
     // Loop principale del training
     loop {
+        // Controlla se ci sono segnali di controllo
+        while let Ok(signal) = control_rx.try_recv() {
+            match signal {
+                ControlSignal::SaveBrain => {
+                    let brain_path = snake::brain_path();
+                    println!("💾 Saving brain to: {}", brain_path.display());
+                    if let Err(e) = agent.save(brain_path.to_str().unwrap_or("brain.bin")) {
+                        eprintln!("⚠️ Error saving brain: {}", e);
+                    } else {
+                        println!("✅ Brain saved successfully!");
+                    }
+                }
+                ControlSignal::GridResized(new_width, new_height) => {
+                    println!("📐 Grid resized to {}x{}", new_width, new_height);
+                    grid.width = new_width;
+                    grid.height = new_height;
+                    grid_map = GridMap::new(new_width, new_height);
+                    // Reset snakes to fit new grid
+                    for snake in game_state.snakes.iter_mut() {
+                        snake.reset(&grid);
+                    }
+                }
+                ControlSignal::Exit => {
+                    println!("🛑 Exit signal received, saving brain...");
+                    let brain_path = snake::brain_path();
+                    if let Err(e) = agent.save(brain_path.to_str().unwrap_or("brain.bin")) {
+                        eprintln!("⚠️ Error saving brain on exit: {}", e);
+                    } else {
+                        println!("✅ Brain saved on exit!");
+                    }
+                    return;
+                }
+            }
+        }
+
         // Esegui step di simulazione
         run_simulation_step(
             &mut game_state,
@@ -201,7 +239,7 @@ fn run_rl_thread(tx: Sender<GameSnapshot>) {
         );
 
         // Costruisci snapshot per il rendering
-        let snapshot = build_snapshot(&game_state, &grid);
+        let snapshot = build_snapshot(&game_state, &grid, &global_history);
 
         // Invia a Bevy (se il canale è pieno, sovrascrivi o ignora per non bloccare il training)
         let _ = tx.try_send(snapshot);
@@ -213,7 +251,11 @@ fn run_rl_thread(tx: Sender<GameSnapshot>) {
 }
 
 /// Costruisce uno snapshot leggibile dal renderer
-fn build_snapshot(game_state: &GameState, grid: &GridDimensions) -> GameSnapshot {
+fn build_snapshot(
+    game_state: &GameState,
+    grid: &GridDimensions,
+    global_history: &GlobalTrainingHistory,
+) -> GameSnapshot {
     let snakes: Vec<SnakeSnapshot> = game_state
         .snakes
         .iter()
@@ -233,6 +275,7 @@ fn build_snapshot(game_state: &GameState, grid: &GridDimensions) -> GameSnapshot
         grid_height: grid.height,
         high_score: game_state.high_score,
         generation: game_state.total_iterations,
+        history_records: global_history.records.clone(),
     }
 }
 

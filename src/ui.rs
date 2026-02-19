@@ -2,15 +2,28 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
+use crossbeam_channel::{bounded, Sender};
+use std::thread;
 
 use crate::snake::{
-    AppStartTime, CollisionSettings, Direction, Food, GameConfig, GameState, GameStats,
-    GenerationRecord, GlobalTrainingHistory, GridDimensions, GridMap, MeshCache, ParallelConfig,
-    Position, RenderConfig, SegmentPool, SnakeId, SnakeInstance, SnakeSegment, TrainingSession,
-    TrainingStats, BLOCK_SIZE,
+    AppStartTime, CollisionSettings, Food, GameConfig, GameState, GameStats, GlobalTrainingHistory,
+    GridDimensions, GridMap, MeshCache, Position, RenderConfig, SegmentPool, SnakeId,
+    SnakeInstance, TrainingSession, TrainingStats, BLOCK_SIZE,
 };
-use crate::types::{GameSnapshot, SnakeSnapshot};
+use crate::types::GameSnapshot;
 use crate::RenderReceiver;
+
+/// Segnali di controllo per il thread RL
+#[derive(Clone, Debug)]
+pub enum ControlSignal {
+    SaveBrain,
+    GridResized(i32, i32),
+    Exit,
+}
+
+/// Resource wrapper for the control channel sender
+#[derive(Resource)]
+pub struct ControlSender(pub Sender<ControlSignal>);
 
 /// UI Component markers
 #[derive(Component)]
@@ -89,16 +102,8 @@ impl Plugin for UiPlugin {
             is_fullscreen: false,
         })
         .insert_resource(GraphPanelState::default())
-        .add_systems(
-            Update,
-            (
-                handle_input,
-                on_window_resize,
-                render_system,
-                toggle_graph_panel,
-            ),
-        )
-        .add_systems(Update, update_stats_ui.after(render_system))
+        .add_systems(Update, (handle_input, on_window_resize, render_system))
+        .add_systems(Update, update_stats_ui)
         .add_systems(Update, update_graph_panel_visibility)
         .add_systems(Update, handle_graph_panel_interactions)
         .add_systems(
@@ -307,9 +312,14 @@ pub fn update_stats_ui(
         } else {
             "OFF"
         };
+        let graph_status = if GraphPanelState::default().visible {
+            "ON"
+        } else {
+            "OFF"
+        };
         cmd_text.sections[0].value = format!(
-            "[R]Render:{}  [G]Graph  [F]Fullscreen  [C]Collision:{}  [ESC]Exit",
-            render_status, collision_status
+            "[R]Render:{}  [G]Graph:{}  [F]Fullscreen  [C]Collision:{}  [ESC]Exit",
+            render_status, graph_status, collision_status
         );
     }
 }
@@ -319,20 +329,26 @@ pub fn handle_input(
     mut app_exit_events: EventWriter<AppExit>,
     game_stats: Res<GameStats>,
     training_session: Res<TrainingSession>,
-    config: Res<GameConfig>,
-    game: Res<GameState>,
+    app_start_time: Res<AppStartTime>,
+    global_history: Res<GlobalTrainingHistory>,
     mut window_settings: ResMut<WindowSettings>,
     mut windows: Query<&mut Window>,
     mut collision_settings: ResMut<CollisionSettings>,
     mut render_config: ResMut<RenderConfig>,
     mut graph_state: ResMut<GraphPanelState>,
-    app_start_time: Res<AppStartTime>,
-    global_history: Res<GlobalTrainingHistory>,
+    control_sender: Res<ControlSender>,
 ) {
     use crate::snake::get_or_create_run_dir;
     use std::time::Instant;
 
     if keyboard_input.just_pressed(KeyCode::Escape) {
+        // Segnala al thread RL di salvare il brain
+        println!("💾 Signaling RL thread to save brain...");
+        let _ = control_sender.0.try_send(ControlSignal::SaveBrain);
+
+        // Attendi un momento per permettere il salvataggio
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
         let current_session_duration = Instant::now().duration_since(app_start_time.0);
         let total_training_time =
             std::time::Duration::from_secs(global_history.accumulated_time_secs)
@@ -378,8 +394,35 @@ pub fn handle_input(
     }
 
     if keyboard_input.just_pressed(KeyCode::KeyG) {
-        graph_state.visible = !graph_state.visible;
+        // Toggle grafico solo qui, rimosso dal sistema separato per evitare conflitti
+        if !graph_state.visible && !graph_state.fullscreen {
+            graph_state.visible = true;
+            graph_state.fullscreen = false;
+        } else if graph_state.visible && !graph_state.fullscreen {
+            graph_state.fullscreen = true;
+            if let Ok(window) = windows.get_single() {
+                graph_state.size = Vec2::new(window.width(), window.height() - 60.0);
+                graph_state.position = Vec2::new(0.0, 0.0);
+            }
+        } else {
+            graph_state.visible = false;
+            graph_state.fullscreen = false;
+        }
+
         graph_state.needs_redraw = true;
+
+        println!(
+            "Graph: {}",
+            if graph_state.visible {
+                if graph_state.fullscreen {
+                    "FULLSCREEN"
+                } else {
+                    "WINDOW"
+                }
+            } else {
+                "HIDDEN"
+            }
+        );
     }
 
     if keyboard_input.just_pressed(KeyCode::KeyF) {
@@ -403,6 +446,7 @@ pub fn on_window_resize(
     mut game: ResMut<GameState>,
     mut grid_map: ResMut<GridMap>,
     mut graph_state: ResMut<GraphPanelState>,
+    control_sender: Res<ControlSender>,
 ) {
     for event in resize_events.read() {
         let (new_width, new_height) =
@@ -415,6 +459,11 @@ pub fn on_window_resize(
         for snake in game.snakes.iter_mut() {
             snake.reset(&grid);
         }
+
+        // Segnala al thread RL le nuove dimensioni
+        let _ = control_sender
+            .0
+            .try_send(ControlSignal::GridResized(new_width, new_height));
 
         graph_state.needs_redraw = true;
         println!(
@@ -430,6 +479,7 @@ pub fn render_system(
     mut commands: Commands,
     receiver: Res<RenderReceiver>,
     mut game: ResMut<GameState>,
+    mut global_history: ResMut<GlobalTrainingHistory>,
     windows: Query<&Window>,
     mesh_cache: Res<MeshCache>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -466,6 +516,11 @@ pub fn render_system(
     // Aggiorna GameState dallo snapshot
     game.high_score = snapshot.high_score;
     game.total_iterations = snapshot.generation;
+
+    // Sincronizza la cronologia del training per il grafico
+    if !snapshot.history_records.is_empty() {
+        global_history.records = snapshot.history_records.clone();
+    }
 
     // Sincronizza i serpenti
     for (snapshot_snake, game_snake) in snapshot.snakes.iter().zip(game.snakes.iter_mut()) {
@@ -547,43 +602,6 @@ pub fn render_system(
             Food,
             SnakeId(snake_snapshot.id),
         ));
-    }
-}
-
-pub fn toggle_graph_panel(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut graph_state: ResMut<GraphPanelState>,
-    windows: Query<&Window>,
-) {
-    if keyboard_input.just_pressed(KeyCode::KeyG) {
-        if !graph_state.visible && !graph_state.fullscreen {
-            graph_state.visible = true;
-            graph_state.fullscreen = false;
-        } else if graph_state.visible && !graph_state.fullscreen {
-            graph_state.fullscreen = true;
-            if let Ok(window) = windows.get_single() {
-                graph_state.size = Vec2::new(window.width(), window.height() - 60.0);
-                graph_state.position = Vec2::new(0.0, 0.0);
-            }
-        } else {
-            graph_state.visible = false;
-            graph_state.fullscreen = false;
-        }
-
-        graph_state.needs_redraw = true;
-
-        println!(
-            "Graph: {}",
-            if graph_state.visible {
-                if graph_state.fullscreen {
-                    "FULLSCREEN"
-                } else {
-                    "WINDOW"
-                }
-            } else {
-                "HIDDEN"
-            }
-        );
     }
 }
 

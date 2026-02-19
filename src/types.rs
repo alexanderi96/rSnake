@@ -1,3 +1,4 @@
+use crate::snake::GenerationRecord;
 use bevy::prelude::Color;
 
 /// Lightweight snapshot for thread-safe communication between RL thread and Bevy renderer
@@ -8,6 +9,8 @@ pub struct GameSnapshot {
     pub grid_height: i32,
     pub high_score: u32,
     pub generation: u32,
+    /// Training history records for graph visualization
+    pub history_records: Vec<GenerationRecord>,
 }
 
 /// Snapshot of a single snake's state for rendering
