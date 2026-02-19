@@ -11,6 +11,8 @@ pub struct GameSnapshot {
     pub generation: u32,
     /// Training history records for graph visualization
     pub history_records: Vec<GenerationRecord>,
+    /// Total number of records in the current session
+    pub session_records_count: usize,
 }
 
 /// Snapshot of a single snake's state for rendering

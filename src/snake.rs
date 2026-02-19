@@ -4,11 +4,11 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 pub const BLOCK_SIZE: f32 = 20.0;
-pub const MEMORY_SIZE: usize = 5000;
+pub const MEMORY_SIZE: usize = 100_00;
 pub const BATCH_SIZE: usize = 256;
 pub const TARGET_UPDATE_FREQ: usize = 100;
 pub const STATE_SIZE: usize = 8;
-pub const TRAIN_INTERVAL: usize = 100;
+pub const TRAIN_INTERVAL: usize = 5;
 pub const AUTO_SAVE_INTERVAL: u32 = 100; // Auto-save brain every N generations
 
 /// Configurazione parallelism - numero serpenti = core CPU
@@ -255,6 +255,8 @@ impl Default for AppStartTime {
 pub struct GlobalTrainingHistory {
     pub records: Vec<GenerationRecord>,
     pub accumulated_time_secs: u64,
+    /// Number of records in the current session (from the RL thread)
+    pub current_session_records: usize,
 }
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
@@ -381,6 +383,7 @@ pub struct SnakeInstance {
     pub steps_without_food: u32,
     pub score: u32,
     pub color: Color,
+    pub epsilon: f32,
 }
 
 impl SnakeInstance {
@@ -407,11 +410,21 @@ impl SnakeInstance {
         (Position { x, y }, direction)
     }
 
-    pub fn new(id: usize, grid: &GridDimensions) -> Self {
+    pub fn new(id: usize, grid: &GridDimensions, total_snakes: usize) -> Self {
         let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
 
         let mut snake = VecDeque::new();
         snake.push_back(spawn_pos);
+
+        // Calcolo epsilon con distribuzione esponenziale (Ape-X style)
+        let min_eps = 0.01_f32;
+        let max_eps = 0.8_f32;
+        let epsilon = if total_snakes <= 1 {
+            min_eps
+        } else {
+            let progress = id as f32 / (total_snakes - 1) as f32;
+            min_eps * (max_eps / min_eps).powf(progress)
+        };
 
         Self {
             id,
@@ -425,6 +438,7 @@ impl SnakeInstance {
             steps_without_food: 0,
             score: 0,
             color: Self::generate_random_color(),
+            epsilon,
         }
     }
 
@@ -455,7 +469,7 @@ pub struct GameState {
 impl GameState {
     pub fn new(grid: &GridDimensions, snake_count: usize) -> Self {
         let snakes = (0..snake_count)
-            .map(|id| SnakeInstance::new(id, grid))
+            .map(|id| SnakeInstance::new(id, grid, snake_count))
             .collect();
         Self {
             high_score: 0,
@@ -569,17 +583,10 @@ pub fn get_state_egocentric(
     let relative_x = world_dx * (right_x as f32) + world_dy * (right_y as f32);
     let relative_y = world_dx * (forward_x as f32) + world_dy * (forward_y as f32);
 
-    // Calculate distance for normalization
-    let dist = (world_dx * world_dx + world_dy * world_dy).sqrt().max(1.0);
-    let inv_dist = 1.0 / dist; // 1.0 = adjacent, smaller = farther
-
-    // Sector-based food detection (Radar system)
-    // If food is in multiple sectors (diagonal), multiple inputs will be active
-    // giving the agent a clear directional vector to follow
-    state[4] = if relative_y > 0.0 { inv_dist } else { 0.0 }; // Food_Front
-    state[5] = if relative_x > 0.0 { inv_dist } else { 0.0 }; // Food_Right
-    state[6] = if relative_y < 0.0 { inv_dist } else { 0.0 }; // Food_Back
-    state[7] = if relative_x < 0.0 { inv_dist } else { 0.0 }; // Food_Left
+    state[4] = if relative_y > 0.0 { 1.0 } else { 0.0 }; // Cibo Davanti
+    state[5] = if relative_x > 0.0 { 1.0 } else { 0.0 }; // Cibo a Destra
+    state[6] = if relative_y < 0.0 { 1.0 } else { 0.0 }; // Cibo Dietro
+    state[7] = if relative_x < 0.0 { 1.0 } else { 0.0 }; // Cibo a Sinistra
 
     state
 }
@@ -674,13 +681,13 @@ pub fn get_or_create_run_dir() -> std::path::PathBuf {
         }
     }
 
-    let uuid = uuid::Uuid::new_v4().to_string();
-    let new_dir = runs_dir.join(&uuid);
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let new_dir = runs_dir.join(&timestamp);
     std::fs::create_dir_all(&new_dir).ok();
     let sessions_dir = new_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).ok();
 
-    println!("📂 Created new run: {}", uuid);
+    println!("📂 Created new run: {}", timestamp);
     new_dir
 }
 

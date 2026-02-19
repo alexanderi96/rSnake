@@ -24,9 +24,6 @@ pub type Experience = ([f32; STATE_SIZE], usize, f32, [f32; STATE_SIZE], bool);
 pub struct AgentConfig {
     pub learning_rate: f64,
     pub gamma: f32,
-    pub epsilon_start: f32,
-    pub epsilon_min: f32,
-    pub epsilon_decay: f32,
 }
 
 impl AgentConfig {
@@ -34,9 +31,6 @@ impl AgentConfig {
         Self {
             learning_rate: 1e-4,
             gamma: 0.99,
-            epsilon_start: 1.0,
-            epsilon_min: 0.01,
-            epsilon_decay: 0.995,
         }
     }
 }
@@ -83,7 +77,6 @@ pub struct DqnAgent {
     pub target_model: DqnModel<MyBackend>,
     pub optimizer: MyOptimizer,
     pub replay_buffer: ReplayBuffer,
-    pub epsilon: f32,
     pub loss: f32,
     pub target_update_counter: usize,
     pub iterations: u32,
@@ -105,7 +98,6 @@ impl DqnAgent {
             target_model,
             optimizer,
             replay_buffer: ReplayBuffer::new(MEMORY_SIZE),
-            epsilon: config.epsilon_start,
             loss: 0.0,
             target_update_counter: 0,
             iterations: 0,
@@ -113,24 +105,27 @@ impl DqnAgent {
         }
     }
 
-    pub fn select_action(&self, state: [f32; STATE_SIZE]) -> usize {
-        self.select_actions_batch(vec![state])[0]
+    pub fn select_action(&self, state: [f32; STATE_SIZE], epsilon: f32) -> usize {
+        self.select_actions_batch(vec![(state, epsilon)])[0]
     }
 
-    pub fn select_actions_batch(&self, states: Vec<[f32; STATE_SIZE]>) -> Vec<usize> {
+    pub fn select_actions_batch(
+        &self,
+        states_with_eps: Vec<([f32; STATE_SIZE], f32)>,
+    ) -> Vec<usize> {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        let batch_size = states.len();
+        let batch_size = states_with_eps.len();
         let mut actions = vec![0usize; batch_size];
         let mut indices_to_infer: Vec<usize> = Vec::new();
         let mut states_to_infer: Vec<[f32; STATE_SIZE]> = Vec::new();
 
-        for (i, _) in states.iter().enumerate() {
-            if rng.gen::<f32>() < self.epsilon {
+        for (i, (state, eps)) in states_with_eps.iter().enumerate() {
+            if rng.gen::<f32>() < *eps {
                 actions[i] = rng.gen_range(0..3);
             } else {
                 indices_to_infer.push(i);
-                states_to_infer.push(states[i]);
+                states_to_infer.push(*state);
             }
         }
 
@@ -158,10 +153,6 @@ impl DqnAgent {
 
     pub fn remember(&mut self, experience: Experience) {
         self.replay_buffer.push(experience);
-    }
-
-    pub fn decay_epsilon(&mut self) {
-        self.epsilon = (self.epsilon * self.config.epsilon_decay).max(self.config.epsilon_min);
     }
 
     pub fn train(&mut self) {

@@ -149,10 +149,14 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
     // --- AGENT INITIALIZATION ---
     let parallel_config = ParallelConfig::new();
     let agent_config = AgentConfig::new(parallel_config.snake_count);
-    let model_path = "brain.bin";
+    let brain_path_buf = snake::brain_path();
+    let model_path = brain_path_buf.to_str().unwrap_or("brain.bin");
 
     let mut agent = if std::path::Path::new(model_path).exists() {
-        println!("🔄 Found existing model, attempting to load...");
+        println!(
+            "🔄 Found existing model at {}, attempting to load...",
+            model_path
+        );
         match DqnAgent::load(model_path) {
             Ok(loaded_agent) => {
                 println!("✅ Model loaded successfully!");
@@ -186,6 +190,10 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
     let mut game_stats = GameStats::new(parallel_config.snake_count);
     let collision_settings = CollisionSettings::default();
     let mut grid_map = GridMap::new(grid.width, grid.height);
+
+    // Timer per tracking performance
+    let mut generation_start = std::time::Instant::now();
+    let mut generation_steps: u64 = 0;
 
     // Loop principale del training
     loop {
@@ -236,10 +244,20 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
             &collision_settings,
             &parallel_config,
             &mut grid_map,
+            &mut generation_start,
+            &mut generation_steps,
         );
 
+        // Incrementa contatore step
+        generation_steps += 1;
+
         // Costruisci snapshot per il rendering
-        let snapshot = build_snapshot(&game_state, &grid, &global_history);
+        let snapshot = build_snapshot(
+            &game_state,
+            &grid,
+            &global_history,
+            training_session.records.len(),
+        );
 
         // Invia a Bevy (se il canale è pieno, sovrascrivi o ignora per non bloccare il training)
         let _ = tx.try_send(snapshot);
@@ -255,6 +273,7 @@ fn build_snapshot(
     game_state: &GameState,
     grid: &GridDimensions,
     global_history: &GlobalTrainingHistory,
+    session_records_count: usize,
 ) -> GameSnapshot {
     let snakes: Vec<SnakeSnapshot> = game_state
         .snakes
@@ -276,6 +295,7 @@ fn build_snapshot(
         high_score: game_state.high_score,
         generation: game_state.total_iterations,
         history_records: global_history.records.clone(),
+        session_records_count,
     }
 }
 
@@ -307,6 +327,8 @@ fn run_simulation_step(
     collision_settings: &CollisionSettings,
     parallel_config: &ParallelConfig,
     grid_map: &mut GridMap,
+    generation_start: &mut std::time::Instant,
+    generation_steps: &mut u64,
 ) {
     use rand::Rng;
     use rayon::prelude::*;
@@ -332,29 +354,31 @@ fn run_simulation_step(
             session_file,
             parallel_config,
             grid,
+            generation_start,
+            generation_steps,
         );
         return;
     }
 
-    // 1. Calcolo degli stati in parallelo
-    let states: Vec<(usize, [f32; 8])> = active_snakes
+    // 1. Calcolo degli stati in parallelo (con epsilon individuali)
+    let states: Vec<(usize, [f32; 8], f32)> = active_snakes
         .par_iter()
         .map(|&snake_idx| {
             let snake = &game.snakes[snake_idx];
             let state = get_state_egocentric(snake, grid_map, grid);
-            (snake_idx, state)
+            (snake_idx, state, snake.epsilon)
         })
         .collect();
 
-    // 2. Decisione dell'Agente con BATCH INFERENCE
-    let state_vectors: Vec<[f32; 8]> = states.iter().map(|(_, s)| *s).collect();
-    let action_indices = agent.select_actions_batch(state_vectors);
+    // 2. Decisione dell'Agente con BATCH INFERENCE (usa epsilon individuali)
+    let states_with_eps: Vec<([f32; 8], f32)> = states.iter().map(|(_, s, e)| (*s, *e)).collect();
+    let action_indices = agent.select_actions_batch(states_with_eps);
 
     // Ricostruisci le decisioni
     let decisions: Vec<Decision> = states
         .iter()
         .zip(action_indices.into_iter())
-        .map(|((snake_idx, state), action_idx)| Decision {
+        .map(|((snake_idx, state, _epsilon), action_idx)| Decision {
             snake_idx: *snake_idx,
             action_idx,
             state: *state,
@@ -381,9 +405,6 @@ fn run_simulation_step(
         all_dead = false;
         let snake_ref = &mut game.snakes[snake_idx];
 
-        let old_dist_sq = ((snake_ref.snake[0].x - snake_ref.food.x).pow(2)
-            + (snake_ref.snake[0].y - snake_ref.food.y).pow(2)) as f32;
-
         // Apply action: 0=Left, 1=Right, 2=Straight
         match action_idx {
             0 => snake_ref.direction = snake_ref.direction.turn_left(),
@@ -398,8 +419,9 @@ fn run_simulation_step(
         };
 
         snake_ref.steps_without_food += 1;
-        // REWARD SHAPING: Sistema di reward bilanciato
-        let mut reward: f32 = -0.001; // Piccola penalità per step
+        // Reward semplice: solo reward per cibo e penalità per morte
+        // Niente micro-penalità per step o reward shaping sulla distanza (evita reward hacking)
+        let mut reward: f32 = -0.01; // NESSUNA penalità fissa per step
         let mut done = false;
 
         let collision = if collision_settings.snake_vs_snake {
@@ -409,11 +431,11 @@ fn run_simulation_step(
         } || snake_ref.snake.contains(&new_head);
 
         if collision {
-            reward = -1.0; // Morte: penalità bilanciata
+            reward = -10.0;
             done = true;
             snake_ref.is_game_over = true;
         } else if new_head == snake_ref.food {
-            reward = 1.0; // Cibo: reward positivo
+            reward = 10.0; // Pieno reward per il cibo
             snake_ref.snake.push_front(new_head);
             snake_ref.score += 1;
             if snake_ref.score > game.high_score {
@@ -423,23 +445,14 @@ fn run_simulation_step(
             snake_ref.steps_without_food = 0;
             grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
         } else {
-            // Reward shaping basato sulla distanza dal cibo
-            let new_dist_sq = ((new_head.x - snake_ref.food.x).pow(2)
-                + (new_head.y - snake_ref.food.y).pow(2)) as f32;
-
-            if new_dist_sq < old_dist_sq {
-                reward += 0.05; // Premio per avvicinarsi
-            } else {
-                reward -= 0.05; // Penalità per allontanarsi
-            }
-
+            // Aggiornamento coda senza reward calcolati sulla distanza
             let old_tail = snake_ref.snake.back().copied();
             snake_ref.snake.push_front(new_head);
             snake_ref.snake.pop_back();
 
-            // Timeout se non mangia
+            // Timeout: deve essere punitivo quanto il muro per non far preferire il girotondo
             if snake_ref.steps_without_food > (grid.width * grid.height) as u32 {
-                reward = -1.0;
+                reward = -11.0;
                 done = true;
                 snake_ref.is_game_over = true;
             }
@@ -486,6 +499,8 @@ fn run_simulation_step(
             session_file,
             parallel_config,
             grid,
+            generation_start,
+            generation_steps,
         );
     }
 }
@@ -500,6 +515,8 @@ fn handle_generation_end(
     session_file: &std::path::PathBuf,
     parallel_config: &ParallelConfig,
     grid: &GridDimensions,
+    generation_start: &mut std::time::Instant,
+    generation_steps: &mut u64,
 ) {
     let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
     game_stats.total_food_eaten += food_eaten as u64;
@@ -516,6 +533,9 @@ fn handle_generation_end(
     let min_score = current_scores.iter().copied().min().unwrap_or(0);
     let avg_score = current_scores.iter().sum::<u32>() as f32 / current_scores.len() as f32;
 
+    // Calcola la media degli epsilon dei serpenti (Ape-X distributed exploration)
+    let avg_epsilon = game.snakes.iter().map(|s| s.epsilon).sum::<f32>() / game.snakes.len() as f32;
+
     let record = GenerationRecord {
         gen: game.total_iterations,
         timestamp: std::time::SystemTime::now()
@@ -526,7 +546,7 @@ fn handle_generation_end(
         max_score,
         min_score,
         avg_loss: agent.loss,
-        epsilon: agent.epsilon,
+        epsilon: avg_epsilon,
     };
 
     global_history.records.push(record.clone());
@@ -543,7 +563,7 @@ fn handle_generation_end(
     agent.iterations = game.total_iterations;
 
     agent.train();
-    agent.decay_epsilon();
+    // Nota: decay_epsilon rimosso - usiamo epsilon statici individuali (Ape-X style)
 
     game_stats.total_generations = game.total_iterations;
     game_stats.high_score = game_stats.high_score.max(game.high_score);
@@ -564,18 +584,32 @@ fn handle_generation_end(
         }
     }
 
-    let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
     let active_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
+
+    // Calcola durata e steps/sec della generazione
+    let generation_duration = generation_start.elapsed();
+    let steps_per_second = if generation_duration.as_secs_f32() > 0.0 {
+        *generation_steps as f32 / generation_duration.as_secs_f32()
+    } else {
+        0.0
+    };
+
     println!(
-        "Gen: {}, Active: {}/{}, Total Score: {}, High: {}, Eps: {:.3}, Loss: {:.5}",
+        "Gen: {}, Active: {}/{}, Score: {:.1}, High: {}, AvgEps: {:.3}, Loss: {:.5}, Time: {:.2}s, Steps/sec: {:.0}",
         game.total_iterations,
         active_count,
         parallel_config.snake_count,
-        total_score,
-        game.high_score,
-        agent.epsilon,
-        agent.loss
+        avg_score,
+        max_score,
+        avg_epsilon,
+        agent.loss,
+        generation_duration.as_secs_f32(),
+        steps_per_second
     );
+
+    // Reset timer e contatore per la prossima generazione
+    *generation_start = std::time::Instant::now();
+    *generation_steps = 0;
 }
 
 pub struct SnakePlugin;

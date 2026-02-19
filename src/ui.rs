@@ -327,7 +327,7 @@ pub fn update_stats_ui(
 pub fn handle_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut app_exit_events: EventWriter<AppExit>,
-    game_stats: Res<GameStats>,
+    game: Res<GameState>, // USA GAMESTATE INVECE DI GAMESTATS
     training_session: Res<TrainingSession>,
     app_start_time: Res<AppStartTime>,
     global_history: Res<GlobalTrainingHistory>,
@@ -355,14 +355,17 @@ pub fn handle_input(
                 + current_session_duration;
 
         println!("\n=== SESSION SUMMARY ===");
-        println!("Total generations: {}", game_stats.total_generations);
-        println!("High Score: {}", game_stats.high_score);
+        println!("Total generations: {}", game.total_iterations); // Usa game.
+        println!("High Score: {}", game.high_score); // Usa game.
         println!(
             "Current session time: {}s",
             current_session_duration.as_secs()
         );
         println!("Total time (runtime): {}s", total_training_time.as_secs());
-        println!("Records in session: {}", training_session.records.len());
+        println!(
+            "Records in session: {}",
+            global_history.current_session_records
+        );
         println!("Saved to: {}", get_or_create_run_dir().display());
         println!("====================\n");
 
@@ -521,6 +524,8 @@ pub fn render_system(
     if !snapshot.history_records.is_empty() {
         global_history.records = snapshot.history_records.clone();
     }
+    // Sincronizza il numero di record della sessione corrente
+    global_history.current_session_records = snapshot.session_records_count;
 
     // Sincronizza i serpenti
     for (snapshot_snake, game_snake) in snapshot.snakes.iter().zip(game.snakes.iter_mut()) {
