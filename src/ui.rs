@@ -3,13 +3,14 @@ use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
 
-use crate::agent::{AgentConfig, DqnAgent};
 use crate::snake::{
-    get_state_egocentric, spawn_food, AppStartTime, CollisionSettings, Direction, Food, GameConfig,
-    GameState, GameStats, GenerationRecord, GlobalTrainingHistory, GridDimensions, GridMap,
-    MeshCache, ParallelConfig, Position, RenderConfig, SegmentPool, SnakeId, SnakeInstance,
-    SnakeSegment, TrainingSession, TrainingStats, BLOCK_SIZE, TRAIN_INTERVAL,
+    AppStartTime, CollisionSettings, Direction, Food, GameConfig, GameState, GameStats,
+    GenerationRecord, GlobalTrainingHistory, GridDimensions, GridMap, MeshCache, ParallelConfig,
+    Position, RenderConfig, SegmentPool, SnakeId, SnakeInstance, SnakeSegment, TrainingSession,
+    TrainingStats, BLOCK_SIZE,
 };
+use crate::types::{GameSnapshot, SnakeSnapshot};
+use crate::RenderReceiver;
 
 /// UI Component markers
 #[derive(Component)]
@@ -88,17 +89,14 @@ impl Plugin for UiPlugin {
             is_fullscreen: false,
         })
         .insert_resource(GraphPanelState::default())
-        // spawn_stats_ui is NOT added here - it's added in main.rs after setup
         .add_systems(
             Update,
             (
                 handle_input,
                 on_window_resize,
-                game_loop_system,
                 render_system,
                 toggle_graph_panel,
-            )
-                .chain(),
+            ),
         )
         .add_systems(Update, update_stats_ui.after(render_system))
         .add_systems(Update, update_graph_panel_visibility)
@@ -235,7 +233,6 @@ pub fn update_stats_ui(
     render_config: Res<RenderConfig>,
     app_start_time: Res<AppStartTime>,
     global_history: Res<GlobalTrainingHistory>,
-    agent: Res<DqnAgent>,
 ) {
     use std::time::Instant;
 
@@ -298,12 +295,8 @@ pub fn update_stats_ui(
             stats.fps
         );
         st_text.sections[2].value = format!(
-            "Alive:{} Dead:{} | Food: {}  Games: {} Eps: {:.3}",
-            alive_count,
-            dead_count,
-            game_stats.total_food_eaten,
-            game_stats.total_games_played,
-            agent.epsilon
+            "Alive:{} Dead:{} | Food: {}  Games: {}",
+            alive_count, dead_count, game_stats.total_food_eaten, game_stats.total_games_played
         );
     }
 
@@ -321,13 +314,11 @@ pub fn update_stats_ui(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn handle_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut app_exit_events: EventWriter<AppExit>,
-    mut game_stats: ResMut<GameStats>,
-    mut training_session: ResMut<TrainingSession>,
-    mut agent: ResMut<DqnAgent>,
+    game_stats: Res<GameStats>,
+    training_session: Res<TrainingSession>,
     config: Res<GameConfig>,
     game: Res<GameState>,
     mut window_settings: ResMut<WindowSettings>,
@@ -338,30 +329,10 @@ pub fn handle_input(
     app_start_time: Res<AppStartTime>,
     global_history: Res<GlobalTrainingHistory>,
 ) {
-    use crate::snake::{get_or_create_run_dir, session_path};
+    use crate::snake::get_or_create_run_dir;
     use std::time::Instant;
 
     if keyboard_input.just_pressed(KeyCode::Escape) {
-        game_stats.update(&game);
-
-        // FIX: Save brain model before exiting
-        let brain_path = crate::snake::brain_path();
-        println!("💾 Saving brain to: {}", brain_path.display());
-        if let Err(e) = agent.save(brain_path.to_str().unwrap_or("brain.bin")) {
-            eprintln!("⚠️ Error saving brain: {}", e);
-        } else {
-            println!("✅ Brain saved successfully!");
-        }
-
-        let current_session_duration = Instant::now().duration_since(app_start_time.0);
-        training_session.total_time_secs = current_session_duration.as_secs();
-        training_session.compress_history();
-        if let Err(e) =
-            training_session.save(config.session_path.to_str().unwrap_or("session.json"))
-        {
-            eprintln!("Error saving session: {}", e);
-        }
-
         let current_session_duration = Instant::now().duration_since(app_start_time.0);
         let total_training_time =
             std::time::Duration::from_secs(global_history.accumulated_time_secs)
@@ -453,25 +424,38 @@ pub fn on_window_resize(
     }
 }
 
-pub fn game_loop_system(
-    time: Res<Time>,
-    mut config: ResMut<GameConfig>,
+/// Consumer Bevy - Rendering
+/// Legge l'ultimo GameSnapshot dal canale e aggiorna le entità a schermo
+pub fn render_system(
+    mut commands: Commands,
+    receiver: Res<RenderReceiver>,
     mut game: ResMut<GameState>,
-    mut agent: ResMut<DqnAgent>,
-    mut game_stats: ResMut<GameStats>,
-    mut training_session: ResMut<TrainingSession>,
-    mut global_history: ResMut<GlobalTrainingHistory>,
-    mut stats: ResMut<TrainingStats>,
-    grid: Res<GridDimensions>,
-    collision_settings: Res<CollisionSettings>,
-    parallel_config: Res<ParallelConfig>,
+    windows: Query<&Window>,
+    mesh_cache: Res<MeshCache>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut segment_pool: ResMut<SegmentPool>,
     render_config: Res<RenderConfig>,
-    mut grid_map: ResMut<GridMap>,
+    q_food: Query<Entity, With<Food>>,
+    mut stats: ResMut<TrainingStats>,
 ) {
-    use std::time::{Duration, Instant};
+    if !render_config.enabled {
+        return;
+    }
 
+    // Svuota il canale e prendi solo l'ultimo snapshot disponibile
+    // Salta i frame intermedi se l'RL va troppo veloce
+    let mut latest_snapshot: Option<GameSnapshot> = None;
+    while let Ok(snapshot) = receiver.0.try_recv() {
+        latest_snapshot = Some(snapshot);
+    }
+
+    let Some(snapshot) = latest_snapshot else {
+        return;
+    };
+
+    // Aggiorna FPS
     stats.frame_count += 1;
-    let now = Instant::now();
+    let now = std::time::Instant::now();
     if now.duration_since(stats.last_fps_update).as_secs_f32() >= 1.0 {
         stats.fps =
             stats.frame_count as f32 / now.duration_since(stats.last_fps_update).as_secs_f32();
@@ -479,381 +463,27 @@ pub fn game_loop_system(
         stats.frame_count = 0;
     }
 
-    if render_config.enabled {
-        config.speed_timer.tick(time.delta());
-        if !config.speed_timer.finished() {
-            return;
+    // Aggiorna GameState dallo snapshot
+    game.high_score = snapshot.high_score;
+    game.total_iterations = snapshot.generation;
+
+    // Sincronizza i serpenti
+    for (snapshot_snake, game_snake) in snapshot.snakes.iter().zip(game.snakes.iter_mut()) {
+        game_snake.id = snapshot_snake.id;
+        game_snake.snake.clear();
+        for (x, y) in &snapshot_snake.body {
+            game_snake.snake.push_back(Position { x: *x, y: *y });
         }
-        run_simulation_step(
-            &mut game,
-            &mut agent,
-            &mut game_stats,
-            &mut training_session,
-            &mut global_history,
-            &config,
-            &grid,
-            &collision_settings,
-            &parallel_config,
-            &mut stats,
-            &mut grid_map,
-        );
-    } else {
-        let ui_target = Duration::from_millis(33);
-        let buffer = Duration::from_millis(3);
-        let start = Instant::now();
-
-        const BATCH_SIZE: usize = 10;
-
-        loop {
-            for _ in 0..BATCH_SIZE {
-                run_simulation_step(
-                    &mut game,
-                    &mut agent,
-                    &mut game_stats,
-                    &mut training_session,
-                    &mut global_history,
-                    &config,
-                    &grid,
-                    &collision_settings,
-                    &parallel_config,
-                    &mut stats,
-                    &mut grid_map,
-                );
-            }
-
-            if start.elapsed() >= ui_target.saturating_sub(buffer) {
-                break;
-            }
-        }
-
-        stats.total_training_time += start.elapsed();
-    }
-}
-
-struct StepResult {
-    snake_idx: usize,
-    state: [f32; 8],
-    action_idx: usize,
-    reward: f32,
-    next_state: [f32; 8],
-    done: bool,
-    ate_food: bool,
-}
-
-struct Decision {
-    snake_idx: usize,
-    action_idx: usize,
-    state: [f32; 8],
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_simulation_step(
-    game: &mut GameState,
-    agent: &mut DqnAgent,
-    game_stats: &mut GameStats,
-    training_session: &mut TrainingSession,
-    global_history: &mut GlobalTrainingHistory,
-    config: &GameConfig,
-    grid: &GridDimensions,
-    collision_settings: &CollisionSettings,
-    parallel_config: &ParallelConfig,
-    stats: &mut TrainingStats,
-    grid_map: &mut GridMap,
-) {
-    use rand::Rng;
-    use rayon::prelude::*;
-
-    let mut all_dead = true;
-
-    let active_snakes: Vec<usize> = game
-        .snakes
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| !s.is_game_over)
-        .map(|(idx, _)| idx)
-        .collect();
-
-    if active_snakes.is_empty() {
-        handle_generation_end(
-            game,
-            agent,
-            game_stats,
-            training_session,
-            global_history,
-            config,
-            parallel_config,
-            stats,
-            grid,
-        );
-        return;
-    }
-
-    // 1. Calcolo degli stati in parallelo (Veloce)
-    let states: Vec<(usize, [f32; 8])> = active_snakes
-        .par_iter()
-        .map(|&snake_idx| {
-            let snake = &game.snakes[snake_idx];
-            let state = get_state_egocentric(snake, grid_map, grid);
-            (snake_idx, state)
-        })
-        .collect();
-
-    // 2. Decisione dell'Agente con BATCH INFERENCE
-    // Estrai solo gli stati puri per l'agente
-    let state_vectors: Vec<[f32; 8]> = states.iter().map(|(_, s)| *s).collect();
-
-    // Ottieni tutte le decisioni in UN COLPO SOLO (batch GPU)
-    let action_indices = agent.select_actions_batch(state_vectors);
-
-    // Ricostruisci le decisioni associate all'ID del serpente
-    let decisions: Vec<Decision> = states
-        .iter()
-        .zip(action_indices.into_iter())
-        .map(|((snake_idx, state), action_idx)| Decision {
-            snake_idx: *snake_idx,
-            action_idx,
-            state: *state,
-        })
-        .collect();
-
-    // Update grid map
-    grid_map.clear();
-    for (idx, snake) in game.snakes.iter().enumerate() {
-        if !snake.is_game_over {
-            for pos in snake.snake.iter() {
-                grid_map.set(pos.x, pos.y, (idx + 1) as u8);
-            }
-        }
-    }
-
-    let mut step_results: Vec<StepResult> = Vec::with_capacity(decisions.len());
-
-    for decision in decisions {
-        let snake_idx = decision.snake_idx;
-        let action_idx = decision.action_idx;
-        let state = decision.state;
-
-        all_dead = false;
-        let snake_ref = &mut game.snakes[snake_idx];
-
-        let old_dist_sq = ((snake_ref.snake[0].x - snake_ref.food.x).pow(2)
-            + (snake_ref.snake[0].y - snake_ref.food.y).pow(2)) as f32;
-
-        // Apply action: 0=Left, 1=Right, 2=Straight
-        match action_idx {
-            0 => snake_ref.direction = snake_ref.direction.turn_left(),
-            1 => snake_ref.direction = snake_ref.direction.turn_right(),
-            _ => {} // Straight
-        }
-
-        let (dx, dy) = snake_ref.direction.as_vec();
-        let new_head = Position {
-            x: snake_ref.snake[0].x + dx,
-            y: snake_ref.snake[0].y + dy,
+        game_snake.food = Position {
+            x: snapshot_snake.food.0,
+            y: snapshot_snake.food.1,
         };
-
-        snake_ref.steps_without_food += 1;
-        let mut reward: f32 = 0.0;
-        let mut done = false;
-
-        let collision = if collision_settings.snake_vs_snake {
-            grid_map.is_collision(new_head.x, new_head.y, snake_idx)
-        } else {
-            grid_map.is_collision_no_snakes(new_head.x, new_head.y)
-        } || snake_ref.snake.contains(&new_head);
-
-        if collision {
-            reward = -1.5;
-            done = true;
-            snake_ref.is_game_over = true;
-        } else if new_head == snake_ref.food {
-            reward = 1.0;
-            snake_ref.snake.push_front(new_head);
-            snake_ref.score += 1;
-            if snake_ref.score > game.high_score {
-                game.high_score = snake_ref.score;
-            }
-            snake_ref.food = spawn_food(snake_ref, grid);
-            snake_ref.steps_without_food = 0;
-            grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
-        } else {
-            reward -= 0.01;
-
-            let new_dist_sq = ((new_head.x - snake_ref.food.x).pow(2)
-                + (new_head.y - snake_ref.food.y).pow(2)) as f32;
-
-            if new_dist_sq < old_dist_sq {
-                reward += 0.05;
-            } else {
-                reward -= 0.05;
-            }
-
-            let old_tail = snake_ref.snake.back().copied();
-            snake_ref.snake.push_front(new_head);
-            snake_ref.snake.pop_back();
-
-            if snake_ref.steps_without_food > (grid.width * grid.height) as u32 {
-                reward = -1.0;
-                done = true;
-                snake_ref.is_game_over = true;
-            }
-
-            grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
-            if let Some(tail) = old_tail {
-                grid_map.set(tail.x, tail.y, 0);
-            }
-        }
-
-        step_results.push(StepResult {
-            snake_idx,
-            state,
-            action_idx,
-            reward,
-            next_state: get_state_egocentric(&game.snakes[snake_idx], grid_map, grid),
-            done,
-            ate_food: new_head == game.snakes[snake_idx].food,
-        });
+        game_snake.color = snapshot_snake.color;
+        game_snake.is_game_over = snapshot_snake.is_game_over;
+        game_snake.score = snapshot_snake.score;
     }
 
-    for result in step_results {
-        agent.remember((
-            result.state,
-            result.action_idx,
-            result.reward,
-            result.next_state,
-            result.done,
-        ));
-    }
-
-    agent.iterations += 1;
-    if agent.iterations % TRAIN_INTERVAL as u32 == 0 {
-        // Chiama la funzione reale implementata in agent.rs
-        agent.train();
-    }
-
-    if all_dead {
-        handle_generation_end(
-            game,
-            agent,
-            game_stats,
-            training_session,
-            global_history,
-            config,
-            parallel_config,
-            stats,
-            grid,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_generation_end(
-    game: &mut GameState,
-    agent: &mut DqnAgent,
-    game_stats: &mut GameStats,
-    training_session: &mut TrainingSession,
-    global_history: &mut GlobalTrainingHistory,
-    config: &GameConfig,
-    parallel_config: &ParallelConfig,
-    stats: &mut TrainingStats,
-    grid: &GridDimensions,
-) {
-    let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
-    game_stats.total_food_eaten += food_eaten as u64;
-
-    for (i, snake) in game.snakes.iter().enumerate() {
-        if i < game_stats.best_score_per_snake.len() {
-            game_stats.best_score_per_snake[i] =
-                game_stats.best_score_per_snake[i].max(snake.score);
-        }
-    }
-
-    let current_scores: Vec<u32> = game.snakes.iter().map(|s| s.score).collect();
-    let max_score = current_scores.iter().copied().max().unwrap_or(0);
-    let min_score = current_scores.iter().copied().min().unwrap_or(0);
-    let avg_score = current_scores.iter().sum::<u32>() as f32 / current_scores.len() as f32;
-
-    let record = GenerationRecord {
-        gen: game.total_iterations,
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        avg_score,
-        max_score,
-        min_score,
-        avg_loss: agent.loss,
-        epsilon: agent.epsilon,
-    };
-
-    global_history.records.push(record.clone());
-    training_session.add_record(record);
-
-    training_session.total_time_secs = stats
-        .total_training_time
-        .as_secs()
-        .saturating_sub(global_history.accumulated_time_secs);
-
-    if let Err(e) = training_session.save(config.session_path.to_str().unwrap_or("session.json")) {
-        eprintln!("Error saving session: {}", e);
-    }
-
-    for snake in game.snakes.iter_mut() {
-        snake.reset(grid);
-    }
-    game.total_iterations += 1;
-    agent.iterations = game.total_iterations;
-
-    agent.train(); // Training finale sulla memoria accumulata
-    agent.decay_epsilon();
-
-    game_stats.total_generations = game.total_iterations;
-    game_stats.high_score = game_stats.high_score.max(game.high_score);
-    game_stats.total_games_played += parallel_config.snake_count as u64;
-
-    // FIX: Auto-save brain every N generations
-    if game.total_iterations % crate::snake::AUTO_SAVE_INTERVAL == 0 {
-        let brain_path = crate::snake::brain_path();
-        println!(
-            "💾 Auto-saving brain (gen {}) to: {}",
-            game.total_iterations,
-            brain_path.display()
-        );
-        if let Err(e) = agent.save(brain_path.to_str().unwrap_or("brain.bin")) {
-            eprintln!("⚠️ Error auto-saving brain: {}", e);
-        } else {
-            println!("✅ Brain auto-saved successfully!");
-        }
-    }
-
-    let total_score: u32 = game.snakes.iter().map(|s| s.score).sum();
-    let active_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
-    println!(
-        "Gen: {}, Active: {}/{}, Total Score: {}, High: {}, Eps: {:.3}, Loss: {:.5}",
-        game.total_iterations,
-        active_count,
-        parallel_config.snake_count,
-        total_score,
-        game.high_score,
-        agent.epsilon,
-        agent.loss
-    );
-}
-
-pub fn render_system(
-    mut commands: Commands,
-    game: Res<GameState>,
-    windows: Query<&Window>,
-    mesh_cache: Res<MeshCache>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut segment_pool: ResMut<SegmentPool>,
-    render_config: Res<RenderConfig>,
-    q_food: Query<Entity, With<Food>>,
-) {
-    if !render_config.enabled {
-        return;
-    }
-
+    // Rimuovi vecchio cibo
     for e in q_food.iter() {
         commands.entity(e).despawn();
     }
@@ -866,16 +496,17 @@ pub fn render_system(
     let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
     let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
 
-    for snake in game.snakes.iter() {
-        if snake.is_game_over {
-            segment_pool.hide_excess(&mut commands, snake.id, 0);
+    // Renderizza i serpenti dallo snapshot
+    for snake_snapshot in snapshot.snakes.iter() {
+        if snake_snapshot.is_game_over {
+            segment_pool.hide_excess(&mut commands, snake_snapshot.id, 0);
             continue;
         }
 
-        let body_material = materials.add(snake.color);
-        let snake_len = snake.snake.len();
+        let body_material = materials.add(snake_snapshot.color);
+        let snake_len = snake_snapshot.body.len();
 
-        for (i, pos) in snake.snake.iter().enumerate() {
+        for (i, (x, y)) in snake_snapshot.body.iter().enumerate() {
             let material = if i == 0 {
                 mesh_cache.head_material.clone()
             } else {
@@ -883,14 +514,14 @@ pub fn render_system(
             };
 
             let transform = Transform::from_xyz(
-                offset_x + (pos.x as f32 * BLOCK_SIZE),
-                offset_y - (pos.y as f32 * BLOCK_SIZE),
+                offset_x + (*x as f32 * BLOCK_SIZE),
+                offset_y - (*y as f32 * BLOCK_SIZE),
                 0.0,
             );
 
             segment_pool.get_or_spawn(
                 &mut commands,
-                snake.id,
+                snake_snapshot.id,
                 i,
                 mesh_cache.segment_mesh.clone(),
                 material,
@@ -898,22 +529,23 @@ pub fn render_system(
             );
         }
 
-        segment_pool.hide_excess(&mut commands, snake.id, snake_len);
-        segment_pool.set_active_count(snake.id, snake_len);
+        segment_pool.hide_excess(&mut commands, snake_snapshot.id, snake_len);
+        segment_pool.set_active_count(snake_snapshot.id, snake_len);
 
+        // Renderizza cibo
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: mesh_cache.food_mesh.clone().into(),
                 material: mesh_cache.food_material.clone(),
                 transform: Transform::from_xyz(
-                    offset_x + (snake.food.x as f32 * BLOCK_SIZE),
-                    offset_y - (snake.food.y as f32 * BLOCK_SIZE),
+                    offset_x + (snake_snapshot.food.0 as f32 * BLOCK_SIZE),
+                    offset_y - (snake_snapshot.food.1 as f32 * BLOCK_SIZE),
                     0.0,
                 ),
                 ..default()
             },
             Food,
-            SnakeId(snake.id),
+            SnakeId(snake_snapshot.id),
         ));
     }
 }
@@ -1124,7 +756,6 @@ fn spawn_graph_panel_internal(mut commands: Commands, graph_state: &GraphPanelSt
         });
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn handle_graph_panel_interactions(
     mut graph_state: ResMut<GraphPanelState>,
     mouse_button: Res<ButtonInput<MouseButton>>,

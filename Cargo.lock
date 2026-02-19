@@ -6221,6 +6221,7 @@ dependencies = [
  "bevy",
  "burn",
  "chrono",
+ "crossbeam-channel",
  "pprof",
  "rand 0.8.5",
  "rayon",

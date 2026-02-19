@@ -528,10 +528,8 @@ pub fn get_state_egocentric(
     let head = snake.snake[0];
     let ego_dirs = get_egocentric_directions(snake.direction);
 
-    // OPTIMIZATION: Build HashSet of body segments once for O(1) lookups
-    // skip(1) excludes the head since we're checking positions ahead of it
-    let body_set: std::collections::HashSet<(i32, i32)> =
-        snake.snake.iter().skip(1).map(|p| (p.x, p.y)).collect();
+    // OPTIMIZATION: Rimossa allocazione HashSet - Ora usa grid_map.get() per lookup O(1)
+    // Il GridMap contiene già la posizione di tutti i segmenti dei serpenti
 
     // Obstacle sensors (indices 0-3)
     for (i, (dx, dy)) in ego_dirs.iter().enumerate() {
@@ -542,13 +540,12 @@ pub fn get_state_egocentric(
         for d in 1..=15 {
             curr_x += dx;
             curr_y += dy;
+            // Usa grid_map.get() per O(1) lookup senza allocazioni heap
             if curr_x < 0
                 || curr_x >= grid.width
                 || curr_y < 0
                 || curr_y >= grid.height
-                || grid_map.get(curr_x, curr_y) != 0
-                || body_set.contains(&(curr_x, curr_y))
-            // O(1) instead of O(n)
+                || grid_map.is_collision(curr_x, curr_y, snake.id)
             {
                 dist_val = 1.0 / (d as f32);
                 break;

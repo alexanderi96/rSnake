@@ -9,9 +9,10 @@ bevy = "0.13"
 # NOTA: rimosso default-features = false — era la causa di tutti gli errori.
 # Disabilitava std, train, record e altri moduli interni necessari per optim/recorder.
 # Le feature "ndarray" + "autodiff" si affiancano ai default (std, train, ecc.)
-burn = { version = "0.16", features = ["ndarray", "autodiff"] }
+burn = { version = "0.16", features = ["wgpu", "autodiff"] }
 
 rand = "0.8"
+crossbeam-channel = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rayon = "1.8"

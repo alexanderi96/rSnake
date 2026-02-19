@@ -1,7 +1,6 @@
-use bevy::prelude::*;
 use burn::{
-    backend::{ndarray::NdArrayDevice, Autodiff, NdArray},
-    module::Module, // ← questa riga mancava
+    backend::{wgpu::WgpuDevice, Autodiff, Wgpu},
+    module::Module,
     nn::loss::MseLoss,
     optim::{AdamConfig, GradientsParams, Optimizer},
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
@@ -12,8 +11,8 @@ use std::collections::VecDeque;
 use crate::model::DqnModel;
 use crate::snake::{BATCH_SIZE, MEMORY_SIZE, STATE_SIZE, TARGET_UPDATE_FREQ};
 
-type MyBackend = Autodiff<NdArray>;
-type MyDevice = NdArrayDevice;
+type MyBackend = Autodiff<Wgpu>;
+type MyDevice = WgpuDevice;
 
 // OptimizerAdaptor e Adam sono inferiti dal tipo restituito da AdamConfig::new().init()
 type MyOptimizer =
@@ -77,7 +76,7 @@ impl ReplayBuffer {
     }
 }
 
-#[derive(Resource)]
+/// DQN Agent - Non è più una risorsa Bevy, viene gestito nel thread RL separato
 pub struct DqnAgent {
     pub config: AgentConfig,
     pub online_model: DqnModel<MyBackend>,
@@ -91,14 +90,10 @@ pub struct DqnAgent {
     pub device: MyDevice,
 }
 
-// NdArray usa RefCell internamente → non è Sync di default.
-// Bevy accede tramite ResMut<DqnAgent> (accesso esclusivo), quindi è sicuro.
-unsafe impl Sync for DqnAgent {}
-
 impl DqnAgent {
     pub fn new(config: AgentConfig) -> Self {
-        let device = NdArrayDevice::Cpu;
-        println!("🚀 Initializing DqnAgent on NdArray CPU");
+        let device = WgpuDevice::default(); // Usa GPU disponibile (Vulkan, Metal, o DX12)
+        println!("🚀 Initializing DqnAgent on Wgpu GPU");
 
         let online_model = DqnModel::new(&device);
         let target_model = online_model.clone();
