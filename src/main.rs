@@ -16,9 +16,10 @@ use std::thread;
 
 use agent::{AgentConfig, DqnAgent};
 use snake::{
-    get_state_egocentric, spawn_food, CollisionSettings, GameConfig, GameState, GameStats,
-    GenerationRecord, GlobalTrainingHistory, GridDimensions, GridMap, ParallelConfig, Position,
-    RenderConfig, SegmentPool, TrainingSession, TrainingStats, BLOCK_SIZE, TRAIN_INTERVAL,
+    get_parallel_threads, get_state_egocentric, get_train_interval, spawn_food, CollisionSettings,
+    GameConfig, GameState, GameStats, GenerationRecord, GlobalTrainingHistory, GridDimensions,
+    GridMap, ParallelConfig, Position, RenderConfig, SegmentPool, TrainingSession, TrainingStats,
+    BATCH_SIZE, BLOCK_SIZE,
 };
 use types::{GameSnapshot, SnakeSnapshot};
 use ui::{ControlSender, ControlSignal, GraphPanelState, UiPlugin, WindowSettings};
@@ -194,6 +195,39 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
     // Timer per tracking performance
     let mut generation_start = std::time::Instant::now();
     let mut generation_steps: u64 = 0;
+
+    // --- FASE DI WARM-UP ---
+    println!("🔥 Inizio fase di Warm-up del Replay Buffer...");
+    let warmup_target = BATCH_SIZE * 10;
+
+    // Salviamo gli epsilon calcolati e forziamo esplorazione pura (1.0)
+    let backup_epsilons: Vec<f32> = game_state.snakes.iter().map(|s| s.epsilon).collect();
+    for snake in game_state.snakes.iter_mut() {
+        snake.epsilon = 1.0;
+    }
+
+    while agent.replay_buffer.len() < warmup_target {
+        run_simulation_step(
+            &mut game_state,
+            &mut agent,
+            &mut game_stats,
+            &mut training_session,
+            &mut global_history,
+            &session_file,
+            &grid,
+            &collision_settings,
+            &parallel_config,
+            &mut grid_map,
+            &mut generation_start,
+            &mut generation_steps,
+        );
+    }
+
+    // Ripristina la distribuzione di esplorazione originale
+    for (i, snake) in game_state.snakes.iter_mut().enumerate() {
+        snake.epsilon = backup_epsilons[i];
+    }
+    println!("✅ Warm-up completo! Inizio addestramento.");
 
     // Loop principale del training
     loop {
@@ -419,9 +453,9 @@ fn run_simulation_step(
         };
 
         snake_ref.steps_without_food += 1;
-        // Reward semplice: solo reward per cibo e penalità per morte
-        // Niente micro-penalità per step o reward shaping sulla distanza (evita reward hacking)
-        let mut reward: f32 = -0.01; // NESSUNA penalità fissa per step
+
+        // 1. Penalità costante minima per ogni step (scoraggia i loop e l'inattività)
+        let mut reward: f32 = -0.01;
         let mut done = false;
 
         let collision = if collision_settings.snake_vs_snake {
@@ -431,11 +465,16 @@ fn run_simulation_step(
         } || snake_ref.snake.contains(&new_head);
 
         if collision {
-            reward = -10.0;
+            reward = -1.0; // 2. Bilanciato a -1.0 per stabilità
             done = true;
             snake_ref.is_game_over = true;
         } else if new_head == snake_ref.food {
-            reward = 10.0; // Pieno reward per il cibo
+            // 3. Reward Scaling: Bonus basato sulla lunghezza del serpente.
+            // Esempio: serpente lungo 1 = bonus 0.0. Serpente lungo 20 = bonus ~1.0
+            let length_bonus = (snake_ref.snake.len() as f32 / 20.0).min(1.0);
+
+            reward = 1.0 + length_bonus; // Reward dinamico tra 1.0 e 2.0
+
             snake_ref.snake.push_front(new_head);
             snake_ref.score += 1;
             if snake_ref.score > game.high_score {
@@ -445,14 +484,12 @@ fn run_simulation_step(
             snake_ref.steps_without_food = 0;
             grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
         } else {
-            // Aggiornamento coda senza reward calcolati sulla distanza
             let old_tail = snake_ref.snake.back().copied();
             snake_ref.snake.push_front(new_head);
             snake_ref.snake.pop_back();
 
-            // Timeout: deve essere punitivo quanto il muro per non far preferire il girotondo
             if snake_ref.steps_without_food > (grid.width * grid.height) as u32 {
-                reward = -11.0;
+                reward = -1.0; // Timeout bilanciato come la morte
                 done = true;
                 snake_ref.is_game_over = true;
             }
@@ -485,7 +522,7 @@ fn run_simulation_step(
     }
 
     agent.iterations += 1;
-    if agent.iterations % TRAIN_INTERVAL as u32 == 0 {
+    if agent.iterations % get_train_interval() as u32 == 0 {
         agent.train();
     }
 

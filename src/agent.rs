@@ -1,7 +1,9 @@
 use burn::{
     backend::{wgpu::WgpuDevice, Autodiff, Wgpu},
+    grad_clipping::GradientClippingConfig,
     module::Module,
     nn::loss::MseLoss,
+    optim::decay::WeightDecayConfig,
     optim::{AdamConfig, GradientsParams, Optimizer},
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
     tensor::{Int, Tensor},
@@ -90,7 +92,12 @@ impl DqnAgent {
 
         let online_model = DqnModel::new(&device);
         let target_model = online_model.clone();
-        let optimizer = AdamConfig::new().init();
+
+        // Configura Adam con Clipping e Decay
+        let optimizer = AdamConfig::new()
+            .with_weight_decay(Some(WeightDecayConfig::new(1e-5)))
+            .with_grad_clipping(Some(GradientClippingConfig::Value(1.0)))
+            .init();
 
         Self {
             config: config.clone(),

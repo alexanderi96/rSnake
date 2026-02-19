@@ -1,15 +1,37 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 pub const BLOCK_SIZE: f32 = 20.0;
-pub const MEMORY_SIZE: usize = 100_00;
+pub const MEMORY_SIZE: usize = 100_000;
 pub const BATCH_SIZE: usize = 256;
 pub const TARGET_UPDATE_FREQ: usize = 100;
 pub const STATE_SIZE: usize = 8;
-pub const TRAIN_INTERVAL: usize = 5;
 pub const AUTO_SAVE_INTERVAL: u32 = 100; // Auto-save brain every N generations
+
+/// Numero di thread/core del sistema - inizializzato una sola volta
+static NUM_PARALLEL_THREADS: OnceLock<usize> = OnceLock::new();
+
+/// Inizializza e restituisce il numero di thread paralleli disponibili
+pub fn init_parallel_threads() -> usize {
+    let threads = rayon::current_num_threads();
+    NUM_PARALLEL_THREADS.get_or_init(|| threads);
+    threads
+}
+
+/// Restituisce il numero di thread paralleli (deve essere inizializzato prima)
+pub fn get_parallel_threads() -> usize {
+    *NUM_PARALLEL_THREADS
+        .get()
+        .expect("NUM_PARALLEL_THREADS not initialized")
+}
+
+/// Intervallo di training sincronizzato con il parallelismo
+pub fn get_train_interval() -> usize {
+    get_parallel_threads()
+}
 
 /// Configurazione parallelism - numero serpenti = core CPU
 #[derive(Resource, Clone)]
@@ -19,7 +41,7 @@ pub struct ParallelConfig {
 
 impl ParallelConfig {
     pub fn new() -> Self {
-        let snake_count = rayon::current_num_threads();
+        let snake_count = init_parallel_threads();
         println!(
             "CPU cores: {}, Parallel snakes: {}",
             snake_count, snake_count
