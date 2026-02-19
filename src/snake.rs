@@ -19,7 +19,7 @@ pub struct ParallelConfig {
 
 impl ParallelConfig {
     pub fn new() -> Self {
-        let snake_count = 100; //rayon::current_num_threads();
+        let snake_count = rayon::current_num_threads();
         println!(
             "CPU cores: {}, Parallel snakes: {}",
             snake_count, snake_count
