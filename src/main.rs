@@ -14,15 +14,16 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 use clap::Parser;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use std::thread;
+use rand::seq::SliceRandom;
+use std::thread; // Questo abilita .choose() sui vettori
 
 use agent::{AgentConfig, DqnAgent};
 use config::Hyperparameters;
 use snake::{
-    get_current_17_state, get_state_egocentric, spawn_food, CollisionSettings, GameConfig,
-    GameState, GameStats, GenerationRecord, GlobalTrainingHistory, GridDimensions, GridMap,
-    ParallelConfig, Position, RenderConfig, SegmentPool, TrainingSession, TrainingStats,
-    BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
+    choose_heuristic_action, get_current_17_state, get_safe_actions, get_state_egocentric,
+    spawn_food, CollisionSettings, GameConfig, GameState, GameStats, GenerationRecord,
+    GlobalTrainingHistory, GridDimensions, GridMap, ParallelConfig, Position, RenderConfig,
+    SegmentPool, TrainingSession, TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
 use types::{GameSnapshot, SnakeSnapshot};
 use ui::{ControlSender, ControlSignal, GraphPanelState, UiPlugin, WindowSettings};
@@ -488,6 +489,41 @@ struct Decision {
     state: [f32; 34],
 }
 
+/// Calcola la reward basata sull'esito dello step e sul cambiamento di distanza dal cibo.
+pub fn calculate_reward(
+    is_collision: bool,
+    ate_food: bool,
+    is_timeout: bool,
+    old_pos: Position,
+    new_pos: Position,
+    food_pos: Position,
+    hyperparams: &Hyperparameters,
+) -> f32 {
+    // 1. Caso Morte (Collisione o Inedia)
+    if is_collision || is_timeout {
+        return hyperparams.reward_death; // Es: -15.0
+    }
+
+    // 2. Caso Cibo
+    if ate_food {
+        return hyperparams.reward_food; // Es: 10.0
+    }
+
+    // 3. Reward Shaping: Incoraggiamo il movimento verso il cibo
+    // Usiamo la distanza Manhattan: |x1-x2| + |y1-y2|
+    let dist_old = (old_pos.x - food_pos.x).abs() + (old_pos.y - food_pos.y).abs();
+    let dist_new = (new_pos.x - food_pos.x).abs() + (new_pos.y - food_pos.y).abs();
+
+    let shaping = if dist_new < dist_old {
+        0.15 // Premio per essersi avvicinato
+    } else {
+        -0.20 // Penalità per essersi allontanato (leggermente più alta per evitare indecisioni)
+    };
+
+    // 4. Reward totale: Penalità costante step + shaping
+    hyperparams.reward_step + shaping
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_simulation_step(
     game: &mut GameState,
@@ -506,10 +542,10 @@ fn run_simulation_step(
 ) {
     use rand::Rng;
     use rayon::prelude::*;
-    use std::time::{Duration, Instant};
 
-    let mut all_dead = true;
+    let warmup_target = hyperparams.batch_size * 50;
 
+    // Identifica serpenti vivi
     let active_snakes: Vec<usize> = game
         .snakes
         .iter()
@@ -535,51 +571,31 @@ fn run_simulation_step(
         return;
     }
 
-    // 1. COMPUTE PHASE - Calcolo parallelo puro (sola lettura)
-    // Restituisce: (snake_idx, stato_completo_34, nuovi_17_sensori, epsilon)
+    // --- FASE 1: COMPUTE PARALLELO (Sola lettura) ---
+    // Calcoliamo lo stato a 34 dimensioni (17 attuali + 17 precedenti salvati nel serpente)
     let computed_data: Vec<(usize, [f32; STATE_SIZE], [f32; BASE_STATE_SIZE], f32)> = active_snakes
         .par_iter()
-        .map(|&snake_idx| {
-            let snake = &game.snakes[snake_idx];
-
-            // Calcola solo i 17 sensori attuali in sola lettura (pure function)
+        .map(|&idx| {
+            let snake = &game.snakes[idx];
             let current_17 = get_current_17_state(snake, grid_map, grid);
 
-            // Costruisci l'array finale da 34 concatenando attuale e precedente
             let mut state_34 = [0.0f32; STATE_SIZE];
             state_34[..BASE_STATE_SIZE].copy_from_slice(&current_17);
-            state_34[BASE_STATE_SIZE..STATE_SIZE].copy_from_slice(&snake.previous_state);
+            state_34[BASE_STATE_SIZE..].copy_from_slice(&snake.previous_state);
 
-            (snake_idx, state_34, current_17, snake.epsilon)
+            (idx, state_34, current_17, snake.epsilon)
         })
         .collect();
 
-    // 2. APPLY PHASE - Aggiornamento sequenziale veloce
-    let mut states: Vec<(usize, [f32; STATE_SIZE], f32)> = Vec::with_capacity(computed_data.len());
-    for (snake_idx, state_34, current_17, epsilon) in computed_data {
-        // Aggiorna la memoria del serpente per il frame successivo
-        game.snakes[snake_idx].previous_state = current_17;
-
-        // Prepara i dati per il batch inference
-        states.push((snake_idx, state_34, epsilon));
-    }
-
-    // 2. Decisione dell'Agente con BATCH INFERENCE (usa epsilon individuali)
-    let states_with_eps: Vec<([f32; 34], f32)> = states.iter().map(|(_, s, e)| (*s, *e)).collect();
-    let action_indices = agent.select_actions_batch(states_with_eps);
-
-    // Ricostruisci le decisioni
-    let decisions: Vec<Decision> = states
+    // --- FASE 2: BATCH INFERENCE ---
+    let states_for_inference: Vec<([f32; 34], f32)> = computed_data
         .iter()
-        .zip(action_indices.into_iter())
-        .map(|((snake_idx, state, _epsilon), action_idx)| Decision {
-            snake_idx: *snake_idx,
-            action_idx,
-            state: *state,
-        })
+        .map(|(_, s34, _, eps)| (*s34, *eps))
         .collect();
 
-    // Update grid map
+    let action_indices = agent.select_actions_batch(states_for_inference);
+
+    // --- FASE 3: AGGIORNAMENTO GRID & FISICA ---
     grid_map.clear();
     for (idx, snake) in game.snakes.iter().enumerate() {
         if !snake.is_game_over {
@@ -589,117 +605,115 @@ fn run_simulation_step(
         }
     }
 
-    let mut step_results: Vec<StepResult> = Vec::with_capacity(decisions.len());
+    let mut step_results = Vec::with_capacity(computed_data.len());
 
-    for decision in decisions {
-        let snake_idx = decision.snake_idx;
-        let action_idx = decision.action_idx;
-        let state = decision.state;
-
-        all_dead = false;
+    for (i, (snake_idx, state_34, current_17, _)) in computed_data.into_iter().enumerate() {
+        let mut action_idx = action_indices[i];
         let snake_ref = &mut game.snakes[snake_idx];
+        let old_head = snake_ref.snake[0];
 
-        // Apply action: 0=Left, 1=Right, 2=Straight
+        // Aggiorna la memoria temporale del serpente per il prossimo frame
+        snake_ref.previous_state = current_17;
+
+        // Logica Warm-up (Heuristic)
+        if agent.replay_buffer.len() < warmup_target {
+            let safe_actions = get_safe_actions(snake_ref, grid_map);
+            if !safe_actions.is_empty() {
+                action_idx = if rand::thread_rng().gen_bool(0.8) {
+                    choose_heuristic_action(snake_ref, &safe_actions)
+                } else {
+                    *safe_actions.choose(&mut rand::thread_rng()).unwrap()
+                };
+            }
+        }
+
+        // Applica azione
         match action_idx {
             0 => snake_ref.direction = snake_ref.direction.turn_left(),
             1 => snake_ref.direction = snake_ref.direction.turn_right(),
-            _ => {} // Straight
+            _ => {} // Dritto
         }
 
         let (dx, dy) = snake_ref.direction.as_vec();
         let new_head = Position {
-            x: snake_ref.snake[0].x + dx,
-            y: snake_ref.snake[0].y + dy,
+            x: old_head.x + dx,
+            y: old_head.y + dy,
         };
-
         snake_ref.steps_without_food += 1;
 
-        // 1. Penalità costante minima per ogni step (scoraggia i loop e l'inattività)
-        let mut reward: f32 = hyperparams.reward_step;
-        let mut done = false;
-
-        let collision = if collision_settings.snake_vs_snake {
+        // Check collisioni e timeout
+        let is_collision = if collision_settings.snake_vs_snake {
             grid_map.is_collision(new_head.x, new_head.y, snake_idx)
         } else {
             grid_map.is_collision_no_snakes(new_head.x, new_head.y)
         } || snake_ref.snake.contains(&new_head);
 
-        if collision {
-            reward = hyperparams.reward_death; // Death penalty
+        let ate_food = new_head == snake_ref.food;
+        let is_timeout =
+            snake_ref.steps_without_food > hyperparams.calculate_timeout(snake_ref.snake.len());
+
+        // --- CALCOLO REWARD ---
+        let reward = calculate_reward(
+            is_collision,
+            ate_food,
+            is_timeout,
+            old_head,
+            new_head,
+            snake_ref.food,
+            hyperparams,
+        );
+
+        // --- ESECUZIONE MOVIMENTO ---
+        let mut done = false;
+        if is_collision || is_timeout {
             done = true;
             snake_ref.is_game_over = true;
-        } else if new_head == snake_ref.food {
-            // Constant food reward (removed length-based scaling for stable convergence)
-            reward = hyperparams.reward_food;
-
-            snake_ref.snake.push_front(new_head);
-            snake_ref.score += 1;
-            if snake_ref.score > game.high_score {
-                game.high_score = snake_ref.score;
-            }
-            snake_ref.food = spawn_food(snake_ref, grid);
-            snake_ref.steps_without_food = 0;
-            grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
         } else {
-            let old_tail = snake_ref.snake.back().copied();
             snake_ref.snake.push_front(new_head);
-            snake_ref.snake.pop_back();
-
-            // Calcola un limite massimo ragionevole usando hyperparams
-            let max_steps = hyperparams.calculate_timeout(snake_ref.snake.len());
-
-            if snake_ref.steps_without_food > max_steps {
-                reward = hyperparams.reward_death; // Punito severamente per non aver cercato attivamente
-                done = true;
-                snake_ref.is_game_over = true;
-            }
-
-            grid_map.set(new_head.x, new_head.y, (snake_idx + 1) as u8);
-            if let Some(tail) = old_tail {
-                grid_map.set(tail.x, tail.y, 0);
+            if ate_food {
+                snake_ref.score += 1;
+                if snake_ref.score > game.high_score {
+                    game.high_score = snake_ref.score;
+                }
+                snake_ref.food = spawn_food(snake_ref, grid);
+                snake_ref.steps_without_food = 0;
+            } else {
+                snake_ref.snake.pop_back();
             }
         }
 
+        // Calcola il next_state (34-dim) per il Replay Buffer
+        // Nota: snake_ref.previous_state è già stato aggiornato a current_17 sopra
+        let next_17 = get_current_17_state(snake_ref, grid_map, grid);
+        let mut next_state_34 = [0.0f32; STATE_SIZE];
+        next_state_34[..BASE_STATE_SIZE].copy_from_slice(&next_17);
+        next_state_34[BASE_STATE_SIZE..].copy_from_slice(&snake_ref.previous_state);
+
         step_results.push(StepResult {
             snake_idx,
-            state,
+            state: state_34,
             action_idx,
             reward,
-            next_state: get_state_egocentric(snake_ref, grid_map, grid),
+            next_state: next_state_34,
             done,
-            ate_food: new_head == game.snakes[snake_idx].food,
+            ate_food,
         });
     }
 
-    for result in step_results {
+    // Memorizza esperienze e allena
+    for res in step_results {
         agent.remember((
-            result.state,
-            result.action_idx,
-            result.reward,
-            result.next_state,
-            result.done,
+            res.state,
+            res.action_idx,
+            res.reward,
+            res.next_state,
+            res.done,
         ));
     }
 
     agent.iterations += 1;
     if agent.iterations % hyperparams.train_interval as u32 == 0 {
         agent.train();
-    }
-
-    if all_dead {
-        handle_generation_end(
-            game,
-            agent,
-            game_stats,
-            training_session,
-            global_history,
-            session_file,
-            parallel_config,
-            grid,
-            generation_start,
-            generation_steps,
-            hyperparams,
-        );
     }
 }
 

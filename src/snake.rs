@@ -462,12 +462,16 @@ impl SnakeInstance {
         snake.push_back(spawn_pos);
 
         // Calcolo epsilon con distribuzione esponenziale (Ape-X style)
-        let min_eps = 0.01_f32;
-        let max_eps = 0.8_f32;
-        let epsilon = if total_snakes <= 1 {
-            min_eps
+        // Agente 0: epsilon = 0.0 (modalità puramente greedy/test)
+        // Altri agenti: distribuzione esponenziale da 0.01 a 0.7
+        let epsilon = if id == 0 {
+            0.0
+        } else if total_snakes <= 1 {
+            0.01
         } else {
-            let progress = id as f32 / (total_snakes - 1) as f32;
+            let min_eps = 0.01_f32;
+            let max_eps = 0.7_f32;
+            let progress = (id - 1) as f32 / (total_snakes - 1) as f32;
             min_eps * (max_eps / min_eps).powf(progress)
         };
 
@@ -564,17 +568,95 @@ impl Direction {
     }
 }
 
-/// Generate relative coordinate offsets based on current heading
-pub fn get_egocentric_directions(current_dir: Direction) -> [(i32, i32); 4] {
-    let (fx, fy) = current_dir.as_vec(); // Forward
-    let (rx, ry) = current_dir.turn_right().as_vec(); // Right
+/// Calcola le azioni sicure per un serpente dato il grid map
+/// Restituisce un vettore di indici di azioni sicure (0: Avanti, 1: Sinistra, 2: Destra)
+/// Da usare SOLO durante la fase di warm-up per non sporcare il replay buffer
+pub fn get_safe_actions(snake: &SnakeInstance, grid_map: &GridMap) -> Vec<usize> {
+    let head = snake.snake[0];
+    let (dx, dy) = snake.direction.as_vec();
 
-    [
-        (fx, fy),   // 0: Forward
-        (rx, ry),   // 1: Right
-        (-fx, -fy), // 2: Back
-        (-rx, -ry), // 3: Left
-    ]
+    let mut safe_actions = Vec::new();
+
+    // Azione 0: Avanti (mantieni direzione)
+    let forward_pos = Position {
+        x: head.x + dx,
+        y: head.y + dy,
+    };
+    if !grid_map.is_collision(forward_pos.x, forward_pos.y, snake.id) {
+        safe_actions.push(0);
+    }
+
+    // Azione 1: Sinistra (ruota a sinistra)
+    let left_dir = snake.direction.turn_left();
+    let (ldx, ldy) = left_dir.as_vec();
+    let left_pos = Position {
+        x: head.x + ldx,
+        y: head.y + ldy,
+    };
+    if !grid_map.is_collision(left_pos.x, left_pos.y, snake.id) {
+        safe_actions.push(1);
+    }
+
+    // Azione 2: Destra (ruota a destra)
+    let right_dir = snake.direction.turn_right();
+    let (rdx, rdy) = right_dir.as_vec();
+    let right_pos = Position {
+        x: head.x + rdx,
+        y: head.y + rdy,
+    };
+    if !grid_map.is_collision(right_pos.x, right_pos.y, snake.id) {
+        safe_actions.push(2);
+    }
+
+    safe_actions
+}
+
+/// Calcola la distanza Manhattan tra due posizioni
+fn manhattan_distance(pos1: &Position, pos2: &Position) -> i32 {
+    (pos1.x - pos2.x).abs() + (pos1.y - pos2.y).abs()
+}
+
+/// Sceglie l'azione che minimizza la distanza dal cibo tra le azioni sicure
+/// Da usare SOLO durante la fase di warm-up
+pub fn choose_heuristic_action(snake: &SnakeInstance, safe_actions: &[usize]) -> usize {
+    let head = snake.snake[0];
+    let food = snake.food;
+
+    // Calcola la distanza per ogni azione sicura
+    let mut best_action = safe_actions[0];
+    let mut min_distance = i32::MAX;
+
+    for &action in safe_actions {
+        let new_pos = match action {
+            0 => Position {
+                x: head.x + snake.direction.as_vec().0,
+                y: head.y + snake.direction.as_vec().1,
+            },
+            1 => {
+                let left_dir = snake.direction.turn_left();
+                Position {
+                    x: head.x + left_dir.as_vec().0,
+                    y: head.y + left_dir.as_vec().1,
+                }
+            }
+            2 => {
+                let right_dir = snake.direction.turn_right();
+                Position {
+                    x: head.x + right_dir.as_vec().0,
+                    y: head.y + right_dir.as_vec().1,
+                }
+            }
+            _ => unreachable!(),
+        };
+
+        let distance = manhattan_distance(&new_pos, &food);
+        if distance < min_distance {
+            min_distance = distance;
+            best_action = action;
+        }
+    }
+
+    best_action
 }
 
 /// 8 compass directions (N, NE, E, SE, S, SW, W, NW)
