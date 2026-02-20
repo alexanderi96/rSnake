@@ -432,9 +432,30 @@ pub struct SnakeInstance {
 }
 
 impl SnakeInstance {
-    pub fn generate_random_color() -> Color {
-        let mut rng = rand::thread_rng();
-        Color::rgb(rng.gen(), rng.gen(), rng.gen())
+    /// Assegna un colore basato sull'ID del serpente:
+    /// - Agente 0: sempre verde
+    /// - Altri agenti: gradiente da Rosso a Blu
+    fn assign_color(id: usize, total_snakes: usize) -> Color {
+        if id == 0 {
+            return Color::rgb(0.0, 1.0, 0.0); // Agente 0 sempre Verde
+        }
+        if total_snakes <= 2 {
+            return Color::rgb(1.0, 0.2, 0.2); // Fallback se pochi agenti
+        }
+
+        // Gradiente da Rosso (start) a Blu (end)
+        let start = Color::rgb(1.0, 0.2, 0.2);
+        let end = Color::rgb(0.2, 0.2, 1.0);
+
+        // Normalizza l'indice tra 0.0 e 1.0 per gli agenti da 1 a N-1
+        let t = (id - 1) as f32 / (total_snakes - 2) as f32;
+
+        // Interpolazione lineare RGB manuale
+        Color::rgb(
+            start.r() + (end.r() - start.r()) * t,
+            start.g() + (end.g() - start.g()) * t,
+            start.b() + (end.b() - start.b()) * t,
+        )
     }
 
     pub fn get_random_spawn_data(grid: &GridDimensions) -> (Position, Direction) {
@@ -486,13 +507,13 @@ impl SnakeInstance {
             is_game_over: false,
             steps_without_food: 0,
             score: 0,
-            color: Self::generate_random_color(),
+            color: Self::assign_color(id, total_snakes),
             epsilon,
             previous_state: [0.0; BASE_STATE_SIZE],
         }
     }
 
-    pub fn reset(&mut self, grid: &GridDimensions) {
+    pub fn reset(&mut self, grid: &GridDimensions, total_snakes: usize) {
         let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
 
         self.snake.clear();
@@ -505,7 +526,7 @@ impl SnakeInstance {
             x: (spawn_pos.x + 5) % grid.width,
             y: (spawn_pos.y + 5) % grid.height,
         };
-        self.color = Self::generate_random_color();
+        self.color = Self::assign_color(self.id, total_snakes);
         self.previous_state = [0.0; BASE_STATE_SIZE];
     }
 }
@@ -526,6 +547,36 @@ impl GameState {
             high_score: 0,
             total_iterations: 0,
             snakes,
+        }
+    }
+
+    /// Aggiorna gli epsilon con distribuzione esponenziale dinamica (Dynamic Ape-X Spread)
+    /// Basata su decadimento esponenziale continuo in base alla generazione corrente
+    pub fn update_epsilons(
+        &mut self,
+        current_gen: u32,
+        decay_rate: f32,
+        epsilon_min: f32,
+        epsilon_max: f32,
+    ) {
+        let total_snakes = self.snakes.len();
+        if total_snakes <= 1 {
+            return;
+        }
+
+        let decay_factor = f32::exp(-decay_rate * current_gen as f32);
+
+        // Confini asintotici: decadono verso i valori minimi
+        let current_max = epsilon_min + (epsilon_max - epsilon_min) * decay_factor;
+
+        for (i, snake) in self.snakes.iter_mut().enumerate() {
+            if i == 0 {
+                snake.epsilon = 0.0; // Agente 0 sempre greedy
+            } else {
+                // Distribuzione esponenziale dello spread tra i cloni
+                let progress = (i - 1) as f32 / (total_snakes - 2).max(1) as f32;
+                snake.epsilon = epsilon_min * (current_max / epsilon_min).powf(progress);
+            }
         }
     }
 }
@@ -566,97 +617,6 @@ impl Direction {
             Direction::Right => Direction::Up,
         }
     }
-}
-
-/// Calcola le azioni sicure per un serpente dato il grid map
-/// Restituisce un vettore di indici di azioni sicure (0: Avanti, 1: Sinistra, 2: Destra)
-/// Da usare SOLO durante la fase di warm-up per non sporcare il replay buffer
-pub fn get_safe_actions(snake: &SnakeInstance, grid_map: &GridMap) -> Vec<usize> {
-    let head = snake.snake[0];
-    let (dx, dy) = snake.direction.as_vec();
-
-    let mut safe_actions = Vec::new();
-
-    // Azione 0: Avanti (mantieni direzione)
-    let forward_pos = Position {
-        x: head.x + dx,
-        y: head.y + dy,
-    };
-    if !grid_map.is_collision(forward_pos.x, forward_pos.y, snake.id) {
-        safe_actions.push(0);
-    }
-
-    // Azione 1: Sinistra (ruota a sinistra)
-    let left_dir = snake.direction.turn_left();
-    let (ldx, ldy) = left_dir.as_vec();
-    let left_pos = Position {
-        x: head.x + ldx,
-        y: head.y + ldy,
-    };
-    if !grid_map.is_collision(left_pos.x, left_pos.y, snake.id) {
-        safe_actions.push(1);
-    }
-
-    // Azione 2: Destra (ruota a destra)
-    let right_dir = snake.direction.turn_right();
-    let (rdx, rdy) = right_dir.as_vec();
-    let right_pos = Position {
-        x: head.x + rdx,
-        y: head.y + rdy,
-    };
-    if !grid_map.is_collision(right_pos.x, right_pos.y, snake.id) {
-        safe_actions.push(2);
-    }
-
-    safe_actions
-}
-
-/// Calcola la distanza Manhattan tra due posizioni
-fn manhattan_distance(pos1: &Position, pos2: &Position) -> i32 {
-    (pos1.x - pos2.x).abs() + (pos1.y - pos2.y).abs()
-}
-
-/// Sceglie l'azione che minimizza la distanza dal cibo tra le azioni sicure
-/// Da usare SOLO durante la fase di warm-up
-pub fn choose_heuristic_action(snake: &SnakeInstance, safe_actions: &[usize]) -> usize {
-    let head = snake.snake[0];
-    let food = snake.food;
-
-    // Calcola la distanza per ogni azione sicura
-    let mut best_action = safe_actions[0];
-    let mut min_distance = i32::MAX;
-
-    for &action in safe_actions {
-        let new_pos = match action {
-            0 => Position {
-                x: head.x + snake.direction.as_vec().0,
-                y: head.y + snake.direction.as_vec().1,
-            },
-            1 => {
-                let left_dir = snake.direction.turn_left();
-                Position {
-                    x: head.x + left_dir.as_vec().0,
-                    y: head.y + left_dir.as_vec().1,
-                }
-            }
-            2 => {
-                let right_dir = snake.direction.turn_right();
-                Position {
-                    x: head.x + right_dir.as_vec().0,
-                    y: head.y + right_dir.as_vec().1,
-                }
-            }
-            _ => unreachable!(),
-        };
-
-        let distance = manhattan_distance(&new_pos, &food);
-        if distance < min_distance {
-            min_distance = distance;
-            best_action = action;
-        }
-    }
-
-    best_action
 }
 
 /// 8 compass directions (N, NE, E, SE, S, SW, W, NW)

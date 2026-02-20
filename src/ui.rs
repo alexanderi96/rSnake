@@ -459,8 +459,9 @@ pub fn on_window_resize(
         grid.height = new_height;
         *grid_map = GridMap::new(new_width, new_height);
 
+        let total_snakes = game.snakes.len();
         for snake in game.snakes.iter_mut() {
-            snake.reset(&grid);
+            snake.reset(&grid, total_snakes);
         }
 
         // Segnala al thread RL le nuove dimensioni

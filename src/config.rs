@@ -23,6 +23,11 @@ pub struct Hyperparameters {
     // Timeout (morte per inedia)
     pub base_steps_without_food: u32,
     pub steps_per_segment: u32,
+
+    // Dynamic Epsilon (Ape-X Spread)
+    pub epsilon_decay_rate: f32,
+    pub epsilon_min: f32,
+    pub epsilon_max: f32,
 }
 
 impl Default for Hyperparameters {
@@ -46,6 +51,11 @@ impl Default for Hyperparameters {
             // Timeout dinamico
             base_steps_without_food: 100,
             steps_per_segment: 10,
+
+            // Dynamic Epsilon (Ape-X Spread)
+            epsilon_decay_rate: 0.0005,
+            epsilon_min: 0.01,
+            epsilon_max: 0.5,
         }
     }
 }

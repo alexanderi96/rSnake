@@ -14,16 +14,15 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 use clap::Parser;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use rand::seq::SliceRandom;
 use std::thread; // Questo abilita .choose() sui vettori
 
 use agent::{AgentConfig, DqnAgent};
 use config::Hyperparameters;
 use snake::{
-    choose_heuristic_action, get_current_17_state, get_safe_actions, get_state_egocentric,
-    spawn_food, CollisionSettings, GameConfig, GameState, GameStats, GenerationRecord,
-    GlobalTrainingHistory, GridDimensions, GridMap, ParallelConfig, Position, RenderConfig,
-    SegmentPool, TrainingSession, TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
+    get_current_17_state, spawn_food, CollisionSettings, GameConfig, GameState, GameStats,
+    GenerationRecord, GlobalTrainingHistory, GridDimensions, GridMap, ParallelConfig, Position,
+    RenderConfig, SegmentPool, TrainingSession, TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE,
+    STATE_SIZE,
 };
 use types::{GameSnapshot, SnakeSnapshot};
 use ui::{ControlSender, ControlSignal, GraphPanelState, UiPlugin, WindowSettings};
@@ -334,15 +333,9 @@ fn run_rl_thread(
     let mut generation_start = std::time::Instant::now();
     let mut generation_steps: u64 = 0;
 
-    // --- FASE DI WARM-UP ---
-    println!("🔥 Inizio fase di Warm-up del Replay Buffer...");
+    // --- FASE DI WARM-UP SILENZIOSO ---
+    println!("🔥 Inizio fase di Warm-up silenzioso (riempimento buffer offscreen)...");
     let warmup_target = hyperparams.batch_size * 50;
-
-    // Salviamo gli epsilon calcolati e forziamo esplorazione pura (1.0)
-    let backup_epsilons: Vec<f32> = game_state.snakes.iter().map(|s| s.epsilon).collect();
-    for snake in game_state.snakes.iter_mut() {
-        snake.epsilon = 1.0;
-    }
 
     while agent.replay_buffer.len() < warmup_target {
         run_simulation_step(
@@ -359,14 +352,18 @@ fn run_rl_thread(
             &mut generation_start,
             &mut generation_steps,
             &hyperparams,
+            true, // is_warmup
         );
     }
+    println!("✅ Warm-up completo! Inizio addestramento vero e proprio.");
 
-    // Ripristina la distribuzione di esplorazione originale
-    for (i, snake) in game_state.snakes.iter_mut().enumerate() {
-        snake.epsilon = backup_epsilons[i];
-    }
-    println!("✅ Warm-up completo! Inizio addestramento.");
+    // Inizializza gli epsilon per la prima generazione
+    game_state.update_epsilons(
+        game_state.total_iterations,
+        hyperparams.epsilon_decay_rate,
+        hyperparams.epsilon_min,
+        hyperparams.epsilon_max,
+    );
 
     // Loop principale del training
     loop {
@@ -388,8 +385,9 @@ fn run_rl_thread(
                     grid.height = new_height;
                     grid_map = GridMap::new(new_width, new_height);
                     // Reset snakes to fit new grid
+                    let total_snakes = game_state.snakes.len();
                     for snake in game_state.snakes.iter_mut() {
-                        snake.reset(&grid);
+                        snake.reset(&grid, total_snakes);
                     }
                 }
                 ControlSignal::Exit => {
@@ -420,6 +418,7 @@ fn run_rl_thread(
             &mut generation_start,
             &mut generation_steps,
             &hyperparams,
+            false, // is_warmup
         );
 
         // Incrementa contatore step
@@ -539,11 +538,9 @@ fn run_simulation_step(
     generation_start: &mut std::time::Instant,
     generation_steps: &mut u64,
     hyperparams: &Hyperparameters,
+    is_warmup: bool,
 ) {
-    use rand::Rng;
     use rayon::prelude::*;
-
-    let warmup_target = hyperparams.batch_size * 50;
 
     // Identifica serpenti vivi
     let active_snakes: Vec<usize> = game
@@ -555,20 +552,30 @@ fn run_simulation_step(
         .collect();
 
     if active_snakes.is_empty() {
-        handle_generation_end(
-            game,
-            agent,
-            game_stats,
-            training_session,
-            global_history,
-            session_file,
-            parallel_config,
-            grid,
-            generation_start,
-            generation_steps,
-            hyperparams,
-        );
-        return;
+        if is_warmup {
+            // Warmup: solo reset serpenti, niente logging/training
+            let total_snakes = game.snakes.len();
+            for snake in game.snakes.iter_mut() {
+                snake.reset(grid, total_snakes);
+            }
+            return;
+        } else {
+            // Training normale: handle_generation_end completo
+            handle_generation_end(
+                game,
+                agent,
+                game_stats,
+                training_session,
+                global_history,
+                session_file,
+                parallel_config,
+                grid,
+                generation_start,
+                generation_steps,
+                hyperparams,
+            );
+            return;
+        }
     }
 
     // --- FASE 1: COMPUTE PARALLELO (Sola lettura) ---
@@ -608,24 +615,12 @@ fn run_simulation_step(
     let mut step_results = Vec::with_capacity(computed_data.len());
 
     for (i, (snake_idx, state_34, current_17, _)) in computed_data.into_iter().enumerate() {
-        let mut action_idx = action_indices[i];
+        let action_idx = action_indices[i];
         let snake_ref = &mut game.snakes[snake_idx];
         let old_head = snake_ref.snake[0];
 
         // Aggiorna la memoria temporale del serpente per il prossimo frame
         snake_ref.previous_state = current_17;
-
-        // Logica Warm-up (Heuristic)
-        if agent.replay_buffer.len() < warmup_target {
-            let safe_actions = get_safe_actions(snake_ref, grid_map);
-            if !safe_actions.is_empty() {
-                action_idx = if rand::thread_rng().gen_bool(0.8) {
-                    choose_heuristic_action(snake_ref, &safe_actions)
-                } else {
-                    *safe_actions.choose(&mut rand::thread_rng()).unwrap()
-                };
-            }
-        }
 
         // Applica azione
         match action_idx {
@@ -711,9 +706,12 @@ fn run_simulation_step(
         ));
     }
 
-    agent.iterations += 1;
-    if agent.iterations % hyperparams.train_interval as u32 == 0 {
-        agent.train();
+    // Training solo se non in warmup
+    if !is_warmup {
+        agent.iterations += 1;
+        if agent.iterations % hyperparams.train_interval as u32 == 0 {
+            agent.train();
+        }
     }
 }
 
@@ -729,7 +727,7 @@ fn handle_generation_end(
     grid: &GridDimensions,
     generation_start: &mut std::time::Instant,
     generation_steps: &mut u64,
-    _hyperparams: &Hyperparameters,
+    hyperparams: &Hyperparameters,
 ) {
     let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
     game_stats.total_food_eaten += food_eaten as u64;
@@ -791,10 +789,18 @@ fn handle_generation_end(
         eprintln!("Error saving session: {}", e);
     }
 
+    let total_snakes = game.snakes.len();
     for snake in game.snakes.iter_mut() {
-        snake.reset(grid);
+        snake.reset(grid, total_snakes);
     }
     game.total_iterations += 1;
+    // Aggiorna gli epsilon dinamicamente basandosi sulla generazione corrente
+    game.update_epsilons(
+        game.total_iterations,
+        hyperparams.epsilon_decay_rate,
+        hyperparams.epsilon_min,
+        hyperparams.epsilon_max,
+    );
     agent.iterations = game.total_iterations;
 
     agent.train();
