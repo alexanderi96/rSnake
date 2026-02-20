@@ -319,6 +319,14 @@ pub struct GenerationRecord {
     pub min_score: u32,
     pub avg_loss: f32,
     pub epsilon: f32,
+    // Nuove metriche diagnostiche
+    pub avg_q_value: f32,
+    pub min_loss: f32,
+    pub max_loss: f32,
+    pub avg_episode_length: f32,
+    pub buffer_positive_ratio: f32,
+    pub buffer_negative_ratio: f32,
+    pub buffer_neutral_ratio: f32,
 }
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default)]
@@ -365,6 +373,9 @@ impl TrainingSession {
             let max_score = chunk.iter().map(|r| r.max_score).max().unwrap_or(0);
             let avg_loss = chunk.iter().map(|r| r.avg_loss).sum::<f32>() / count;
             let avg_epsilon = chunk.iter().map(|r| r.epsilon).sum::<f32>() / count;
+            let avg_q_value = chunk.iter().map(|r| r.avg_q_value).sum::<f32>() / count;
+            let avg_episode_length =
+                chunk.iter().map(|r| r.avg_episode_length).sum::<f32>() / count;
 
             compressed.push(GenerationRecord {
                 gen: avg_gen,
@@ -374,6 +385,13 @@ impl TrainingSession {
                 min_score: 0,
                 avg_loss,
                 epsilon: avg_epsilon,
+                avg_q_value,
+                min_loss: 0.0,
+                max_loss: 0.0,
+                avg_episode_length,
+                buffer_positive_ratio: 0.0,
+                buffer_negative_ratio: 0.0,
+                buffer_neutral_ratio: 0.0,
             });
         }
 

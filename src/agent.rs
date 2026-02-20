@@ -70,6 +70,36 @@ impl ReplayBuffer {
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
+
+    /// Analizza la distribuzione dei reward nel buffer
+    /// Restituisce (positivi%, negativi%, neutri%)
+    pub fn analyze_reward_distribution(&self) -> (f32, f32, f32) {
+        let len = self.buffer.len();
+        if len == 0 {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let mut positive = 0;
+        let mut negative = 0;
+        let mut neutral = 0;
+
+        for (_, _, reward, _, _) in &self.buffer {
+            if *reward > 0.0 {
+                positive += 1;
+            } else if *reward < 0.0 {
+                negative += 1;
+            } else {
+                neutral += 1;
+            }
+        }
+
+        let len_f = len as f32;
+        (
+            positive as f32 / len_f,
+            negative as f32 / len_f,
+            neutral as f32 / len_f,
+        )
+    }
 }
 
 /// DQN Agent - Non è più una risorsa Bevy, viene gestito nel thread RL separato
@@ -83,6 +113,9 @@ pub struct DqnAgent {
     pub target_update_counter: usize,
     pub iterations: u32,
     pub device: MyDevice,
+    // Metriche diagnostiche per tracciamento
+    pub generation_q_values: Vec<f32>,
+    pub generation_losses: Vec<f32>,
 }
 
 impl DqnAgent {
@@ -109,15 +142,17 @@ impl DqnAgent {
             target_update_counter: 0,
             iterations: 0,
             device,
+            generation_q_values: Vec::new(),
+            generation_losses: Vec::new(),
         }
     }
 
-    pub fn select_action(&self, state: [f32; STATE_SIZE], epsilon: f32) -> usize {
+    pub fn select_action(&mut self, state: [f32; STATE_SIZE], epsilon: f32) -> usize {
         self.select_actions_batch(vec![(state, epsilon)])[0]
     }
 
     pub fn select_actions_batch(
-        &self,
+        &mut self,
         states_with_eps: Vec<([f32; STATE_SIZE], f32)>,
     ) -> Vec<usize> {
         use rand::Rng;
@@ -153,6 +188,10 @@ impl DqnAgent {
                 .map(|(i, _)| i)
                 .unwrap();
             actions[original_idx] = best_action;
+
+            // Traccia il Q-value medio per questa inferenza
+            let avg_q: f32 = q_values.iter().sum::<f32>() / q_values.len() as f32;
+            self.generation_q_values.push(avg_q);
         }
 
         actions
@@ -160,6 +199,37 @@ impl DqnAgent {
 
     pub fn remember(&mut self, experience: Experience) {
         self.replay_buffer.push(experience);
+    }
+
+    /// Calcola le statistiche Q-value per la generazione corrente
+    pub fn get_generation_q_stats(&self) -> f32 {
+        if self.generation_q_values.is_empty() {
+            return 0.0;
+        }
+        self.generation_q_values.iter().sum::<f32>() / self.generation_q_values.len() as f32
+    }
+
+    /// Calcola le statistiche loss per la generazione corrente
+    pub fn get_generation_loss_stats(&self) -> (f32, f32, f32) {
+        if self.generation_losses.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+        let min = self
+            .generation_losses
+            .iter()
+            .fold(f32::INFINITY, |a, &b| a.min(b));
+        let max = self
+            .generation_losses
+            .iter()
+            .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let avg = self.generation_losses.iter().sum::<f32>() / self.generation_losses.len() as f32;
+        (min, max, avg)
+    }
+
+    /// Reset delle metriche di generazione
+    pub fn reset_generation_metrics(&mut self) {
+        self.generation_q_values.clear();
+        self.generation_losses.clear();
     }
 
     pub fn train(&mut self) {
@@ -231,6 +301,7 @@ impl DqnAgent {
         );
 
         self.loss = loss.to_data().as_slice::<f32>().unwrap()[0];
+        self.generation_losses.push(self.loss);
 
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &self.online_model);

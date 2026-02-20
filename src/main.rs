@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod agent;
+mod config;
 mod model;
 mod snake;
 mod types;
@@ -11,24 +12,156 @@ mod profiling;
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
+use clap::Parser;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::thread;
 
 use agent::{AgentConfig, DqnAgent};
+use config::Hyperparameters;
 use snake::{
-    get_current_17_state, get_state_egocentric, get_train_interval, spawn_food, CollisionSettings,
-    GameConfig, GameState, GameStats, GenerationRecord, GlobalTrainingHistory, GridDimensions,
-    GridMap, ParallelConfig, Position, RenderConfig, SegmentPool, TrainingSession, TrainingStats,
-    BASE_STATE_SIZE, BATCH_SIZE, BLOCK_SIZE, STATE_SIZE,
+    get_current_17_state, get_state_egocentric, spawn_food, CollisionSettings, GameConfig,
+    GameState, GameStats, GenerationRecord, GlobalTrainingHistory, GridDimensions, GridMap,
+    ParallelConfig, Position, RenderConfig, SegmentPool, TrainingSession, TrainingStats,
+    BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
 use types::{GameSnapshot, SnakeSnapshot};
 use ui::{ControlSender, ControlSignal, GraphPanelState, UiPlugin, WindowSettings};
+
+/// CLI Arguments per Snake DQN
+#[derive(Parser, Debug, Clone)]
+#[command(name = "snake-dqn")]
+#[command(about = "DQN Snake RL Training with Bevy + Burn")]
+pub struct CliArgs {
+    /// Path al file di configurazione (TOML o JSON)
+    #[arg(short, long)]
+    pub config: Option<String>,
+
+    /// Learning rate
+    #[arg(long)]
+    pub learning_rate: Option<f64>,
+
+    /// Gamma (discount factor)
+    #[arg(long)]
+    pub gamma: Option<f32>,
+
+    /// Batch size
+    #[arg(long)]
+    pub batch_size: Option<usize>,
+
+    /// Memory size (replay buffer capacity)
+    #[arg(long)]
+    pub memory_size: Option<usize>,
+
+    /// Target network update frequency
+    #[arg(long)]
+    pub target_update_freq: Option<usize>,
+
+    /// Training interval (steps)
+    #[arg(long)]
+    pub train_interval: Option<usize>,
+
+    /// Reward for eating food
+    #[arg(long)]
+    pub reward_food: Option<f32>,
+
+    /// Reward for dying (negative)
+    #[arg(long)]
+    pub reward_death: Option<f32>,
+
+    /// Reward per step (negative for penalty)
+    #[arg(long)]
+    pub reward_step: Option<f32>,
+
+    /// Base steps without food before timeout
+    #[arg(long)]
+    pub base_steps_without_food: Option<u32>,
+
+    /// Additional steps per snake segment
+    #[arg(long)]
+    pub steps_per_segment: Option<u32>,
+}
+
+/// Costruisce la configurazione finale combinando file config e CLI args
+fn build_hyperparameters(args: &CliArgs) -> Hyperparameters {
+    let mut config = if let Some(ref path) = args.config {
+        match Hyperparameters::from_file(path) {
+            Ok(cfg) => {
+                println!("✅ Config loaded from: {}", path);
+                cfg
+            }
+            Err(e) => {
+                eprintln!("⚠️  Failed to load config ({}), using defaults", e);
+                Hyperparameters::default()
+            }
+        }
+    } else {
+        Hyperparameters::default()
+    };
+
+    // CLI args override file config
+    if let Some(v) = args.learning_rate {
+        config.learning_rate = v;
+    }
+    if let Some(v) = args.gamma {
+        config.gamma = v;
+    }
+    if let Some(v) = args.batch_size {
+        config.batch_size = v;
+    }
+    if let Some(v) = args.memory_size {
+        config.memory_size = v;
+    }
+    if let Some(v) = args.target_update_freq {
+        config.target_update_freq = v;
+    }
+    if let Some(v) = args.train_interval {
+        config.train_interval = v;
+    }
+    if let Some(v) = args.reward_food {
+        config.reward_food = v;
+    }
+    if let Some(v) = args.reward_death {
+        config.reward_death = v;
+    }
+    if let Some(v) = args.reward_step {
+        config.reward_step = v;
+    }
+    if let Some(v) = args.base_steps_without_food {
+        config.base_steps_without_food = v;
+    }
+    if let Some(v) = args.steps_per_segment {
+        config.steps_per_segment = v;
+    }
+
+    config
+}
 
 /// Resource wrapper for the crossbeam receiver
 #[derive(Resource)]
 pub struct RenderReceiver(pub Receiver<GameSnapshot>);
 
 fn main() {
+    // Parse CLI arguments
+    let args = CliArgs::parse();
+    let hyperparams = build_hyperparameters(&args);
+
+    // Print configuration
+    println!("🚀 Snake DQN Training Configuration:");
+    println!("  Learning Rate: {:.1e}", hyperparams.learning_rate);
+    println!("  Gamma: {:.2}", hyperparams.gamma);
+    println!("  Batch Size: {}", hyperparams.batch_size);
+    println!("  Memory Size: {}", hyperparams.memory_size);
+    println!("  Target Update Freq: {}", hyperparams.target_update_freq);
+    println!("  Train Interval: {}", hyperparams.train_interval);
+    println!("  Reward Food: {:.2}", hyperparams.reward_food);
+    println!("  Reward Death: {:.2}", hyperparams.reward_death);
+    println!("  Reward Step: {:.3}", hyperparams.reward_step);
+    println!(
+        "  Base Steps Without Food: {}",
+        hyperparams.base_steps_without_food
+    );
+    println!("  Steps Per Segment: {}", hyperparams.steps_per_segment);
+
     // Initialize profiling if feature is enabled
     #[cfg(feature = "profiling")]
     let _profiling_guard = profiling::ProfilingGuard::new();
@@ -41,7 +174,7 @@ fn main() {
 
     // Avvia il thread RL separato
     thread::spawn(move || {
-        run_rl_thread(tx, control_rx);
+        run_rl_thread(tx, control_rx, hyperparams);
     });
 
     App::new()
@@ -144,7 +277,11 @@ fn setup(
 }
 
 /// Thread RL principale - Producer nel pattern Producer-Consumer
-fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) {
+fn run_rl_thread(
+    tx: Sender<GameSnapshot>,
+    control_rx: Receiver<ControlSignal>,
+    hyperparams: Hyperparameters,
+) {
     println!("🧠 RL Thread started - Running simulation at maximum speed");
 
     // --- AGENT INITIALIZATION ---
@@ -198,7 +335,7 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
 
     // --- FASE DI WARM-UP ---
     println!("🔥 Inizio fase di Warm-up del Replay Buffer...");
-    let warmup_target = BATCH_SIZE * 50;
+    let warmup_target = hyperparams.batch_size * 50;
 
     // Salviamo gli epsilon calcolati e forziamo esplorazione pura (1.0)
     let backup_epsilons: Vec<f32> = game_state.snakes.iter().map(|s| s.epsilon).collect();
@@ -220,6 +357,7 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
             &mut grid_map,
             &mut generation_start,
             &mut generation_steps,
+            &hyperparams,
         );
     }
 
@@ -280,6 +418,7 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
             &mut grid_map,
             &mut generation_start,
             &mut generation_steps,
+            &hyperparams,
         );
 
         // Incrementa contatore step
@@ -363,6 +502,7 @@ fn run_simulation_step(
     grid_map: &mut GridMap,
     generation_start: &mut std::time::Instant,
     generation_steps: &mut u64,
+    hyperparams: &Hyperparameters,
 ) {
     use rand::Rng;
     use rayon::prelude::*;
@@ -390,6 +530,7 @@ fn run_simulation_step(
             grid,
             generation_start,
             generation_steps,
+            hyperparams,
         );
         return;
     }
@@ -474,7 +615,7 @@ fn run_simulation_step(
         snake_ref.steps_without_food += 1;
 
         // 1. Penalità costante minima per ogni step (scoraggia i loop e l'inattività)
-        let mut reward: f32 = -0.001;
+        let mut reward: f32 = hyperparams.reward_step;
         let mut done = false;
 
         let collision = if collision_settings.snake_vs_snake {
@@ -484,12 +625,12 @@ fn run_simulation_step(
         } || snake_ref.snake.contains(&new_head);
 
         if collision {
-            reward = -10.0; // Death penalty
+            reward = hyperparams.reward_death; // Death penalty
             done = true;
             snake_ref.is_game_over = true;
         } else if new_head == snake_ref.food {
             // Constant food reward (removed length-based scaling for stable convergence)
-            reward = 10.0;
+            reward = hyperparams.reward_food;
 
             snake_ref.snake.push_front(new_head);
             snake_ref.score += 1;
@@ -504,11 +645,11 @@ fn run_simulation_step(
             snake_ref.snake.push_front(new_head);
             snake_ref.snake.pop_back();
 
-            // Calcola un limite massimo ragionevole, ad esempio 100 step base + 10 per ogni segmento
-            let max_steps = 100 + (snake_ref.snake.len() as u32 * 10);
+            // Calcola un limite massimo ragionevole usando hyperparams
+            let max_steps = hyperparams.calculate_timeout(snake_ref.snake.len());
 
             if snake_ref.steps_without_food > max_steps {
-                reward = -10.0; // Punito severamente per non aver cercato attivamente
+                reward = hyperparams.reward_death; // Punito severamente per non aver cercato attivamente
                 done = true;
                 snake_ref.is_game_over = true;
             }
@@ -541,7 +682,7 @@ fn run_simulation_step(
     }
 
     agent.iterations += 1;
-    if agent.iterations % get_train_interval() as u32 == 0 {
+    if agent.iterations % hyperparams.train_interval as u32 == 0 {
         agent.train();
     }
 
@@ -557,6 +698,7 @@ fn run_simulation_step(
             grid,
             generation_start,
             generation_steps,
+            hyperparams,
         );
     }
 }
@@ -573,6 +715,7 @@ fn handle_generation_end(
     grid: &GridDimensions,
     generation_start: &mut std::time::Instant,
     generation_steps: &mut u64,
+    _hyperparams: &Hyperparameters,
 ) {
     let food_eaten: u32 = game.snakes.iter().map(|s| s.score).sum();
     game_stats.total_food_eaten += food_eaten as u64;
@@ -592,6 +735,20 @@ fn handle_generation_end(
     // Calcola la media degli epsilon dei serpenti (Ape-X distributed exploration)
     let avg_epsilon = game.snakes.iter().map(|s| s.epsilon).sum::<f32>() / game.snakes.len() as f32;
 
+    // === NUOVE METRICHE DIAGNOSTICHE ===
+
+    // 1. Average Q-Value dalla generazione
+    let avg_q_value = agent.get_generation_q_stats();
+
+    // 2. Min/Max/Avg Loss dalla generazione
+    let (min_loss, max_loss, avg_loss) = agent.get_generation_loss_stats();
+
+    // 3. Average Episode Length (steps sopravvissuti)
+    let avg_episode_length = *generation_steps as f32 / parallel_config.snake_count as f32;
+
+    // 4. Buffer Reward Distribution
+    let (pos_ratio, neg_ratio, neut_ratio) = agent.replay_buffer.analyze_reward_distribution();
+
     let record = GenerationRecord {
         gen: game.total_iterations,
         timestamp: std::time::SystemTime::now()
@@ -601,8 +758,16 @@ fn handle_generation_end(
         avg_score,
         max_score,
         min_score,
-        avg_loss: agent.loss,
+        avg_loss,
         epsilon: avg_epsilon,
+        // Nuove metriche
+        avg_q_value,
+        min_loss,
+        max_loss,
+        avg_episode_length,
+        buffer_positive_ratio: pos_ratio,
+        buffer_negative_ratio: neg_ratio,
+        buffer_neutral_ratio: neut_ratio,
     };
 
     global_history.records.push(record.clone());
@@ -658,14 +823,29 @@ fn handle_generation_end(
         avg_score,
         max_score,
         avg_epsilon,
-        agent.loss,
+        avg_loss,
         generation_duration.as_secs_f32(),
         steps_per_second
+    );
+
+    // Log metriche avanzate
+    println!(
+        "     Q-Value: {:.3}, Loss Range: {:.5}-{:.5}, Episode Len: {:.1}, Buffer: +{:.1}% -{:.1}% ~{:.1}%",
+        avg_q_value,
+        min_loss,
+        max_loss,
+        avg_episode_length,
+        pos_ratio * 100.0,
+        neg_ratio * 100.0,
+        neut_ratio * 100.0
     );
 
     // Reset timer e contatore per la prossima generazione
     *generation_start = std::time::Instant::now();
     *generation_steps = 0;
+
+    // Reset metriche del agent per la prossima generazione
+    agent.reset_generation_metrics();
 }
 
 pub struct SnakePlugin;
