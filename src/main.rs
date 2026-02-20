@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod agent;
+mod buffer;
 mod config;
 mod model;
 mod snake;
@@ -16,7 +17,8 @@ use clap::Parser;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::thread; // Questo abilita .choose() sui vettori
 
-use agent::{AgentConfig, DqnAgent};
+use agent::{AgentConfig, DqnAgent, Experience};
+use buffer::Transition;
 use config::Hyperparameters;
 use snake::{
     get_current_17_state, spawn_food, CollisionSettings, GameConfig, GameState, GameStats,
@@ -697,7 +699,7 @@ fn run_simulation_step(
 
     // Memorizza esperienze e allena
     for res in step_results {
-        agent.remember((
+        agent.remember(Transition::new(
             res.state,
             res.action_idx,
             res.reward,

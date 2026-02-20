@@ -2,14 +2,13 @@ use burn::{
     backend::{wgpu::WgpuDevice, Autodiff, Wgpu},
     grad_clipping::GradientClippingConfig,
     module::Module,
-    nn::loss::MseLoss,
     optim::decay::WeightDecayConfig,
     optim::{AdamConfig, GradientsParams, Optimizer},
     record::{FullPrecisionSettings, NamedMpkFileRecorder},
     tensor::{Int, Tensor},
 };
-use std::collections::VecDeque;
 
+use crate::buffer::{PrioritizedReplayBuffer, Transition};
 use crate::model::DqnModel;
 use crate::snake::{BATCH_SIZE, MEMORY_SIZE, STATE_SIZE, TARGET_UPDATE_FREQ};
 
@@ -20,7 +19,7 @@ type MyDevice = WgpuDevice;
 type MyOptimizer =
     burn::optim::adaptor::OptimizerAdaptor<burn::optim::Adam, DqnModel<MyBackend>, MyBackend>;
 
-pub type Experience = ([f32; 34], usize, f32, [f32; 34], bool);
+pub type Experience = Transition;
 
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
@@ -37,78 +36,13 @@ impl AgentConfig {
     }
 }
 
-pub struct ReplayBuffer {
-    pub buffer: VecDeque<Experience>,
-    pub capacity: usize,
-}
-
-impl ReplayBuffer {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            buffer: VecDeque::with_capacity(capacity),
-            capacity,
-        }
-    }
-
-    pub fn push(&mut self, experience: Experience) {
-        if self.buffer.len() >= self.capacity {
-            self.buffer.pop_front();
-        }
-        self.buffer.push_back(experience);
-    }
-
-    pub fn sample(&self, batch_size: usize) -> Vec<Experience> {
-        use rand::seq::index;
-        let mut rng = rand::thread_rng();
-        let len = self.buffer.len();
-        index::sample(&mut rng, len, batch_size)
-            .iter()
-            .map(|i| self.buffer[i])
-            .collect()
-    }
-
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Analizza la distribuzione dei reward nel buffer
-    /// Restituisce (positivi%, negativi%, neutri%)
-    pub fn analyze_reward_distribution(&self) -> (f32, f32, f32) {
-        let len = self.buffer.len();
-        if len == 0 {
-            return (0.0, 0.0, 0.0);
-        }
-
-        let mut positive = 0;
-        let mut negative = 0;
-        let mut neutral = 0;
-
-        for (_, _, reward, _, _) in &self.buffer {
-            if *reward > 0.0 {
-                positive += 1;
-            } else if *reward < 0.0 {
-                negative += 1;
-            } else {
-                neutral += 1;
-            }
-        }
-
-        let len_f = len as f32;
-        (
-            positive as f32 / len_f,
-            negative as f32 / len_f,
-            neutral as f32 / len_f,
-        )
-    }
-}
-
-/// DQN Agent - Non è più una risorsa Bevy, viene gestito nel thread RL separato
+/// DQN Agent con Prioritized Experience Replay
 pub struct DqnAgent {
     pub config: AgentConfig,
     pub online_model: DqnModel<MyBackend>,
     pub target_model: DqnModel<MyBackend>,
     pub optimizer: MyOptimizer,
-    pub replay_buffer: ReplayBuffer,
+    pub replay_buffer: PrioritizedReplayBuffer,
     pub loss: f32,
     pub target_update_counter: usize,
     pub iterations: u32,
@@ -120,8 +54,8 @@ pub struct DqnAgent {
 
 impl DqnAgent {
     pub fn new(config: AgentConfig) -> Self {
-        let device = WgpuDevice::default(); // Usa GPU disponibile (Vulkan, Metal, o DX12)
-        println!("🚀 Initializing DqnAgent on Wgpu GPU");
+        let device = WgpuDevice::default();
+        println!("🚀 Initializing DqnAgent on Wgpu GPU with PER");
 
         let online_model = DqnModel::new(&device);
         let target_model = online_model.clone();
@@ -137,7 +71,7 @@ impl DqnAgent {
             online_model,
             target_model,
             optimizer,
-            replay_buffer: ReplayBuffer::new(MEMORY_SIZE),
+            replay_buffer: PrioritizedReplayBuffer::new(MEMORY_SIZE),
             loss: 0.0,
             target_update_counter: 0,
             iterations: 0,
@@ -181,16 +115,20 @@ impl DqnAgent {
 
         for (batch_idx, q_values) in q_values_batch.iter().enumerate() {
             let original_idx = indices_to_infer[batch_idx];
-            let best_action = q_values
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap();
+            // Trova l'azione con Q-value massimo in modo sicuro
+            let mut best_action = 0;
+            let mut best_value = f32::NEG_INFINITY;
+            for (i, &v) in q_values.iter().enumerate() {
+                if v.is_finite() && v > best_value {
+                    best_value = v;
+                    best_action = i;
+                }
+            }
             actions[original_idx] = best_action;
 
             // Traccia il Q-value medio per questa inferenza
-            let avg_q: f32 = q_values.iter().sum::<f32>() / q_values.len() as f32;
+            let avg_q: f32 = q_values.iter().filter(|&&v| v.is_finite()).sum::<f32>()
+                / q_values.iter().filter(|&&v| v.is_finite()).count().max(1) as f32;
             self.generation_q_values.push(avg_q);
         }
 
@@ -237,7 +175,12 @@ impl DqnAgent {
             return;
         }
 
-        let batch = self.replay_buffer.sample(BATCH_SIZE);
+        // Campiona dal buffer PER (restituisce anche indici e pesi IS)
+        let (batch, tree_indices, is_weights) = self.replay_buffer.sample(BATCH_SIZE);
+
+        if batch.is_empty() {
+            return;
+        }
 
         let mut states = Vec::with_capacity(BATCH_SIZE * STATE_SIZE);
         let mut next_states = Vec::with_capacity(BATCH_SIZE * STATE_SIZE);
@@ -245,12 +188,12 @@ impl DqnAgent {
         let mut rewards = Vec::with_capacity(BATCH_SIZE);
         let mut dones = Vec::with_capacity(BATCH_SIZE);
 
-        for (s, a, r, ns, d) in batch {
-            states.extend_from_slice(&s);
-            next_states.extend_from_slice(&ns);
-            actions.push(a as i32);
-            rewards.push(r);
-            dones.push(if d { 1.0f32 } else { 0.0 });
+        for t in &batch {
+            states.extend_from_slice(&t.state);
+            next_states.extend_from_slice(&t.next_state);
+            actions.push(t.action as i32);
+            rewards.push(t.reward);
+            dones.push(if t.done { 1.0f32 } else { 0.0 });
         }
 
         let state_tensor = Tensor::<MyBackend, 2>::from_data(
@@ -266,11 +209,17 @@ impl DqnAgent {
             &self.device,
         );
         let reward_tensor = Tensor::<MyBackend, 1>::from_data(
-            burn::tensor::TensorData::new(rewards, [BATCH_SIZE]),
+            burn::tensor::TensorData::new(rewards.clone(), [BATCH_SIZE]),
             &self.device,
         );
         let done_tensor = Tensor::<MyBackend, 1>::from_data(
             burn::tensor::TensorData::new(dones, [BATCH_SIZE]),
+            &self.device,
+        );
+
+        // Pesi IS come tensore per la loss ponderata
+        let is_weights_tensor = Tensor::<MyBackend, 1>::from_data(
+            burn::tensor::TensorData::new(is_weights.clone(), [BATCH_SIZE]),
             &self.device,
         );
 
@@ -280,8 +229,8 @@ impl DqnAgent {
             .forward(next_state_tensor.clone())
             .detach();
 
-        // Un solo forward pass online su [next_states; states] concatenati
-        let combined_input = Tensor::cat(vec![next_state_tensor, state_tensor], 0);
+        // Forward pass combinato per efficienza
+        let combined_input = Tensor::cat(vec![next_state_tensor.clone(), state_tensor.clone()], 0);
         let all_q_online = self.online_model.forward(combined_input);
 
         let next_q_online = all_q_online.clone().slice([0..BATCH_SIZE, 0..3]).detach();
@@ -294,16 +243,29 @@ impl DqnAgent {
 
         let current_q = q_values.gather(1, action_tensor).squeeze(1);
 
-        let loss = MseLoss::new().forward(
-            current_q,
-            target_q.detach(),
-            burn::nn::loss::Reduction::Mean,
-        );
+        // Calcola TD-Error assoluto per aggiornamento priorità
+        let td_errors = target_q.clone().detach().sub(current_q.clone()).abs();
 
-        self.loss = loss.to_data().as_slice::<f32>().unwrap()[0];
+        // Calcola MSE loss per ogni elemento del batch
+        // MSE = (current_q - target_q)^2
+        let diff = current_q.sub(target_q.detach());
+        let loss_per_element = diff.clone().mul(diff);
+
+        // Moltiplica per i pesi IS per weighted loss
+        let weighted_loss = loss_per_element.mul(is_weights_tensor);
+        let mean_weighted_loss = weighted_loss.mean();
+
+        // Estrai loss in modo sicuro
+        let loss_data = mean_weighted_loss.to_data();
+        let loss_val = match loss_data.as_slice::<f32>() {
+            Ok(slice) => slice.first().copied().unwrap_or(0.0),
+            Err(_) => 0.0,
+        };
+        self.loss = loss_val;
         self.generation_losses.push(self.loss);
 
-        let grads = loss.backward();
+        // Backpropagation
+        let grads = mean_weighted_loss.backward();
         let grads = GradientsParams::from_grads(grads, &self.online_model);
         self.online_model =
             self.optimizer
@@ -315,12 +277,21 @@ impl DqnAgent {
             self.target_update_counter = 0;
         }
 
+        // Aggiorna le priorità nel buffer PER
+        let td_errors_data = td_errors.to_data();
+        let td_errors_vec: Vec<f32> = match td_errors_data.as_slice::<f32>() {
+            Ok(slice) => slice.to_vec(),
+            Err(_) => Vec::new(),
+        };
+
+        self.replay_buffer
+            .update_priorities(&tree_indices, &td_errors_vec);
+
         self.iterations += 1;
     }
 
     pub fn save(&mut self, path: &str) -> std::io::Result<()> {
         println!("💾 Saving model to: {}", path);
-        // NamedMpkFileRecorder è il recorder file-based disponibile senza feature wgpu
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
         self.online_model
             .clone()
