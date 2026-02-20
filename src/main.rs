@@ -198,7 +198,7 @@ fn run_rl_thread(tx: Sender<GameSnapshot>, control_rx: Receiver<ControlSignal>) 
 
     // --- FASE DI WARM-UP ---
     println!("🔥 Inizio fase di Warm-up del Replay Buffer...");
-    let warmup_target = BATCH_SIZE * 10;
+    let warmup_target = BATCH_SIZE * 50;
 
     // Salviamo gli epsilon calcolati e forziamo esplorazione pura (1.0)
     let backup_epsilons: Vec<f32> = game_state.snakes.iter().map(|s| s.epsilon).collect();
@@ -474,7 +474,7 @@ fn run_simulation_step(
         snake_ref.steps_without_food += 1;
 
         // 1. Penalità costante minima per ogni step (scoraggia i loop e l'inattività)
-        let mut reward: f32 = -0.01;
+        let mut reward: f32 = -0.001;
         let mut done = false;
 
         let collision = if collision_settings.snake_vs_snake {
@@ -484,12 +484,12 @@ fn run_simulation_step(
         } || snake_ref.snake.contains(&new_head);
 
         if collision {
-            reward = -1.0; // Death penalty
+            reward = -10.0; // Death penalty
             done = true;
             snake_ref.is_game_over = true;
         } else if new_head == snake_ref.food {
             // Constant food reward (removed length-based scaling for stable convergence)
-            reward = 1.0;
+            reward = 10.0;
 
             snake_ref.snake.push_front(new_head);
             snake_ref.score += 1;
@@ -504,8 +504,11 @@ fn run_simulation_step(
             snake_ref.snake.push_front(new_head);
             snake_ref.snake.pop_back();
 
-            if snake_ref.steps_without_food > (grid.width * grid.height) as u32 {
-                reward = -1.0; // Timeout bilanciato come la morte
+            // Calcola un limite massimo ragionevole, ad esempio 100 step base + 10 per ogni segmento
+            let max_steps = 100 + (snake_ref.snake.len() as u32 * 10);
+
+            if snake_ref.steps_without_food > max_steps {
+                reward = -10.0; // Punito severamente per non aver cercato attivamente
                 done = true;
                 snake_ref.is_game_over = true;
             }

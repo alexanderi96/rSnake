@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 pub const BLOCK_SIZE: f32 = 20.0;
 pub const MEMORY_SIZE: usize = 100_000;
 pub const BATCH_SIZE: usize = 256;
-pub const TARGET_UPDATE_FREQ: usize = 100;
+pub const TARGET_UPDATE_FREQ: usize = 10000;
 /// Base state size for a single frame (8 obstacle + 8 target direction + 1 distance)
 pub const BASE_STATE_SIZE: usize = 17;
 /// Total state size with frame stacking (current frame + previous frame)
@@ -33,7 +33,7 @@ pub fn get_parallel_threads() -> usize {
 
 /// Intervallo di training sincronizzato con il parallelismo
 pub fn get_train_interval() -> usize {
-    get_parallel_threads()
+    128
 }
 
 /// Configurazione parallelism - numero serpenti = core CPU
@@ -572,50 +572,6 @@ const RAY_DIRECTIONS: [(i32, i32); 8] = [
     (-1, 1),  // NW
 ];
 
-/// Get egocentric ray directions based on snake's current heading.
-/// Returns the 8 compass directions rotated so that index 0 is always "forward".
-fn get_egocentric_rays(direction: Direction) -> [(i32, i32); 8] {
-    // Base directions: [N, NE, E, SE, S, SW, W, NW]
-    // We rotate this array based on snake's direction so that:
-    // - Index 0 is always Forward (where snake is looking)
-    // - Index 2 is always Right
-    // - Index 4 is always Back
-    // - Index 6 is always Left
-    match direction {
-        Direction::Up => RAY_DIRECTIONS, // N is forward
-        Direction::Right => [
-            RAY_DIRECTIONS[2], // E is forward (was index 2)
-            RAY_DIRECTIONS[3], // SE
-            RAY_DIRECTIONS[4], // S
-            RAY_DIRECTIONS[5], // SW
-            RAY_DIRECTIONS[6], // W
-            RAY_DIRECTIONS[7], // NW
-            RAY_DIRECTIONS[0], // N
-            RAY_DIRECTIONS[1], // NE
-        ],
-        Direction::Down => [
-            RAY_DIRECTIONS[4], // S is forward (was index 4)
-            RAY_DIRECTIONS[5], // SW
-            RAY_DIRECTIONS[6], // W
-            RAY_DIRECTIONS[7], // NW
-            RAY_DIRECTIONS[0], // N
-            RAY_DIRECTIONS[1], // NE
-            RAY_DIRECTIONS[2], // E
-            RAY_DIRECTIONS[3], // SE
-        ],
-        Direction::Left => [
-            RAY_DIRECTIONS[6], // W is forward (was index 6)
-            RAY_DIRECTIONS[7], // NW
-            RAY_DIRECTIONS[0], // N
-            RAY_DIRECTIONS[1], // NE
-            RAY_DIRECTIONS[2], // E
-            RAY_DIRECTIONS[3], // SE
-            RAY_DIRECTIONS[4], // S
-            RAY_DIRECTIONS[5], // SW
-        ],
-    }
-}
-
 /// Calculate current 17 sensors in pure read-only mode.
 /// This function is thread-safe and can be used with par_iter().
 ///
@@ -636,36 +592,40 @@ pub fn get_current_17_state(
     let mut current_state = [0.0f32; BASE_STATE_SIZE];
     let head = snake.snake[0];
 
-    // Get egocentric directions - rotated based on snake's heading
-    let ego_rays = get_egocentric_rays(snake.direction);
+    // Direction offset: N=0, E=2, S=4, W=6 (indices in RAY_DIRECTIONS)
+    let dir_offset: usize = match snake.direction {
+        Direction::Up => 0,    // N
+        Direction::Right => 2, // E
+        Direction::Down => 4,  // S
+        Direction::Left => 6,  // W
+    };
 
     // === SENSORS 0-7: OBSTACLE RAYCASTING ===
-    // Cast rays in 8 directions and find first obstacle
-    for (i, (dx, dy)) in ego_rays.iter().enumerate() {
+    // Cast rays in 8 egocentric directions
+    for i in 0..8 {
+        let ray_idx = (i + dir_offset) % 8;
+        let (dx, dy) = RAY_DIRECTIONS[ray_idx];
+
         let mut curr_x = head.x;
         let mut curr_y = head.y;
-        let mut distance = 1; // Start at 1 (adjacent cell)
+        let mut distance = 1;
 
-        // Cast ray until we hit an obstacle or go out of bounds
         loop {
             curr_x += dx;
             curr_y += dy;
 
-            // Check bounds or collision
             if curr_x < 0
                 || curr_x >= grid.width
                 || curr_y < 0
                 || curr_y >= grid.height
                 || grid_map.is_collision(curr_x, curr_y, snake.id)
             {
-                // Found obstacle - value is inverse of distance
                 current_state[i] = 1.0 / (distance as f32);
                 break;
             }
 
             distance += 1;
 
-            // Safety limit - if we somehow don't hit anything in a reasonable distance
             if distance > grid.width.max(grid.height) {
                 current_state[i] = 0.0;
                 break;
@@ -674,7 +634,6 @@ pub fn get_current_17_state(
     }
 
     // === SENSORS 8-15: TARGET DIRECTION DOT PRODUCTS ===
-    // Calculate normalized vector from head to target
     let target_dx = (snake.food.x - head.x) as f32;
     let target_dy = (snake.food.y - head.y) as f32;
     let target_dist = (target_dx * target_dx + target_dy * target_dy).sqrt();
@@ -682,27 +641,27 @@ pub fn get_current_17_state(
     let target_vec = if target_dist > 0.0 {
         (target_dx / target_dist, target_dy / target_dist)
     } else {
-        (0.0, 0.0) // On top of target
+        (0.0, 0.0)
     };
 
-    // Calculate dot product with each of the 8 EGOCENTRIC direction vectors
-    for (i, (dx, dy)) in ego_rays.iter().enumerate() {
-        // Normalize diagonal vectors (NE, SE, SW, NW)
-        let dir_len = ((*dx * *dx + *dy * *dy) as f32).sqrt();
-        let dir_vec = (*dx as f32 / dir_len, *dy as f32 / dir_len);
+    for i in 0..8 {
+        let ray_idx = (i + dir_offset) % 8;
+        let (dx, dy) = RAY_DIRECTIONS[ray_idx];
 
-        // Dot product = how aligned is the target with this direction
+        let dir_len = ((dx * dx + dy * dy) as f32).sqrt();
+        let dir_vec = (dx as f32 / dir_len, dy as f32 / dir_len);
+
         let dot_product = target_vec.0 * dir_vec.0 + target_vec.1 * dir_vec.1;
-
-        // Only positive values (target is in that general direction)
         current_state[8 + i] = dot_product.max(0.0);
     }
 
     // === SENSOR 16: TARGET DISTANCE ===
+    let max_possible_dist = ((grid.width * grid.width + grid.height * grid.height) as f32).sqrt();
+
     current_state[16] = if target_dist > 0.0 {
-        1.0 / target_dist
+        1.0 - (target_dist / max_possible_dist) // Valore lineare da 1.0 (vicinissimo) a 0.0 (lontanissimo)
     } else {
-        1.0 // Maximum value when on top of target
+        1.0
     };
 
     current_state
