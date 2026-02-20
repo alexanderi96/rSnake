@@ -1,0 +1,21 @@
+# Hyperparameters per Snake DQN Training
+# Questo file può essere caricato con: cargo run -- --config config.toml
+
+# DQN / Rete
+learning_rate = 0.0001      # 1e-4
+gamma = 0.99
+batch_size = 256
+memory_size = 100000
+
+# Update Frequencies
+target_update_freq = 5000
+train_interval = 64
+
+# Reward System
+reward_food = 10.0
+reward_death = -10.0
+reward_step = -0.01
+
+# Timeout (morte per inedia)
+base_steps_without_food = 100
+steps_per_segment = 10
