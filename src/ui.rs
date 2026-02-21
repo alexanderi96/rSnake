@@ -1,29 +1,16 @@
+//! UI systems for MAP-Elites Snake
+
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
-use crossbeam_channel::{bounded, Sender};
-use std::thread;
 
 use crate::snake::{
     AppStartTime, CollisionSettings, Food, GameConfig, GameState, GameStats, GlobalTrainingHistory,
     GridDimensions, GridMap, MeshCache, Position, RenderConfig, SegmentPool, SnakeId,
-    SnakeInstance, TrainingSession, TrainingStats, BLOCK_SIZE,
+    SnakeInstance, TrainingStats, BLOCK_SIZE,
 };
 use crate::types::GameSnapshot;
-use crate::RenderReceiver;
-
-/// Segnali di controllo per il thread RL
-#[derive(Clone, Debug)]
-pub enum ControlSignal {
-    SaveBrain,
-    GridResized(i32, i32),
-    Exit,
-}
-
-/// Resource wrapper for the control channel sender
-#[derive(Resource)]
-pub struct ControlSender(pub Sender<ControlSignal>);
 
 /// UI Component markers
 #[derive(Component)]
@@ -257,8 +244,7 @@ pub fn update_stats_ui(
     let total_seconds = total_secs % 60;
 
     let persistent_high = game_stats.high_score.max(game.high_score);
-    let alive_count = game.snakes.iter().filter(|s| !s.is_game_over).count();
-    let dead_count = game.snakes.len() - alive_count;
+    let alive_count = game.alive_count();
 
     let mut snake_data: Vec<(usize, &SnakeInstance)> = game.snakes.iter().enumerate().collect();
     snake_data.sort_by(|a, b| b.1.score.cmp(&a.1.score));
@@ -300,7 +286,10 @@ pub fn update_stats_ui(
         );
         st_text.sections[2].value = format!(
             "Alive:{:2} Dead:{:2} | Food:{:4} | Games:{:5}",
-            alive_count, dead_count, game_stats.total_food_eaten, game_stats.total_games_played
+            alive_count,
+            game.snakes.len() - alive_count,
+            game_stats.total_food_eaten,
+            game_stats.total_games_played
         );
     }
 
@@ -326,8 +315,7 @@ pub fn update_stats_ui(
 pub fn handle_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut app_exit_events: EventWriter<AppExit>,
-    game: Res<GameState>, // USA GAMESTATE INVECE DI GAMESTATS
-    training_session: Res<TrainingSession>,
+    game: Res<GameState>,
     app_start_time: Res<AppStartTime>,
     global_history: Res<GlobalTrainingHistory>,
     mut window_settings: ResMut<WindowSettings>,
@@ -335,36 +323,24 @@ pub fn handle_input(
     mut collision_settings: ResMut<CollisionSettings>,
     mut render_config: ResMut<RenderConfig>,
     mut graph_state: ResMut<GraphPanelState>,
-    control_sender: Res<ControlSender>,
 ) {
     use crate::snake::get_or_create_run_dir;
     use std::time::Instant;
 
     if keyboard_input.just_pressed(KeyCode::Escape) {
-        // Segnala al thread RL di salvare il brain
-        println!("💾 Signaling RL thread to save brain...");
-        let _ = control_sender.0.try_send(ControlSignal::SaveBrain);
-
-        // Attendi un momento per permettere il salvataggio
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
         let current_session_duration = Instant::now().duration_since(app_start_time.0);
         let total_training_time =
             std::time::Duration::from_secs(global_history.accumulated_time_secs)
                 + current_session_duration;
 
         println!("\n=== SESSION SUMMARY ===");
-        println!("Total generations: {}", game.total_iterations); // Usa game.
-        println!("High Score: {}", game.high_score); // Usa game.
+        println!("Total generations: {}", game.total_iterations);
+        println!("High Score: {}", game.high_score);
         println!(
             "Current session time: {}s",
             current_session_duration.as_secs()
         );
         println!("Total time (runtime): {}s", total_training_time.as_secs());
-        println!(
-            "Records in session: {}",
-            global_history.current_session_records
-        );
         println!("Saved to: {}", get_or_create_run_dir().display());
         println!("====================\n");
 
@@ -396,7 +372,6 @@ pub fn handle_input(
     }
 
     if keyboard_input.just_pressed(KeyCode::KeyG) {
-        // Toggle grafico solo qui, rimosso dal sistema separato per evitare conflitti
         if !graph_state.visible && !graph_state.fullscreen {
             graph_state.visible = true;
             graph_state.fullscreen = false;
@@ -448,7 +423,6 @@ pub fn on_window_resize(
     mut game: ResMut<GameState>,
     mut grid_map: ResMut<GridMap>,
     mut graph_state: ResMut<GraphPanelState>,
-    control_sender: Res<ControlSender>,
 ) {
     for event in resize_events.read() {
         let (new_width, new_height) =
@@ -463,11 +437,6 @@ pub fn on_window_resize(
             snake.reset(&grid, total_snakes);
         }
 
-        // Segnala al thread RL le nuove dimensioni
-        let _ = control_sender
-            .0
-            .try_send(ControlSignal::GridResized(new_width, new_height));
-
         graph_state.needs_redraw = true;
         println!(
             "Resized: GridMap re-initialized to {}x{}",
@@ -476,11 +445,9 @@ pub fn on_window_resize(
     }
 }
 
-/// Consumer Bevy - Rendering
-/// Legge l'ultimo GameSnapshot dal canale e aggiorna le entità a schermo
+/// Rendering system - now uses game state directly from ECS
 pub fn render_system(
     mut commands: Commands,
-    receiver: Res<RenderReceiver>,
     mut game: ResMut<GameState>,
     mut global_history: ResMut<GlobalTrainingHistory>,
     windows: Query<&Window>,
@@ -495,18 +462,7 @@ pub fn render_system(
         return;
     }
 
-    // Svuota il canale e prendi solo l'ultimo snapshot disponibile
-    // Salta i frame intermedi se l'RL va troppo veloce
-    let mut latest_snapshot: Option<GameSnapshot> = None;
-    while let Ok(snapshot) = receiver.0.try_recv() {
-        latest_snapshot = Some(snapshot);
-    }
-
-    let Some(snapshot) = latest_snapshot else {
-        return;
-    };
-
-    // Aggiorna FPS
+    // Update FPS
     stats.frame_count += 1;
     let now = std::time::Instant::now();
     if now.duration_since(stats.last_fps_update).as_secs_f32() >= 1.0 {
@@ -516,57 +472,30 @@ pub fn render_system(
         stats.frame_count = 0;
     }
 
-    // Aggiorna GameState dallo snapshot
-    game.high_score = snapshot.high_score;
-    game.total_iterations = snapshot.generation;
-
-    // Sincronizza la cronologia del training per il grafico
-    if !snapshot.history_records.is_empty() {
-        global_history.records = snapshot.history_records.clone();
-    }
-    // Sincronizza il numero di record della sessione corrente
-    global_history.current_session_records = snapshot.session_records_count;
-
-    // Sincronizza i serpenti
-    for (snapshot_snake, game_snake) in snapshot.snakes.iter().zip(game.snakes.iter_mut()) {
-        game_snake.id = snapshot_snake.id;
-        game_snake.snake.clear();
-        for (x, y) in &snapshot_snake.body {
-            game_snake.snake.push_back(Position { x: *x, y: *y });
-        }
-        game_snake.food = Position {
-            x: snapshot_snake.food.0,
-            y: snapshot_snake.food.1,
-        };
-        game_snake.color = snapshot_snake.color;
-        game_snake.is_game_over = snapshot_snake.is_game_over;
-        game_snake.score = snapshot_snake.score;
-    }
-
-    // Rimuovi vecchio cibo
-    for e in q_food.iter() {
-        commands.entity(e).despawn();
-    }
-
     let Ok(window) = windows.get_single() else {
         return;
     };
+
+    // Remove old food
+    for e in q_food.iter() {
+        commands.entity(e).despawn();
+    }
 
     let ui_padding = 60.0;
     let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
     let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
 
-    // Renderizza i serpenti dallo snapshot
-    for snake_snapshot in snapshot.snakes.iter() {
-        if snake_snapshot.is_game_over {
-            segment_pool.hide_excess(&mut commands, snake_snapshot.id, 0);
+    // Render the snakes
+    for snake in game.snakes.iter() {
+        if snake.is_game_over {
+            segment_pool.hide_excess(&mut commands, snake.id, 0);
             continue;
         }
 
-        let body_material = materials.add(snake_snapshot.color);
-        let snake_len = snake_snapshot.body.len();
+        let body_material = materials.add(snake.color);
+        let snake_len = snake.snake.len();
 
-        for (i, (x, y)) in snake_snapshot.body.iter().enumerate() {
+        for (i, pos) in snake.snake.iter().enumerate() {
             let material = if i == 0 {
                 mesh_cache.head_material.clone()
             } else {
@@ -574,14 +503,14 @@ pub fn render_system(
             };
 
             let transform = Transform::from_xyz(
-                offset_x + (*x as f32 * BLOCK_SIZE),
-                offset_y - (*y as f32 * BLOCK_SIZE),
+                offset_x + (pos.x as f32 * BLOCK_SIZE),
+                offset_y - (pos.y as f32 * BLOCK_SIZE),
                 0.0,
             );
 
             segment_pool.get_or_spawn(
                 &mut commands,
-                snake_snapshot.id,
+                snake.id,
                 i,
                 mesh_cache.segment_mesh.clone(),
                 material,
@@ -589,23 +518,23 @@ pub fn render_system(
             );
         }
 
-        segment_pool.hide_excess(&mut commands, snake_snapshot.id, snake_len);
-        segment_pool.set_active_count(snake_snapshot.id, snake_len);
+        segment_pool.hide_excess(&mut commands, snake.id, snake_len);
+        segment_pool.set_active_count(snake.id, snake_len);
 
-        // Renderizza cibo
+        // Render food
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: mesh_cache.food_mesh.clone().into(),
                 material: mesh_cache.food_material.clone(),
                 transform: Transform::from_xyz(
-                    offset_x + (snake_snapshot.food.0 as f32 * BLOCK_SIZE),
-                    offset_y - (snake_snapshot.food.1 as f32 * BLOCK_SIZE),
+                    offset_x + (snake.food.x as f32 * BLOCK_SIZE),
+                    offset_y - (snake.food.y as f32 * BLOCK_SIZE),
                     0.0,
                 ),
                 ..default()
             },
             Food,
-            SnakeId(snake_snapshot.id),
+            SnakeId(snake.id),
         ));
     }
 }
@@ -673,7 +602,7 @@ fn spawn_graph_panel_internal(mut commands: Commands, graph_state: &GraphPanelSt
                 ))
                 .with_children(|header| {
                     header.spawn(TextBundle::from_section(
-                        "Training History",
+                        "MAP-Elites Archive",
                         TextStyle {
                             font_size: 16.0,
                             color: Color::WHITE,
@@ -927,30 +856,35 @@ pub fn draw_graph_in_panel(
             let chunk_size = chunk_size.max(1);
 
             struct AggregatedPoint {
-                avg: f32,
-                max: u32,
-                min: u32,
+                avg: f64,
+                max: f64,
+                min: f64,
             }
 
             let mut visual_points = Vec::new();
 
-            let global_max_score = global_history
+            let global_max = global_history
                 .records
                 .iter()
-                .map(|r| r.max_score)
-                .max()
-                .unwrap_or(10)
-                .max(10) as f32;
+                .map(|r| r.best_fitness)
+                .fold(0.0_f64, |a, b| a.max(b))
+                .max(10.0);
 
             for chunk in global_history.records.chunks(chunk_size) {
                 if chunk.is_empty() {
                     continue;
                 }
 
-                let max_in_chunk = chunk.iter().map(|r| r.max_score).max().unwrap_or(0);
-                let min_in_chunk = chunk.iter().map(|r| r.min_score).min().unwrap_or(0);
-                let sum_avg: f32 = chunk.iter().map(|r| r.avg_score).sum();
-                let avg_in_chunk = sum_avg / chunk.len() as f32;
+                let max_in_chunk = chunk
+                    .iter()
+                    .map(|r| r.best_fitness)
+                    .fold(0.0_f64, |a, b| a.max(b));
+                let min_in_chunk = chunk
+                    .iter()
+                    .map(|r| r.avg_fitness)
+                    .fold(f64::INFINITY, |a, b| a.min(b));
+                let sum_avg: f64 = chunk.iter().map(|r| r.avg_fitness).sum();
+                let avg_in_chunk = sum_avg / chunk.len() as f64;
 
                 visual_points.push(AggregatedPoint {
                     avg: avg_in_chunk,
@@ -965,14 +899,14 @@ pub fn draw_graph_in_panel(
             for (i, point) in visual_points.iter().enumerate() {
                 let x_pos = margin_left + (i as f32 * exact_bar_width);
 
-                let get_height = |val: f32| -> f32 {
-                    let ratio = (val / global_max_score).clamp(0.0, 1.0);
+                let get_height = |val: f64| -> f32 {
+                    let ratio = (val / global_max).clamp(0.0, 1.0) as f32;
                     ratio * graph_height
                 };
 
-                let h_max = get_height(point.max as f32);
+                let h_max = get_height(point.max);
                 let h_avg = get_height(point.avg);
-                let h_min = get_height(point.min as f32);
+                let h_min = get_height(point.min);
 
                 let display_width = if exact_bar_width > 2.0 {
                     exact_bar_width - 1.0
@@ -993,19 +927,6 @@ pub fn draw_graph_in_panel(
                         background_color: Color::rgba(1.0, 0.2, 0.2, 0.3).into(),
                         ..default()
                     });
-
-                    parent.spawn(NodeBundle {
-                        style: Style {
-                            position_type: PositionType::Absolute,
-                            left: Val::Px(x_pos),
-                            bottom: Val::Px(margin_bottom + h_max - 1.0),
-                            width: Val::Px(display_width),
-                            height: Val::Px(display_width.max(2.0)),
-                            ..default()
-                        },
-                        background_color: Color::rgba(1.0, 0.2, 0.2, 1.0).into(),
-                        ..default()
-                    });
                 }
 
                 if h_avg > 0.0 {
@@ -1022,26 +943,11 @@ pub fn draw_graph_in_panel(
                         ..default()
                     });
                 }
-
-                if h_min > 0.0 {
-                    parent.spawn(NodeBundle {
-                        style: Style {
-                            position_type: PositionType::Absolute,
-                            left: Val::Px(x_pos),
-                            bottom: Val::Px(margin_bottom),
-                            width: Val::Px(display_width),
-                            height: Val::Px(h_min),
-                            ..default()
-                        },
-                        background_color: Color::rgba(0.3, 0.3, 1.0, 0.6).into(),
-                        ..default()
-                    });
-                }
             }
 
             parent.spawn(
                 TextBundle::from_section(
-                    format!("Max: {:.0}", global_max_score),
+                    format!("Best: {:.0}", global_max),
                     TextStyle {
                         font_size: 12.0,
                         color: Color::GRAY,

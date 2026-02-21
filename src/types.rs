@@ -1,7 +1,11 @@
-use crate::snake::GenerationRecord;
-use bevy::prelude::Color;
+//! Type definitions for MAP-Elites Snake
 
-/// Lightweight snapshot for thread-safe communication between RL thread and Bevy renderer
+use bevy::prelude::Color;
+use serde::{Deserialize, Serialize};
+
+use crate::evolution::GenerationRecord;
+
+/// Lightweight snapshot for rendering
 #[derive(Clone, Debug)]
 pub struct GameSnapshot {
     pub snakes: Vec<SnakeSnapshot>,
@@ -9,19 +13,28 @@ pub struct GameSnapshot {
     pub grid_height: i32,
     pub high_score: u32,
     pub generation: u32,
-    /// Training history records for graph visualization
+    pub alive_count: usize,
     pub history_records: Vec<GenerationRecord>,
-    /// Total number of records in the current session
-    pub session_records_count: usize,
 }
 
 /// Snapshot of a single snake's state for rendering
 #[derive(Clone, Debug)]
 pub struct SnakeSnapshot {
     pub id: usize,
-    pub body: Vec<(i32, i32)>, // Solo le coordinate (x, y)
+    pub body: Vec<(i32, i32)>,
     pub food: (i32, i32),
     pub color: Color,
     pub is_game_over: bool,
     pub score: u32,
+    pub fitness: f64,
+}
+
+/// Archive cell for visualization
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArchiveCell {
+    pub courage_bin: usize,
+    pub agility_bin: usize,
+    pub fitness: f64,
+    pub apples: u32,
+    pub frames: u32,
 }

@@ -5,14 +5,11 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 pub const BLOCK_SIZE: f32 = 20.0;
-pub const MEMORY_SIZE: usize = 100_000;
-pub const BATCH_SIZE: usize = 256;
-pub const TARGET_UPDATE_FREQ: usize = 10000;
 /// Base state size for a single frame (8 obstacle + 8 target direction + 1 distance)
 pub const BASE_STATE_SIZE: usize = 17;
 /// Total state size with frame stacking (current frame + previous frame)
 pub const STATE_SIZE: usize = BASE_STATE_SIZE * 2; // 34
-pub const AUTO_SAVE_INTERVAL: u32 = 100; // Auto-save brain every N generations
+pub const AUTO_SAVE_INTERVAL: u32 = 50; // Auto-save archive every N generations
 
 /// Numero di thread/core del sistema - inizializzato una sola volta
 static NUM_PARALLEL_THREADS: OnceLock<usize> = OnceLock::new();
@@ -29,11 +26,6 @@ pub fn get_parallel_threads() -> usize {
     *NUM_PARALLEL_THREADS
         .get()
         .expect("NUM_PARALLEL_THREADS not initialized")
-}
-
-/// Intervallo di training sincronizzato con il parallelismo
-pub fn get_train_interval() -> usize {
-    128
 }
 
 /// Configurazione parallelism - numero serpenti = core CPU
@@ -317,16 +309,11 @@ pub struct GenerationRecord {
     pub avg_score: f32,
     pub max_score: u32,
     pub min_score: u32,
-    pub avg_loss: f32,
-    pub epsilon: f32,
-    // Nuove metriche diagnostiche
-    pub avg_q_value: f32,
-    pub min_loss: f32,
-    pub max_loss: f32,
-    pub avg_episode_length: f32,
-    pub buffer_positive_ratio: f32,
-    pub buffer_negative_ratio: f32,
-    pub buffer_neutral_ratio: f32,
+    // MAP-Elites metrics
+    pub archive_coverage: f64,
+    pub archive_filled: usize,
+    pub best_fitness: f64,
+    pub avg_fitness: f64,
 }
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default)]
@@ -371,27 +358,23 @@ impl TrainingSession {
             let avg_gen = chunk.iter().map(|r| r.gen).sum::<u32>() / chunk.len() as u32;
             let avg_score = chunk.iter().map(|r| r.avg_score).sum::<f32>() / count;
             let max_score = chunk.iter().map(|r| r.max_score).max().unwrap_or(0);
-            let avg_loss = chunk.iter().map(|r| r.avg_loss).sum::<f32>() / count;
-            let avg_epsilon = chunk.iter().map(|r| r.epsilon).sum::<f32>() / count;
-            let avg_q_value = chunk.iter().map(|r| r.avg_q_value).sum::<f32>() / count;
-            let avg_episode_length =
-                chunk.iter().map(|r| r.avg_episode_length).sum::<f32>() / count;
+            let min_score = chunk.iter().map(|r| r.min_score).min().unwrap_or(0);
+            let archive_coverage =
+                chunk.iter().map(|r| r.archive_coverage).sum::<f64>() / count as f64;
+            let archive_filled = chunk.iter().map(|r| r.archive_filled).max().unwrap_or(0);
+            let best_fitness = chunk.iter().map(|r| r.best_fitness).fold(0.0, f64::max);
+            let avg_fitness = chunk.iter().map(|r| r.avg_fitness).sum::<f64>() / count as f64;
 
             compressed.push(GenerationRecord {
                 gen: avg_gen,
                 timestamp: first.timestamp,
                 avg_score,
                 max_score,
-                min_score: 0,
-                avg_loss,
-                epsilon: avg_epsilon,
-                avg_q_value,
-                min_loss: 0.0,
-                max_loss: 0.0,
-                avg_episode_length,
-                buffer_positive_ratio: 0.0,
-                buffer_negative_ratio: 0.0,
-                buffer_neutral_ratio: 0.0,
+                min_score,
+                archive_coverage,
+                archive_filled,
+                best_fitness,
+                avg_fitness,
             });
         }
 
@@ -426,9 +409,16 @@ pub struct SnakeInstance {
     pub steps_without_food: u32,
     pub score: u32,
     pub color: Color,
-    pub epsilon: f32,
     /// Previous frame state for temporal frame stacking [f32; 17]
     pub previous_state: [f32; BASE_STATE_SIZE],
+    /// Frames survived (for fitness calculation)
+    pub frames_survived: u32,
+    /// Sum of wall distances (for courage descriptor)
+    pub wall_distance_sum: f64,
+    /// Number of turns made (for agility descriptor)
+    pub turn_count: u32,
+    /// Previous action (for turn detection)
+    pub previous_action: crate::brain::Action,
 }
 
 impl SnakeInstance {
@@ -482,20 +472,6 @@ impl SnakeInstance {
         let mut snake = VecDeque::new();
         snake.push_back(spawn_pos);
 
-        // Calcolo epsilon con distribuzione esponenziale (Ape-X style)
-        // Agente 0: epsilon = 0.0 (modalità puramente greedy/test)
-        // Altri agenti: distribuzione esponenziale da 0.01 a 0.7
-        let epsilon = if id == 0 {
-            0.0
-        } else if total_snakes <= 1 {
-            0.01
-        } else {
-            let min_eps = 0.01_f32;
-            let max_eps = 0.7_f32;
-            let progress = (id - 1) as f32 / (total_snakes - 1) as f32;
-            min_eps * (max_eps / min_eps).powf(progress)
-        };
-
         Self {
             id,
             snake,
@@ -508,8 +484,11 @@ impl SnakeInstance {
             steps_without_food: 0,
             score: 0,
             color: Self::assign_color(id, total_snakes),
-            epsilon,
             previous_state: [0.0; BASE_STATE_SIZE],
+            frames_survived: 0,
+            wall_distance_sum: 0.0,
+            turn_count: 0,
+            previous_action: crate::brain::Action::Straight,
         }
     }
 
@@ -528,6 +507,33 @@ impl SnakeInstance {
         };
         self.color = Self::assign_color(self.id, total_snakes);
         self.previous_state = [0.0; BASE_STATE_SIZE];
+        self.frames_survived = 0;
+        self.wall_distance_sum = 0.0;
+        self.turn_count = 0;
+        self.previous_action = crate::brain::Action::Straight;
+    }
+
+    /// Calculate courage descriptor (average distance from walls)
+    pub fn courage(&self) -> f64 {
+        if self.frames_survived == 0 {
+            0.5
+        } else {
+            (self.wall_distance_sum / self.frames_survived as f64).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Calculate agility descriptor (turn frequency)
+    pub fn agility(&self) -> f64 {
+        if self.frames_survived == 0 {
+            0.5
+        } else {
+            (self.turn_count as f64 / self.frames_survived as f64).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Calculate fitness
+    pub fn fitness(&self) -> f64 {
+        (self.score as f64) * 1000.0 + self.frames_survived as f64
     }
 }
 
@@ -550,34 +556,9 @@ impl GameState {
         }
     }
 
-    /// Aggiorna gli epsilon con distribuzione esponenziale dinamica (Dynamic Ape-X Spread)
-    /// Basata su decadimento esponenziale continuo in base alla generazione corrente
-    pub fn update_epsilons(
-        &mut self,
-        current_gen: u32,
-        decay_rate: f32,
-        epsilon_min: f32,
-        epsilon_max: f32,
-    ) {
-        let total_snakes = self.snakes.len();
-        if total_snakes <= 1 {
-            return;
-        }
-
-        let decay_factor = f32::exp(-decay_rate * current_gen as f32);
-
-        // Confini asintotici: decadono verso i valori minimi
-        let current_max = epsilon_min + (epsilon_max - epsilon_min) * decay_factor;
-
-        for (i, snake) in self.snakes.iter_mut().enumerate() {
-            if i == 0 {
-                snake.epsilon = 0.0; // Agente 0 sempre greedy
-            } else {
-                // Distribuzione esponenziale dello spread tra i cloni
-                let progress = (i - 1) as f32 / (total_snakes - 2).max(1) as f32;
-                snake.epsilon = epsilon_min * (current_max / epsilon_min).powf(progress);
-            }
-        }
+    /// Count alive snakes
+    pub fn alive_count(&self) -> usize {
+        self.snakes.iter().filter(|s| !s.is_game_over).count()
     }
 }
 

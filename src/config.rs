@@ -1,67 +1,50 @@
+//! Configuration for MAP-Elites Evolutionary Algorithm
+
+use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Hyperparameters centralizzati per il training DQN
-/// Caricabili da file TOML/JSON e sovrascrivibili da CLI
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// MAP-Elites Hyperparameters
+#[derive(Debug, Clone, Serialize, Deserialize, Resource)]
 pub struct Hyperparameters {
-    // DQN / Rete
-    pub learning_rate: f64,
-    pub gamma: f32,
-    pub batch_size: usize,
-    pub memory_size: usize,
+    // Population
+    pub population_size: usize,
 
-    // Update Frequencies
-    pub target_update_freq: usize,
-    pub train_interval: usize,
+    // Variation operators
+    pub mutation_rate: f64,
+    pub mutation_strength: f64,
+    pub crossover_rate: f64,
 
-    // Reward System
-    pub reward_food: f32,
-    pub reward_death: f32,
-    pub reward_step: f32,
-
-    // Timeout (morte per inedia)
+    // Simulation limits
+    pub max_frames: u32,
     pub base_steps_without_food: u32,
     pub steps_per_segment: u32,
 
-    // Dynamic Epsilon (Ape-X Spread)
-    pub epsilon_decay_rate: f32,
-    pub epsilon_min: f32,
-    pub epsilon_max: f32,
+    // Archive
+    pub grid_resolution: usize,
+
+    // Auto-save
+    pub auto_save_interval: u32,
 }
 
 impl Default for Hyperparameters {
     fn default() -> Self {
         Self {
-            // DQN defaults
-            learning_rate: 1e-4,
-            gamma: 0.99,
-            batch_size: 256,
-            memory_size: 100_000,
-
-            // Update frequencies
-            target_update_freq: 5_000,
-            train_interval: 64, // Sviluppato dal numero di thread
-
-            // Reward system (bilanciato)
-            reward_food: 10.0,
-            reward_death: -10.0,
-            reward_step: -0.01, // Minima penalità per scoraggiare inattività
-
-            // Timeout dinamico
+            population_size: 200,
+            mutation_rate: 0.1,
+            mutation_strength: 0.5,
+            crossover_rate: 0.3,
+            max_frames: 2000,
             base_steps_without_food: 100,
             steps_per_segment: 10,
-
-            // Dynamic Epsilon (Ape-X Spread)
-            epsilon_decay_rate: 0.0005,
-            epsilon_min: 0.01,
-            epsilon_max: 0.5,
+            grid_resolution: 20,
+            auto_save_interval: 50,
         }
     }
 }
 
 impl Hyperparameters {
-    /// Carica configurazione da file TOML o JSON
+    /// Load configuration from TOML or JSON file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(&path)?;
         let path_str = path.as_ref().to_string_lossy();
@@ -77,21 +60,21 @@ impl Hyperparameters {
         }
     }
 
-    /// Salva configurazione in formato TOML
+    /// Save configuration in TOML format
     pub fn save_toml<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
         let content = toml::to_string_pretty(self)?;
         std::fs::write(path, content)?;
         Ok(())
     }
 
-    /// Salva configurazione in formato JSON
+    /// Save configuration in JSON format
     pub fn save_json<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(path, content)?;
         Ok(())
     }
 
-    /// Calcola il timeout dinamico basato sulla lunghezza del serpente
+    /// Calculate timeout based on snake length
     pub fn calculate_timeout(&self, snake_length: usize) -> u32 {
         self.base_steps_without_food + (snake_length as u32 * self.steps_per_segment)
     }
@@ -158,17 +141,11 @@ mod tests {
     #[test]
     fn test_default_hyperparameters() {
         let h = Hyperparameters::default();
-        assert_eq!(h.learning_rate, 1e-4);
-        assert_eq!(h.gamma, 0.99);
-        assert_eq!(h.batch_size, 256);
-        assert_eq!(h.memory_size, 100_000);
-        assert_eq!(h.target_update_freq, 5_000);
-        assert_eq!(h.train_interval, 64);
-        assert_eq!(h.reward_food, 10.0);
-        assert_eq!(h.reward_death, -10.0);
-        assert_eq!(h.reward_step, -0.01);
-        assert_eq!(h.base_steps_without_food, 100);
-        assert_eq!(h.steps_per_segment, 10);
+        assert_eq!(h.population_size, 200);
+        assert_eq!(h.mutation_rate, 0.1);
+        assert_eq!(h.mutation_strength, 0.5);
+        assert_eq!(h.crossover_rate, 0.3);
+        assert_eq!(h.grid_resolution, 20);
     }
 
     #[test]
