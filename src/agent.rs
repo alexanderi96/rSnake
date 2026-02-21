@@ -8,7 +8,7 @@ use burn::{
     tensor::{Int, Tensor},
 };
 
-use crate::buffer::{PrioritizedReplayBuffer, Transition};
+use crate::buffer::{BufferStats, PrioritizedReplayBuffer, Transition};
 use crate::model::DqnModel;
 use crate::snake::{BATCH_SIZE, MEMORY_SIZE, STATE_SIZE, TARGET_UPDATE_FREQ};
 
@@ -315,5 +315,10 @@ impl DqnAgent {
             })?;
         agent.target_model = agent.online_model.clone();
         Ok(agent)
+    }
+
+    /// Restituisce le statistiche del buffer PER
+    pub fn get_buffer_stats(&self) -> BufferStats {
+        self.replay_buffer.get_stats()
     }
 }

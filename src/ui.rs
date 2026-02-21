@@ -286,21 +286,20 @@ pub fn update_stats_ui(
 
     if let Ok(mut st_text) = stats_query.get_single_mut() {
         st_text.sections[0].value = format!(
-            "H: {:3}  G: {:5}  Best: {:3}\n",
-            game.high_score, game.total_iterations, persistent_high
+            "Gen:{:4} | High:{:3} | Best:{:3}\n",
+            game.total_iterations, game.high_score, persistent_high
         );
         st_text.sections[1].value = format!(
-            "Session: {:02}:{:02}:{:02}  Total: {:02}:{:02}:{:02}  FPS: {:5.1}\n",
+            "Time: {:02}:{:02}:{:02} | Tot: {:02}:{:02}:{:02}\n",
             session_hours,
             session_minutes,
             session_seconds,
             total_hours,
             total_minutes,
-            total_seconds,
-            stats.fps
+            total_seconds
         );
         st_text.sections[2].value = format!(
-            "Alive:{} Dead:{} | Food: {}  Games: {}",
+            "Alive:{:2} Dead:{:2} | Food:{:4} | Games:{:5}",
             alive_count, dead_count, game_stats.total_food_eaten, game_stats.total_games_played
         );
     }

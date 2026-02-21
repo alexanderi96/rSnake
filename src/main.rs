@@ -837,29 +837,29 @@ fn handle_generation_end(
         0.0
     };
 
+    // Ottieni statistiche del buffer PER
+    let buffer_stats = agent.get_buffer_stats();
+
+    // Log principale con statistiche utili
     println!(
-        "Gen: {}, Active: {}/{}, Score: {:.1}, High: {}, AvgEps: {:.3}, Loss: {:.5}, Time: {:.2}s, Steps/sec: {:.0}",
+        "📈 Gen {:4} | Score: {:5.1}/{:3} | Loss: {:.4} | Speed: {:4.0} sps | ⏱️ {:.2}s",
         game.total_iterations,
-        active_count,
-        parallel_config.snake_count,
         avg_score,
         max_score,
-        avg_epsilon,
         avg_loss,
-        generation_duration.as_secs_f32(),
-        steps_per_second
+        steps_per_second,
+        generation_duration.as_secs_f32()
     );
 
-    // Log metriche avanzate
+    // Log metriche avanzate con PER stats
     println!(
-        "     Q-Value: {:.3}, Loss Range: {:.5}-{:.5}, Episode Len: {:.1}, Buffer: +{:.1}% -{:.1}% ~{:.1}%",
+        "   🎯 Qavg: {:+.3} | Buf: {:3.0}% | PER: α={:.2} β={:.2} Pmax={:.2} | Eps: {:.3}",
         avg_q_value,
-        min_loss,
-        max_loss,
-        avg_episode_length,
-        pos_ratio * 100.0,
-        neg_ratio * 100.0,
-        neut_ratio * 100.0
+        buffer_stats.fullness * 100.0,
+        buffer_stats.alpha,
+        buffer_stats.beta,
+        buffer_stats.max_priority,
+        avg_epsilon
     );
 
     // Reset timer e contatore per la prossima generazione
