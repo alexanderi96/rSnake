@@ -7,8 +7,8 @@ use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::brain::{Action, Individual, GENOME_SIZE};
-use crate::map_elites::{ArchiveStats, BehavioralDescriptors, MapElitesArchive};
+use crate::brain::Individual;
+use crate::map_elites::MapElitesArchive;
 
 /// Evolution configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,33 +94,6 @@ impl GenerationState {
         for individual in &mut self.population {
             individual.reset();
         }
-    }
-
-    /// Mark an individual as dead and record its final stats
-    pub fn mark_dead(
-        &mut self,
-        id: usize,
-        fitness: f64,
-        courage: f64,
-        agility: f64,
-        frames: u32,
-        apples: u32,
-    ) {
-        if id < self.population.len() {
-            let individual = &mut self.population[id];
-            individual.is_alive = false;
-            individual.fitness = fitness;
-            individual.courage = courage;
-            individual.agility = agility;
-            individual.frames_survived = frames;
-            individual.apples_eaten = apples;
-        }
-        self.alive_count = self.alive_count.saturating_sub(1);
-    }
-
-    /// Check if the generation is complete
-    pub fn is_complete(&self) -> bool {
-        self.alive_count == 0
     }
 
     /// Get elapsed time for this generation
@@ -232,11 +205,6 @@ impl EvolutionManager {
         self.generation_state.population.get_mut(id)
     }
 
-    /// Check if generation is complete
-    pub fn is_generation_complete(&self) -> bool {
-        self.generation_state.is_complete()
-    }
-
     /// Save the archive to disk
     pub fn save_archive(&self) {
         let path = crate::snake::get_or_create_run_dir().join("archive.json");
@@ -262,11 +230,6 @@ impl EvolutionManager {
             }
         }
     }
-
-    /// Get archive statistics
-    pub fn archive_stats(&self) -> ArchiveStats {
-        self.archive.stats()
-    }
 }
 
 /// Record of a generation's performance
@@ -285,78 +248,6 @@ pub struct GenerationRecord {
     pub insertions: usize,
 }
 
-/// Per-snake evaluation data tracked during simulation
-#[derive(Debug, Clone, Default)]
-pub struct SnakeEvaluation {
-    /// Individual ID in the population
-    pub individual_id: usize,
-    /// Behavioral descriptors tracker
-    pub descriptors: BehavioralDescriptors,
-    /// Frames survived
-    pub frames_survived: u32,
-    /// Apples eaten
-    pub apples_eaten: u32,
-    /// Steps without food (for timeout)
-    pub steps_without_food: u32,
-    /// Is the snake still alive?
-    pub is_alive: bool,
-    /// Previous action (for turn detection)
-    pub previous_action: Action,
-}
-
-impl SnakeEvaluation {
-    pub fn new(individual_id: usize) -> Self {
-        Self {
-            individual_id,
-            descriptors: BehavioralDescriptors::new(),
-            frames_survived: 0,
-            apples_eaten: 0,
-            steps_without_food: 0,
-            is_alive: true,
-            previous_action: Action::Straight,
-        }
-    }
-
-    /// Record a frame's data
-    pub fn record_frame(&mut self, wall_distance: f64, action: Action) {
-        self.frames_survived += 1;
-        self.descriptors.record_wall_distance(wall_distance);
-        self.descriptors.total_frames += 1;
-
-        // Detect turn
-        if action != self.previous_action && action != Action::Straight {
-            self.descriptors.record_turn();
-        }
-        self.previous_action = action;
-    }
-
-    /// Record eating food
-    pub fn record_food(&mut self) {
-        self.apples_eaten += 1;
-        self.steps_without_food = 0;
-    }
-
-    /// Calculate final fitness
-    pub fn calculate_fitness(&self) -> f64 {
-        (self.apples_eaten as f64) * 1000.0 + self.frames_survived as f64
-    }
-
-    /// Get final behavioral descriptors
-    pub fn get_descriptors(&self) -> (f64, f64) {
-        (self.descriptors.courage(), self.descriptors.agility())
-    }
-
-    /// Reset for new evaluation
-    pub fn reset(&mut self) {
-        self.descriptors.reset();
-        self.frames_survived = 0;
-        self.apples_eaten = 0;
-        self.steps_without_food = 0;
-        self.is_alive = true;
-        self.previous_action = Action::Straight;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,46 +257,5 @@ mod tests {
         let config = EvolutionConfig::default();
         assert_eq!(config.population_size, 200);
         assert_eq!(config.mutation_rate, 0.1);
-    }
-
-    #[test]
-    fn test_generation_state() {
-        let mut state = GenerationState::new();
-        let population: Vec<Individual> = (0..10).map(Individual::new_random).collect();
-
-        state.start_generation(population);
-        assert_eq!(state.alive_count, 10);
-        assert!(!state.is_complete());
-
-        state.mark_dead(0, 100.0, 0.5, 0.5, 100, 5);
-        assert_eq!(state.alive_count, 9);
-    }
-
-    #[test]
-    fn test_snake_evaluation() {
-        let mut eval = SnakeEvaluation::new(0);
-
-        // Simulate some frames
-        for _ in 0..100 {
-            eval.record_frame(0.8, Action::Straight);
-        }
-
-        // Simulate some turns
-        for _ in 0..10 {
-            eval.record_frame(0.8, Action::Left);
-        }
-
-        assert_eq!(eval.frames_survived, 110);
-        assert!((eval.descriptors.courage() - 0.8).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_fitness_calculation() {
-        let mut eval = SnakeEvaluation::new(0);
-        eval.frames_survived = 500;
-        eval.apples_eaten = 3;
-
-        let fitness = eval.calculate_fitness();
-        assert_eq!(fitness, 3.0 * 1000.0 + 500.0);
     }
 }

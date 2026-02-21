@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::snake::{BASE_STATE_SIZE, STATE_SIZE};
+use crate::snake::STATE_SIZE;
 
 /// Network architecture constants
 pub const INPUT_SIZE: usize = STATE_SIZE; // 34 inputs (17 current + 17 previous frame)
@@ -254,11 +254,6 @@ impl Individual {
             apples_eaten: 0,
             is_alive: true,
         }
-    }
-
-    /// Calculate fitness from collected statistics
-    pub fn calculate_fitness(&mut self) {
-        self.fitness = (self.apples_eaten as f64) * 1000.0 + self.frames_survived as f64;
     }
 
     /// Reset for a new evaluation

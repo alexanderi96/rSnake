@@ -59,25 +59,6 @@ impl Hyperparameters {
             ))
         }
     }
-
-    /// Save configuration in TOML format
-    pub fn save_toml<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
-        let content = toml::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-
-    /// Save configuration in JSON format
-    pub fn save_json<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-
-    /// Calculate timeout based on snake length
-    pub fn calculate_timeout(&self, snake_length: usize) -> u32 {
-        self.base_steps_without_food + (snake_length as u32 * self.steps_per_segment)
-    }
 }
 
 #[derive(Debug)]

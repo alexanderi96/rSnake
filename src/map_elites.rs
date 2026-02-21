@@ -5,11 +5,10 @@
 //! behavioral space by discovering diverse, high-quality solutions.
 
 use rand::seq::SliceRandom;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::brain::{Brain, Individual, GENOME_SIZE};
+use crate::brain::Individual;
 
 /// Number of bins for each behavioral descriptor dimension
 pub const GRID_RESOLUTION: usize = 20;
@@ -91,16 +90,6 @@ impl MapElitesArchive {
         }
     }
 
-    /// Get an individual from a specific cell
-    pub fn get(&self, courage_bin: usize, agility_bin: usize) -> Option<&Individual> {
-        self.grid.get(&(courage_bin, agility_bin))
-    }
-
-    /// Get all elites as a vector
-    pub fn get_all_elites(&self) -> Vec<&Individual> {
-        self.grid.values().collect()
-    }
-
     /// Get the number of filled cells
     pub fn filled_cells(&self) -> usize {
         self.grid.len()
@@ -116,27 +105,6 @@ impl MapElitesArchive {
         self.grid.len() as f64 / self.capacity() as f64
     }
 
-    /// Select a random elite from the archive
-    pub fn select_random(&self) -> Option<&Individual> {
-        use rand::seq::SliceRandom;
-        use rand::thread_rng;
-
-        let elites: Vec<_> = self.grid.values().collect();
-        elites.choose(&mut thread_rng()).copied()
-    }
-
-    /// Select multiple random elites for breeding
-    pub fn select_random_batch(&self, count: usize) -> Vec<&Individual> {
-        use rand::seq::SliceRandom;
-        use rand::thread_rng;
-
-        let elites: Vec<_> = self.grid.values().collect();
-        elites
-            .choose_multiple(&mut thread_rng(), count)
-            .copied()
-            .collect()
-    }
-
     /// Generate a new population by selecting and varying elites
     pub fn generate_population(
         &self,
@@ -144,7 +112,6 @@ impl MapElitesArchive {
         mutation_rate: f64,
         mutation_strength: f64,
     ) -> Vec<Individual> {
-        use rand::Rng;
         let mut rng = rand::thread_rng();
 
         let mut population = Vec::with_capacity(population_size);
@@ -238,42 +205,6 @@ impl MapElitesArchive {
         insertions
     }
 
-    /// Get statistics about the archive
-    pub fn stats(&self) -> ArchiveStats {
-        let elites: Vec<_> = self.grid.values().collect();
-
-        let avg_fitness = if elites.is_empty() {
-            0.0
-        } else {
-            elites.iter().map(|i| i.fitness).sum::<f64>() / elites.len() as f64
-        };
-
-        let avg_apples = if elites.is_empty() {
-            0.0
-        } else {
-            elites.iter().map(|i| i.apples_eaten as f64).sum::<f64>() / elites.len() as f64
-        };
-
-        let avg_frames = if elites.is_empty() {
-            0.0
-        } else {
-            elites.iter().map(|i| i.frames_survived as f64).sum::<f64>() / elites.len() as f64
-        };
-
-        ArchiveStats {
-            filled_cells: self.filled_cells(),
-            total_cells: self.capacity(),
-            coverage: self.coverage(),
-            best_fitness: self.best_fitness,
-            avg_fitness,
-            avg_apples,
-            avg_frames,
-            total_insertions: self.total_insertions,
-            successful_insertions: self.successful_insertions,
-            generation: self.generation,
-        }
-    }
-
     /// Save archive to file
     pub fn save(&self, path: &str) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(self)?;
@@ -286,85 +217,6 @@ impl MapElitesArchive {
         let json = std::fs::read_to_string(path)?;
         let archive: MapElitesArchive = serde_json::from_str(&json)?;
         Ok(archive)
-    }
-}
-
-/// Statistics about the archive
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArchiveStats {
-    pub filled_cells: usize,
-    pub total_cells: usize,
-    pub coverage: f64,
-    pub best_fitness: f64,
-    pub avg_fitness: f64,
-    pub avg_apples: f64,
-    pub avg_frames: f64,
-    pub total_insertions: u64,
-    pub successful_insertions: u64,
-    pub generation: u32,
-}
-
-/// Behavioral descriptors calculator
-#[derive(Debug, Clone)]
-pub struct BehavioralDescriptors {
-    /// Sum of distances from walls (for courage calculation)
-    pub wall_distance_sum: f64,
-    /// Number of turns made
-    pub turn_count: u32,
-    /// Total frames
-    pub total_frames: u32,
-}
-
-impl Default for BehavioralDescriptors {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BehavioralDescriptors {
-    pub fn new() -> Self {
-        Self {
-            wall_distance_sum: 0.0,
-            turn_count: 0,
-            total_frames: 0,
-        }
-    }
-
-    /// Record a frame's wall distance
-    /// distance should be normalized [0, 1] where 1 = far from walls
-    pub fn record_wall_distance(&mut self, distance: f64) {
-        self.wall_distance_sum += distance;
-        self.total_frames += 1;
-    }
-
-    /// Record a turn action
-    pub fn record_turn(&mut self) {
-        self.turn_count += 1;
-    }
-
-    /// Calculate final courage descriptor (average distance from walls)
-    pub fn courage(&self) -> f64 {
-        if self.total_frames == 0 {
-            0.5 // Default middle value
-        } else {
-            (self.wall_distance_sum / self.total_frames as f64).clamp(0.0, 1.0)
-        }
-    }
-
-    /// Calculate final agility descriptor (turn frequency)
-    pub fn agility(&self) -> f64 {
-        if self.total_frames == 0 {
-            0.5 // Default middle value
-        } else {
-            (self.turn_count as f64 / self.total_frames as f64).clamp(0.0, 1.0)
-        }
-    }
-
-    /// Reset for new evaluation
-    pub fn reset(&mut self) {
-        self.wall_distance_sum = 0.0;
-        self.turn_count = 0;
-        self.total_frames = 0;
     }
 }
 
@@ -457,23 +309,5 @@ mod tests {
 
         let population = archive.generate_population(50, 0.1, 0.5);
         assert_eq!(population.len(), 50);
-    }
-
-    #[test]
-    fn test_behavioral_descriptors() {
-        let mut bd = BehavioralDescriptors::new();
-
-        // Simulate some frames
-        for _ in 0..100 {
-            bd.record_wall_distance(0.8);
-        }
-
-        // Simulate some turns
-        for _ in 0..20 {
-            bd.record_turn();
-        }
-
-        assert!((bd.courage() - 0.8).abs() < 0.01);
-        assert!((bd.agility() - 0.2).abs() < 0.01);
     }
 }

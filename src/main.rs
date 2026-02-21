@@ -21,8 +21,8 @@ use config::Hyperparameters;
 use evolution::{EvolutionConfig, EvolutionManager};
 use snake::{
     calculate_grid_dimensions, get_current_17_state, spawn_food, AppStartTime, CollisionSettings,
-    GameConfig, GameState, GameStats, GlobalTrainingHistory, GridDimensions, GridMap, MeshCache,
-    ParallelConfig, Position, RenderConfig, SegmentPool, TrainingStats, BLOCK_SIZE, STATE_SIZE,
+    GameConfig, GameState, GameStats, GridDimensions, GridMap, MeshCache, ParallelConfig, Position,
+    RenderConfig, SegmentPool, TrainingStats, BLOCK_SIZE, STATE_SIZE,
 };
 use ui::{GraphPanelState, UiPlugin, WindowSettings};
 
@@ -163,7 +163,7 @@ fn setup(
     commands.insert_resource(AppStartTime::default());
 
     let (global_history, _) = snake::load_global_history();
-    let accumulated_time = global_history.accumulated_time_secs;
+    let _accumulated_time = global_history.accumulated_time_secs;
 
     let session_file = snake::new_session_path();
     println!("Session file: {}", session_file.display());
@@ -200,19 +200,13 @@ fn setup(
     commands.insert_resource(Population(brains));
 
     commands.insert_resource(global_history);
-    commands.insert_resource(GameConfig {
-        speed_timer: Timer::from_seconds(0.001, TimerMode::Repeating),
-        session_path: session_file,
-    });
+    commands.insert_resource(GameConfig::default());
     commands.insert_resource(WindowSettings {
         is_fullscreen: false,
     });
     commands.insert_resource(GameState::new(&grid, snake_count));
     commands.insert_resource(grid);
     commands.insert_resource(TrainingStats {
-        total_training_time: std::time::Duration::from_secs(accumulated_time),
-        last_update: std::time::Instant::now(),
-        parallel_threads: rayon::current_num_threads(),
         fps: 0.0,
         last_fps_update: std::time::Instant::now(),
         frame_count: 0,
@@ -226,7 +220,7 @@ fn simulation_step(
     mut game: ResMut<GameState>,
     mut grid_map: ResMut<GridMap>,
     grid: Res<GridDimensions>,
-    population: Res<Population>,
+    mut population: ResMut<Population>,
     mut evo_manager: ResMut<EvolutionManager>,
     collision_settings: Res<CollisionSettings>,
 ) {
@@ -319,6 +313,22 @@ fn simulation_step(
     // Check generation end
     if game.alive_count() == 0 {
         end_generation(&mut game, &mut evo_manager);
+
+        // 1. Resetta fisicamente tutti i serpenti
+        let total_snakes = game.snakes.len();
+        for snake in game.snakes.iter_mut() {
+            snake.reset(&grid, total_snakes);
+        }
+
+        // 2. Sostituisci i vecchi cervelli con i nuovi appena evoluti
+        population.0 = evo_manager
+            .get_population()
+            .iter()
+            .map(|i| i.brain.clone())
+            .collect();
+
+        // 3. Aggiorna il contatore per la UI
+        game.total_iterations += 1;
     }
 }
 

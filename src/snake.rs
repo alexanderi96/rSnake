@@ -2,14 +2,13 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub const BLOCK_SIZE: f32 = 20.0;
 /// Base state size for a single frame (8 obstacle + 8 target direction + 1 distance)
 pub const BASE_STATE_SIZE: usize = 17;
 /// Total state size with frame stacking (current frame + previous frame)
 pub const STATE_SIZE: usize = BASE_STATE_SIZE * 2; // 34
-pub const AUTO_SAVE_INTERVAL: u32 = 50; // Auto-save archive every N generations
 
 /// Numero di thread/core del sistema - inizializzato una sola volta
 static NUM_PARALLEL_THREADS: OnceLock<usize> = OnceLock::new();
@@ -19,13 +18,6 @@ pub fn init_parallel_threads() -> usize {
     let threads = rayon::current_num_threads();
     NUM_PARALLEL_THREADS.get_or_init(|| threads);
     threads
-}
-
-/// Restituisce il numero di thread paralleli (deve essere inizializzato prima)
-pub fn get_parallel_threads() -> usize {
-    *NUM_PARALLEL_THREADS
-        .get()
-        .expect("NUM_PARALLEL_THREADS not initialized")
 }
 
 /// Configurazione parallelism - numero serpenti = core CPU
@@ -49,15 +41,11 @@ impl ParallelConfig {
 #[derive(Resource)]
 pub struct RenderConfig {
     pub enabled: bool,
-    pub steps_per_frame: usize,
 }
 
 impl Default for RenderConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            steps_per_frame: 100,
-        }
+        Self { enabled: true }
     }
 }
 
@@ -69,6 +57,7 @@ pub struct SnakeSegment;
 pub struct Food;
 
 #[derive(Component)]
+#[allow(dead_code)]
 pub struct SnakeId(pub usize);
 
 #[derive(Component, Clone, Copy, PartialEq, Debug, Default)]
@@ -77,16 +66,8 @@ pub struct Position {
     pub y: i32,
 }
 
-#[derive(Resource)]
-pub struct GameConfig {
-    pub speed_timer: Timer,
-    pub session_path: std::path::PathBuf,
-}
-
-#[derive(Resource)]
-pub struct WindowSettings {
-    pub is_fullscreen: bool,
-}
+#[derive(Resource, Default)]
+pub struct GameConfig {}
 
 /// Risorse per il caching delle mesh
 #[derive(Resource)]
@@ -210,14 +191,6 @@ impl GridMap {
         self.data.fill(0);
     }
 
-    pub fn get(&self, x: i32, y: i32) -> u8 {
-        if x < 0 || x >= self.width || y < 0 || y >= self.height {
-            return 1;
-        }
-        let idx = (y * self.width + x) as usize;
-        self.data[idx]
-    }
-
     pub fn set(&mut self, x: i32, y: i32, value: u8) {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
             return;
@@ -251,9 +224,6 @@ pub struct GridDimensions {
 
 #[derive(Resource)]
 pub struct TrainingStats {
-    pub total_training_time: Duration,
-    pub last_update: Instant,
-    pub parallel_threads: usize,
     pub fps: f32,
     pub last_fps_update: Instant,
     pub frame_count: u32,
@@ -272,8 +242,6 @@ impl Default for AppStartTime {
 pub struct GlobalTrainingHistory {
     pub records: Vec<GenerationRecord>,
     pub accumulated_time_secs: u64,
-    /// Number of records in the current session (from the RL thread)
-    pub current_session_records: usize,
 }
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
@@ -284,22 +252,6 @@ pub struct GameStats {
     pub total_food_eaten: u64,
     pub best_score_per_snake: Vec<u32>,
     pub last_saved: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GameHistoryEntry {
-    pub timestamp: String,
-    pub generation: u32,
-    pub scores: Vec<u32>,
-    pub high_score: u32,
-    pub total_score: u32,
-    pub alive_snakes: usize,
-}
-
-#[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
-pub struct GameHistory {
-    pub entries: Vec<GameHistoryEntry>,
-    pub max_entries: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -320,83 +272,6 @@ pub struct GenerationRecord {
 pub struct TrainingSession {
     pub total_time_secs: u64,
     pub records: Vec<GenerationRecord>,
-}
-
-impl TrainingSession {
-    pub fn new() -> Self {
-        Self {
-            total_time_secs: 0,
-            records: Vec::new(),
-        }
-    }
-
-    pub fn add_record(&mut self, record: GenerationRecord) {
-        self.records.push(record);
-    }
-
-    pub fn compress_history(&mut self) {
-        const MAX_DETAILED_ENTRIES: usize = 200;
-        const COMPRESSION_RATIO: usize = 4;
-
-        if self.records.len() <= MAX_DETAILED_ENTRIES * 2 {
-            return;
-        }
-
-        let split_idx = self.records.len() - MAX_DETAILED_ENTRIES;
-        let recent_records = self.records.split_off(split_idx);
-        let old_records = std::mem::take(&mut self.records);
-
-        let mut compressed = Vec::new();
-        for chunk in old_records.chunks(COMPRESSION_RATIO) {
-            if chunk.is_empty() {
-                continue;
-            }
-
-            let first = &chunk[0];
-            let count = chunk.len() as f32;
-
-            let avg_gen = chunk.iter().map(|r| r.gen).sum::<u32>() / chunk.len() as u32;
-            let avg_score = chunk.iter().map(|r| r.avg_score).sum::<f32>() / count;
-            let max_score = chunk.iter().map(|r| r.max_score).max().unwrap_or(0);
-            let min_score = chunk.iter().map(|r| r.min_score).min().unwrap_or(0);
-            let archive_coverage =
-                chunk.iter().map(|r| r.archive_coverage).sum::<f64>() / count as f64;
-            let archive_filled = chunk.iter().map(|r| r.archive_filled).max().unwrap_or(0);
-            let best_fitness = chunk.iter().map(|r| r.best_fitness).fold(0.0, f64::max);
-            let avg_fitness = chunk.iter().map(|r| r.avg_fitness).sum::<f64>() / count as f64;
-
-            compressed.push(GenerationRecord {
-                gen: avg_gen,
-                timestamp: first.timestamp,
-                avg_score,
-                max_score,
-                min_score,
-                archive_coverage,
-                archive_filled,
-                best_fitness,
-                avg_fitness,
-            });
-        }
-
-        self.records = compressed;
-        self.records.extend(recent_records);
-    }
-
-    pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(&self)?;
-        std::fs::write(path, json)?;
-        Ok(())
-    }
-
-    pub fn load(path: &str) -> std::io::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let session: TrainingSession = serde_json::from_str(&json)?;
-        Ok(session)
-    }
-
-    pub fn last_generation(&self) -> Option<u32> {
-        self.records.last().map(|r| r.gen)
-    }
 }
 
 #[derive(Clone)]
@@ -708,35 +583,6 @@ pub fn get_current_17_state(
     current_state
 }
 
-/// Get 34-dimensional egocentric state for DQN with frame stacking
-/// First 17 values: current frame sensors
-/// Last 17 values: previous frame sensors
-///
-/// NOTE: This function updates previous_state. For parallel computation,
-/// use get_current_17_state() + manual frame stacking instead.
-pub fn get_state_egocentric(
-    snake: &mut SnakeInstance,
-    grid_map: &GridMap,
-    grid: &GridDimensions,
-) -> [f32; STATE_SIZE] {
-    // Calculate current 17 sensors (pure computation)
-    let current_state = get_current_17_state(snake, grid_map, grid);
-
-    // === FRAME STACKING: CONCATENATE CURRENT + PREVIOUS ===
-    let mut full_state = [0.0f32; STATE_SIZE];
-
-    // First 17: current state
-    full_state[0..BASE_STATE_SIZE].copy_from_slice(&current_state);
-
-    // Last 17: previous state
-    full_state[BASE_STATE_SIZE..STATE_SIZE].copy_from_slice(&snake.previous_state);
-
-    // Update previous state for next frame
-    snake.previous_state = current_state;
-
-    full_state
-}
-
 pub fn spawn_food(snake: &SnakeInstance, grid: &GridDimensions) -> Position {
     let mut rng = rand::thread_rng();
     loop {
@@ -759,15 +605,6 @@ pub fn calculate_grid_dimensions(window_width: f32, window_height: f32) -> (i32,
     (width.max(10), height.max(10))
 }
 
-impl GameHistory {
-    pub fn new(max_entries: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            max_entries,
-        }
-    }
-}
-
 impl GameStats {
     pub fn new(num_snakes: usize) -> Self {
         Self {
@@ -778,33 +615,6 @@ impl GameStats {
             best_score_per_snake: vec![0; num_snakes],
             last_saved: None,
         }
-    }
-
-    pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(&self)?;
-        std::fs::write(path, json)?;
-        Ok(())
-    }
-
-    pub fn load(path: &str) -> std::io::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let stats: GameStats = serde_json::from_str(&json)?;
-        Ok(stats)
-    }
-
-    pub fn update(&mut self, game: &GameState) {
-        self.total_generations = game.total_iterations;
-        self.high_score = self.high_score.max(game.high_score);
-
-        for (i, snake) in game.snakes.iter().enumerate() {
-            if i < self.best_score_per_snake.len() {
-                self.best_score_per_snake[i] = self.best_score_per_snake[i].max(snake.score);
-            }
-        }
-
-        let now = std::time::SystemTime::now();
-        let datetime: chrono::DateTime<chrono::Local> = now.into();
-        self.last_saved = Some(datetime.format("%Y-%m-%d %H:%M:%S").to_string());
     }
 }
 
@@ -838,9 +648,6 @@ pub fn get_or_create_run_dir() -> std::path::PathBuf {
 }
 
 // In snake.rs
-pub fn brain_path() -> std::path::PathBuf {
-    get_or_create_run_dir().join("brain.bin")
-}
 
 pub fn session_path(filename: &str) -> std::path::PathBuf {
     let sessions_dir = get_or_create_run_dir().join("sessions");
@@ -892,14 +699,6 @@ pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
     );
 
     (global_history, max_gen)
-}
-
-pub struct SnakePlugin;
-
-impl Plugin for SnakePlugin {
-    fn build(&self, _app: &mut App) {
-        // Snake plugin systems are added in main.rs
-    }
 }
 
 use bevy::sprite::MaterialMesh2dBundle;

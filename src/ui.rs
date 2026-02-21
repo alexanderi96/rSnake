@@ -6,11 +6,10 @@ use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
 
 use crate::snake::{
-    AppStartTime, CollisionSettings, Food, GameConfig, GameState, GameStats, GlobalTrainingHistory,
-    GridDimensions, GridMap, MeshCache, Position, RenderConfig, SegmentPool, SnakeId,
-    SnakeInstance, TrainingStats, BLOCK_SIZE,
+    AppStartTime, CollisionSettings, Food, GameState, GameStats, GlobalTrainingHistory,
+    GridDimensions, GridMap, MeshCache, RenderConfig, SegmentPool, SnakeId, SnakeInstance,
+    TrainingStats, BLOCK_SIZE,
 };
-use crate::types::GameSnapshot;
 
 /// UI Component markers
 #[derive(Component)]
@@ -219,7 +218,7 @@ pub fn update_stats_ui(
         ),
     >,
     game: Res<GameState>,
-    stats: Res<TrainingStats>,
+    _stats: Res<TrainingStats>,
     game_stats: Res<GameStats>,
     collision_settings: Res<CollisionSettings>,
     render_config: Res<RenderConfig>,
@@ -448,8 +447,8 @@ pub fn on_window_resize(
 /// Rendering system - now uses game state directly from ECS
 pub fn render_system(
     mut commands: Commands,
-    mut game: ResMut<GameState>,
-    mut global_history: ResMut<GlobalTrainingHistory>,
+    game: ResMut<GameState>,
+    _global_history: ResMut<GlobalTrainingHistory>,
     windows: Query<&Window>,
     mesh_cache: Res<MeshCache>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -906,7 +905,7 @@ pub fn draw_graph_in_panel(
 
                 let h_max = get_height(point.max);
                 let h_avg = get_height(point.avg);
-                let h_min = get_height(point.min);
+                let _h_min = get_height(point.min);
 
                 let display_width = if exact_bar_width > 2.0 {
                     exact_bar_width - 1.0
