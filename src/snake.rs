@@ -279,18 +279,12 @@ pub struct SnakeInstance {
     pub previous_state: [f32; BASE_STATE_SIZE],
     /// Frames survived (for fitness calculation)
     pub frames_survived: u32,
-    /// Sum of wall distances (for courage descriptor)
-    pub wall_distance_sum: f64,
     /// Sum of local density readings (for congestion tolerance descriptor)
     pub congestion_sum: f64,
     /// Number of turns made (for agility descriptor)
     pub turn_count: u32,
     /// Previous action (for turn detection)
     pub previous_action: crate::brain::Action,
-    /// Frame when food was last eaten (for efficiency bonus)
-    pub last_food_frame: u32,
-    /// Frame when simulation started
-    pub start_frame: u32,
 }
 
 impl SnakeInstance {
@@ -381,12 +375,9 @@ impl SnakeInstance {
             color,
             previous_state: [0.0; BASE_STATE_SIZE],
             frames_survived: 0,
-            wall_distance_sum: 0.0,
             congestion_sum: 0.0,
             turn_count: 0,
             previous_action: crate::brain::Action::Straight,
-            last_food_frame: 0,
-            start_frame: 0,
         }
     }
 
@@ -427,12 +418,9 @@ impl SnakeInstance {
         );
         self.previous_state = [0.0; BASE_STATE_SIZE];
         self.frames_survived = 0;
-        self.wall_distance_sum = 0.0;
         self.congestion_sum = 0.0;
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
-        self.last_food_frame = 0;
-        self.start_frame = 0;
     }
 
     /// Calculate congestion tolerance descriptor

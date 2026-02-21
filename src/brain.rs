@@ -9,14 +9,24 @@ use crate::snake::STATE_SIZE;
 
 /// Network architecture constants
 pub const INPUT_SIZE: usize = STATE_SIZE; // 34 inputs (17 current + 17 previous frame)
-pub const HIDDEN_SIZE: usize = 64;
+pub const HIDDEN_SIZE: usize = 128; // First hidden layer (was 64)
+pub const HIDDEN2_SIZE: usize = 64; // Second hidden layer (new)
 pub const OUTPUT_SIZE: usize = 3; // Left, Straight, Right
 
 /// Total number of parameters in the genome
-/// Input->Hidden: (INPUT_SIZE * HIDDEN_SIZE) weights + HIDDEN_SIZE biases
-/// Hidden->Output: (HIDDEN_SIZE * OUTPUT_SIZE) weights + OUTPUT_SIZE biases
-pub const GENOME_SIZE: usize =
-    (INPUT_SIZE * HIDDEN_SIZE) + HIDDEN_SIZE + (HIDDEN_SIZE * OUTPUT_SIZE) + OUTPUT_SIZE;
+/// [0]           ih weights:  INPUT_SIZE * HIDDEN_SIZE  = 34*128 = 4352
+/// [4352]        h1 biases:   HIDDEN_SIZE               = 128
+/// [4480]        h1h2 weights: HIDDEN_SIZE * HIDDEN2_SIZE = 128*64 = 8192
+/// [12672]       h2 biases:   HIDDEN2_SIZE              = 64
+/// [12736]       ho weights:  HIDDEN2_SIZE * OUTPUT_SIZE = 64*3  = 192
+/// [12928]       o biases:    OUTPUT_SIZE               = 3
+/// TOTAL = 12931 parameters
+pub const GENOME_SIZE: usize = (INPUT_SIZE * HIDDEN_SIZE)
+    + HIDDEN_SIZE
+    + (HIDDEN_SIZE * HIDDEN2_SIZE)
+    + HIDDEN2_SIZE
+    + (HIDDEN2_SIZE * OUTPUT_SIZE)
+    + OUTPUT_SIZE;
 
 /// RGB Color representation for genetic inheritance
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -92,17 +102,21 @@ impl Default for Action {
 
 /// Lightweight CPU-based Feed-Forward Neural Network
 ///
-/// Architecture: 34 inputs -> 64 hidden (ReLU) -> 3 outputs (argmax)
+/// Architecture: 34 inputs -> 128 hidden1 (ReLU) -> 64 hidden2 (ReLU) -> 3 outputs (argmax)
 /// The genome is a flat vector containing all weights and biases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Brain {
     /// Genome: flat vector of all weights and biases
     pub genome: Vec<f64>,
-    /// Input to hidden layer weights [HIDDEN_SIZE x INPUT_SIZE]
+    /// Input to hidden1 layer weights [HIDDEN_SIZE x INPUT_SIZE]
     weights_ih: Vec<f64>,
-    /// Hidden layer biases [HIDDEN_SIZE]
-    biases_h: Vec<f64>,
-    /// Hidden to output layer weights [OUTPUT_SIZE x HIDDEN_SIZE]
+    /// Hidden1 layer biases [HIDDEN_SIZE]
+    biases_h1: Vec<f64>,
+    /// Hidden1 to hidden2 layer weights [HIDDEN2_SIZE x HIDDEN_SIZE]
+    weights_h1h2: Vec<f64>,
+    /// Hidden2 layer biases [HIDDEN2_SIZE]
+    biases_h2: Vec<f64>,
+    /// Hidden2 to output layer weights [OUTPUT_SIZE x HIDDEN2_SIZE]
     weights_ho: Vec<f64>,
     /// Output layer biases [OUTPUT_SIZE]
     biases_o: Vec<f64>,
@@ -137,13 +151,21 @@ impl Brain {
         let weights_ih: Vec<f64> = genome[offset..offset + INPUT_SIZE * HIDDEN_SIZE].to_vec();
         offset += INPUT_SIZE * HIDDEN_SIZE;
 
-        // Extract biases_h [HIDDEN_SIZE]
-        let biases_h: Vec<f64> = genome[offset..offset + HIDDEN_SIZE].to_vec();
+        // Extract biases_h1 [HIDDEN_SIZE]
+        let biases_h1: Vec<f64> = genome[offset..offset + HIDDEN_SIZE].to_vec();
         offset += HIDDEN_SIZE;
 
-        // Extract weights_ho [OUTPUT_SIZE * HIDDEN_SIZE]
-        let weights_ho: Vec<f64> = genome[offset..offset + HIDDEN_SIZE * OUTPUT_SIZE].to_vec();
-        offset += HIDDEN_SIZE * OUTPUT_SIZE;
+        // Extract weights_h1h2 [HIDDEN2_SIZE * HIDDEN_SIZE]
+        let weights_h1h2: Vec<f64> = genome[offset..offset + HIDDEN_SIZE * HIDDEN2_SIZE].to_vec();
+        offset += HIDDEN_SIZE * HIDDEN2_SIZE;
+
+        // Extract biases_h2 [HIDDEN2_SIZE]
+        let biases_h2: Vec<f64> = genome[offset..offset + HIDDEN2_SIZE].to_vec();
+        offset += HIDDEN2_SIZE;
+
+        // Extract weights_ho [OUTPUT_SIZE * HIDDEN2_SIZE]
+        let weights_ho: Vec<f64> = genome[offset..offset + HIDDEN2_SIZE * OUTPUT_SIZE].to_vec();
+        offset += HIDDEN2_SIZE * OUTPUT_SIZE;
 
         // Extract biases_o [OUTPUT_SIZE]
         let biases_o: Vec<f64> = genome[offset..offset + OUTPUT_SIZE].to_vec();
@@ -151,7 +173,9 @@ impl Brain {
         Self {
             genome: genome.to_vec(),
             weights_ih,
-            biases_h,
+            biases_h1,
+            weights_h1h2,
+            biases_h2,
             weights_ho,
             biases_o,
         }
@@ -168,23 +192,32 @@ impl Brain {
 
     /// Forward pass returning raw output values (for debugging/analysis)
     pub fn forward(&self, input: &[f32; STATE_SIZE]) -> [f64; OUTPUT_SIZE] {
-        // Hidden layer: ReLU activation
-        let mut hidden = [0.0; HIDDEN_SIZE];
-
+        // Layer 1: INPUT → HIDDEN1 (ReLU)
+        let mut hidden1 = [0.0f64; HIDDEN_SIZE];
         for h in 0..HIDDEN_SIZE {
-            let mut sum = self.biases_h[h];
+            let mut sum = self.biases_h1[h];
             for i in 0..INPUT_SIZE {
                 sum += self.weights_ih[h * INPUT_SIZE + i] * input[i] as f64;
             }
-            hidden[h] = relu(sum);
+            hidden1[h] = relu(sum);
         }
 
-        // Output layer: linear (no activation, we use argmax)
+        // Layer 2: HIDDEN1 → HIDDEN2 (ReLU)
+        let mut hidden2 = [0.0f64; HIDDEN2_SIZE];
+        for h in 0..HIDDEN2_SIZE {
+            let mut sum = self.biases_h2[h];
+            for i in 0..HIDDEN_SIZE {
+                sum += self.weights_h1h2[h * HIDDEN_SIZE + i] * hidden1[i];
+            }
+            hidden2[h] = relu(sum);
+        }
+
+        // Output layer: HIDDEN2 → OUTPUT (linear, we use argmax)
         let mut output = [0.0; OUTPUT_SIZE];
         for o in 0..OUTPUT_SIZE {
             let mut sum = self.biases_o[o];
-            for h in 0..HIDDEN_SIZE {
-                sum += self.weights_ho[o * HIDDEN_SIZE + h] * hidden[h];
+            for h in 0..HIDDEN2_SIZE {
+                sum += self.weights_ho[o * HIDDEN2_SIZE + h] * hidden2[h];
             }
             output[o] = sum;
         }
@@ -361,8 +394,12 @@ mod tests {
 
     #[test]
     fn test_genome_size() {
-        let expected =
-            (INPUT_SIZE * HIDDEN_SIZE) + HIDDEN_SIZE + (HIDDEN_SIZE * OUTPUT_SIZE) + OUTPUT_SIZE;
+        let expected = (INPUT_SIZE * HIDDEN_SIZE)
+            + HIDDEN_SIZE
+            + (HIDDEN_SIZE * HIDDEN2_SIZE)
+            + HIDDEN2_SIZE
+            + (HIDDEN2_SIZE * OUTPUT_SIZE)
+            + OUTPUT_SIZE;
         assert_eq!(GENOME_SIZE, expected);
         println!("Genome size: {}", GENOME_SIZE);
     }
@@ -394,10 +431,10 @@ mod tests {
             .genome
             .iter()
             .zip(mutated.genome.iter())
-            .filter(|(&a, &b)| (a - b).abs() > 1e-10)
+            .filter(|pair| (*pair.0 - *pair.1).abs() > 1e-10)
             .count();
 
-        // With 10% mutation rate on ~4k genes, expect ~400 changes
+        // With 10% mutation rate on ~13k genes, expect ~1300 changes
         assert!(changes > 0);
     }
 
@@ -412,7 +449,7 @@ mod tests {
             .genome
             .iter()
             .zip(child.genome.iter())
-            .filter(|(&a, &b)| (a - b).abs() < 1e-10)
+            .filter(|pair| (*pair.0 - *pair.1).abs() < 1e-10)
             .count();
 
         assert!(from_parent1 > 0 && from_parent1 < GENOME_SIZE);

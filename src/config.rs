@@ -31,8 +31,8 @@ impl Default for Hyperparameters {
     fn default() -> Self {
         Self {
             population_size: 200,
-            mutation_rate: 0.1,
-            mutation_strength: 0.5,
+            mutation_rate: 0.05,    // Lowered for larger genome (12931 params)
+            mutation_strength: 0.3, // Lowered for stability with larger network
             crossover_rate: 0.3,
             max_frames: 2000,
             base_steps_without_food: 100,
@@ -128,8 +128,8 @@ mod tests {
     fn test_default_hyperparameters() {
         let h = Hyperparameters::default();
         assert_eq!(h.population_size, 200);
-        assert_eq!(h.mutation_rate, 0.1);
-        assert_eq!(h.mutation_strength, 0.5);
+        assert_eq!(h.mutation_rate, 0.05);
+        assert_eq!(h.mutation_strength, 0.3);
         assert_eq!(h.crossover_rate, 0.3);
         assert_eq!(h.grid_resolution, 20);
     }

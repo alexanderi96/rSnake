@@ -321,6 +321,19 @@ impl MapElitesArchive {
     pub fn load(path: &str) -> std::io::Result<Self> {
         let json = std::fs::read_to_string(path)?;
         let archive: MapElitesArchive = serde_json::from_str(&json)?;
+
+        // Verify genome size compatibility with current brain architecture
+        if let Some(ind) = archive.grid.values().next() {
+            if ind.brain.genome.len() != crate::brain::GENOME_SIZE {
+                eprintln!(
+                    "⚠️  Archive incompatible: genome size {} != {}. Starting fresh.",
+                    ind.brain.genome.len(),
+                    crate::brain::GENOME_SIZE
+                );
+                return Ok(MapElitesArchive::new(archive.resolution));
+            }
+        }
+
         Ok(archive)
     }
 }

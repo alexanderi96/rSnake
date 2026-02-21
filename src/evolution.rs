@@ -215,7 +215,7 @@ mod tests {
     fn test_evolution_manager_default() {
         let manager = EvolutionManager::default();
         assert_eq!(manager.config.population_size, 200);
-        assert_eq!(manager.config.mutation_rate, 0.1);
+        assert_eq!(manager.config.mutation_rate, 0.05);
         assert_eq!(manager.config.grid_resolution, 20);
     }
 }

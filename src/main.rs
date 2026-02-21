@@ -9,7 +9,6 @@ mod config;
 mod evolution;
 mod map_elites;
 mod snake;
-mod types;
 mod ui;
 
 use bevy::app::AppExit;
@@ -118,6 +117,7 @@ fn main() {
             ..default()
         }))
         .add_event::<AppExit>()
+        .insert_resource(hyperparams) // Insert CLI/config hyperparameters as resource
         .add_plugins(SnakePlugin)
         .add_plugins(UiPlugin)
         .add_systems(Startup, setup)
@@ -131,10 +131,8 @@ fn setup(
     windows: Query<&Window>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    hyperparams: Res<Hyperparameters>, // Read from resource instead of default
 ) {
-    // Get hyperparameters from a default since we can't pass CLI args to Bevy systems easily
-    let _hyperparams = Hyperparameters::default();
-
     commands.spawn(Camera2dBundle::default());
 
     let window = windows.single();
@@ -176,13 +174,11 @@ fn setup(
     // Use CPU core count as population size for parallel evaluation
     let snake_count = parallel_config.snake_count;
 
-    // Create Hyperparameters with population_size overridden to snake_count
-    let hyperparams = Hyperparameters {
-        population_size: snake_count,
-        ..Hyperparameters::default()
-    };
+    // Override population_size with snake_count (CPU cores) for optimal parallelism
+    let mut evo_hyperparams = hyperparams.clone();
+    evo_hyperparams.population_size = snake_count;
 
-    let mut evo_manager = EvolutionManager::new(hyperparams);
+    let mut evo_manager = EvolutionManager::new(evo_hyperparams);
     evo_manager.load_archive();
     evo_manager.start_generation();
 
@@ -291,16 +287,6 @@ fn simulation_step(
 
         snake.steps_without_food += 1;
         snake.frames_survived += 1;
-
-        // Wall distance for courage
-        let dist_x = (new_head.x as f64 / grid.width as f64)
-            .min(1.0 - (new_head.x as f64 / grid.width as f64));
-        let dist_y = (new_head.y as f64 / grid.height as f64)
-            .min(1.0 - (new_head.y as f64 / grid.height as f64));
-
-        // Correction: multiply by 2.0 because max dist_x/y is 0.5 (center)
-        // This normalizes the range to [0.0, 1.0]
-        snake.wall_distance_sum += ((dist_x + dist_y) / 2.0) * 2.0;
 
         // Check collisions
         // Self-collision is always checked first
