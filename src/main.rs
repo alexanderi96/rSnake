@@ -270,8 +270,14 @@ fn simulation_step(
         snake.previous_state = current_17;
 
         match action {
-            Action::Left => snake.direction = snake.direction.turn_left(),
-            Action::Right => snake.direction = snake.direction.turn_right(),
+            Action::Left => {
+                snake.direction = snake.direction.turn_left();
+                snake.turn_count += 1; // Increment for Agility tracking
+            }
+            Action::Right => {
+                snake.direction = snake.direction.turn_right();
+                snake.turn_count += 1; // Increment for Agility tracking
+            }
             Action::Straight => {}
         }
 
@@ -290,7 +296,10 @@ fn simulation_step(
             .min(1.0 - (new_head.x as f64 / grid.width as f64));
         let dist_y = (new_head.y as f64 / grid.height as f64)
             .min(1.0 - (new_head.y as f64 / grid.height as f64));
-        snake.wall_distance_sum += (dist_x + dist_y) / 2.0;
+
+        // Correction: multiply by 2.0 because max dist_x/y is 0.5 (center)
+        // This normalizes the range to [0.0, 1.0]
+        snake.wall_distance_sum += ((dist_x + dist_y) / 2.0) * 2.0;
 
         // Check collisions
         let is_collision = if collision_settings.snake_vs_snake {

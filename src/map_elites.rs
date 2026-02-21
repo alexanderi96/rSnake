@@ -60,9 +60,9 @@ pub struct MapElitesArchive {
         serialize_with = "serialize_grid",
         deserialize_with = "deserialize_grid"
     )]
-    grid: HashMap<(usize, usize), Individual>,
+    pub grid: HashMap<(usize, usize), Individual>,
     /// Resolution of each dimension
-    resolution: usize,
+    pub resolution: usize,
     /// Statistics
     pub total_insertions: u64,
     pub successful_insertions: u64,

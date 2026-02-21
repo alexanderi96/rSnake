@@ -523,6 +523,33 @@ impl SnakeInstance {
         base_par + length_adjustment
     }
 
+    /// Calculate filling ratio descriptor (snake length / bounding box area)
+    /// Higher values indicate more compact snakes
+    pub fn filling_ratio(&self) -> f64 {
+        if self.snake.len() <= 1 {
+            return 1.0; // Single segment is maximally compact
+        }
+
+        // Calculate bounding box
+        let min_x = self.snake.iter().map(|p| p.x).min().unwrap_or(0);
+        let max_x = self.snake.iter().map(|p| p.x).max().unwrap_or(0);
+        let min_y = self.snake.iter().map(|p| p.y).min().unwrap_or(0);
+        let max_y = self.snake.iter().map(|p| p.y).max().unwrap_or(0);
+
+        let width = (max_x - min_x + 1) as f64;
+        let height = (max_y - min_y + 1) as f64;
+        let bounding_box_area = width * height;
+
+        if bounding_box_area == 0.0 {
+            return 1.0;
+        }
+
+        // Ratio of snake length to bounding box area
+        // Clamp to [0.0, 1.0] since length can never exceed area
+        let ratio = (self.snake.len() as f64) / bounding_box_area;
+        ratio.clamp(0.0, 1.0)
+    }
+
     /// Calculate efficiency bonus: reward for reaching food faster than par time
     fn efficiency_bonus(&self, grid: &GridDimensions) -> f64 {
         if self.frames_survived == 0 || self.score == 0 {
