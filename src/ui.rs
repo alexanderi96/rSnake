@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
 
+use crate::evolution::EvolutionManager;
 use crate::snake::{
     AppStartTime, CollisionSettings, Food, GameState, GameStats, GlobalTrainingHistory,
     GridDimensions, GridMap, MeshCache, RenderConfig, SegmentPool, SnakeId, SnakeInstance,
@@ -317,13 +318,15 @@ pub fn handle_input(
     game: Res<GameState>,
     app_start_time: Res<AppStartTime>,
     global_history: Res<GlobalTrainingHistory>,
+    game_stats: Res<GameStats>,
+    evo_manager: ResMut<EvolutionManager>,
     mut window_settings: ResMut<WindowSettings>,
     mut windows: Query<&mut Window>,
     mut collision_settings: ResMut<CollisionSettings>,
     mut render_config: ResMut<RenderConfig>,
     mut graph_state: ResMut<GraphPanelState>,
 ) {
-    use crate::snake::get_or_create_run_dir;
+    use crate::snake::{get_or_create_run_dir, new_session_path, save_training_session};
     use std::time::Instant;
 
     if keyboard_input.just_pressed(KeyCode::Escape) {
@@ -340,6 +343,22 @@ pub fn handle_input(
             current_session_duration.as_secs()
         );
         println!("Total time (runtime): {}s", total_training_time.as_secs());
+
+        // Force save the archive before exit
+        evo_manager.save_archive();
+        println!("💾 Archive saved on exit");
+
+        // Save session data
+        let session_path = new_session_path();
+        if let Err(e) = save_training_session(
+            &session_path,
+            &global_history,
+            &game_stats,
+            current_session_duration.as_secs(),
+        ) {
+            eprintln!("⚠️ Error saving session: {}", e);
+        }
+
         println!("Saved to: {}", get_or_create_run_dir().display());
         println!("====================\n");
 

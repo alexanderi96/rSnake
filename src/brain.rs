@@ -18,6 +18,64 @@ pub const OUTPUT_SIZE: usize = 3; // Left, Straight, Right
 pub const GENOME_SIZE: usize =
     (INPUT_SIZE * HIDDEN_SIZE) + HIDDEN_SIZE + (HIDDEN_SIZE * OUTPUT_SIZE) + OUTPUT_SIZE;
 
+/// RGB Color representation for genetic inheritance
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct GenomeColor {
+    pub r: f64,
+    pub g: f64,
+    pub b: f64,
+}
+
+impl GenomeColor {
+    /// Create a random color
+    pub fn random() -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        Self {
+            r: rng.gen::<f64>(),
+            g: rng.gen::<f64>(),
+            b: rng.gen::<f64>(),
+        }
+    }
+
+    /// Interpolate between two colors (for crossover)
+    pub fn lerp(&self, other: &GenomeColor, t: f64) -> Self {
+        Self {
+            r: self.r + (other.r - self.r) * t,
+            g: self.g + (other.g - self.g) * t,
+            b: self.b + (other.b - self.b) * t,
+        }
+    }
+
+    /// Apply small random variation (jitter) for mutation
+    pub fn mutate(&self, strength: f64) -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+
+        let mut jitter = |val: f64| -> f64 {
+            let delta = (rng.gen::<f64>() * 2.0 - 1.0) * strength;
+            (val + delta).clamp(0.0, 1.0)
+        };
+
+        Self {
+            r: jitter(self.r),
+            g: jitter(self.g),
+            b: jitter(self.b),
+        }
+    }
+
+    /// Convert to Bevy Color
+    pub fn to_bevy_color(&self) -> bevy::prelude::Color {
+        bevy::prelude::Color::rgb(self.r as f32, self.g as f32, self.b as f32)
+    }
+}
+
+impl Default for GenomeColor {
+    fn default() -> Self {
+        Self::random()
+    }
+}
+
 /// Action output by the brain
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -213,6 +271,8 @@ pub struct Individual {
     pub id: usize,
     /// The brain/genome
     pub brain: Brain,
+    /// Genetic color (RGB) for visual identification
+    pub color: GenomeColor,
     /// Fitness score (apples * 1000 + frames)
     pub fitness: f64,
     /// Behavioral descriptor 1: Courage (avg distance from walls)
@@ -228,11 +288,12 @@ pub struct Individual {
 }
 
 impl Individual {
-    /// Create a new individual with a random brain
+    /// Create a new individual with a random brain and random color
     pub fn new_random(id: usize) -> Self {
         Self {
             id,
             brain: Brain::new_random(),
+            color: GenomeColor::random(),
             fitness: 0.0,
             courage: 0.0,
             agility: 0.0,
@@ -242,11 +303,28 @@ impl Individual {
         }
     }
 
-    /// Create an individual from a genome
+    /// Create an individual from a genome (used in evolution)
+    #[allow(dead_code)]
     pub fn from_genome(id: usize, genome: &[f64]) -> Self {
         Self {
             id,
             brain: Brain::from_genome(genome),
+            color: GenomeColor::random(),
+            fitness: 0.0,
+            courage: 0.0,
+            agility: 0.0,
+            frames_survived: 0,
+            apples_eaten: 0,
+            is_alive: true,
+        }
+    }
+
+    /// Create an individual from a genome with a specific color (for inheritance)
+    pub fn from_genome_with_color(id: usize, genome: &[f64], color: GenomeColor) -> Self {
+        Self {
+            id,
+            brain: Brain::from_genome(genome),
+            color,
             fitness: 0.0,
             courage: 0.0,
             agility: 0.0,

@@ -4,6 +4,9 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use crate::map_elites::MapElitesArchive;
+use uuid::Uuid;
+
 pub const BLOCK_SIZE: f32 = 20.0;
 /// Base state size for a single frame (8 obstacle + 8 target direction + 1 distance)
 pub const BASE_STATE_SIZE: usize = 17;
@@ -254,19 +257,8 @@ pub struct GameStats {
     pub last_saved: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GenerationRecord {
-    pub gen: u32,
-    pub timestamp: u64,
-    pub avg_score: f32,
-    pub max_score: u32,
-    pub min_score: u32,
-    // MAP-Elites metrics
-    pub archive_coverage: f64,
-    pub archive_filled: usize,
-    pub best_fitness: f64,
-    pub avg_fitness: f64,
-}
+// Use GenerationRecord from evolution module
+pub use crate::evolution::GenerationRecord;
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default)]
 pub struct TrainingSession {
@@ -294,6 +286,10 @@ pub struct SnakeInstance {
     pub turn_count: u32,
     /// Previous action (for turn detection)
     pub previous_action: crate::brain::Action,
+    /// Frame when food was last eaten (for efficiency bonus)
+    pub last_food_frame: u32,
+    /// Frame when simulation started
+    pub start_frame: u32,
 }
 
 impl SnakeInstance {
@@ -342,10 +338,25 @@ impl SnakeInstance {
     }
 
     pub fn new(id: usize, grid: &GridDimensions, total_snakes: usize) -> Self {
+        Self::new_with_color(id, grid, total_snakes, None)
+    }
+
+    /// Create a new snake with a specific genetic color (or None for random ID-based color)
+    pub fn new_with_color(
+        id: usize,
+        grid: &GridDimensions,
+        total_snakes: usize,
+        genetic_color: Option<crate::brain::GenomeColor>,
+    ) -> Self {
         let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
 
         let mut snake = VecDeque::new();
         snake.push_back(spawn_pos);
+
+        // Use genetic color if provided, otherwise fallback to ID-based color
+        let color = genetic_color
+            .map(|c| c.to_bevy_color())
+            .unwrap_or_else(|| Self::assign_color(id, total_snakes));
 
         Self {
             id,
@@ -358,16 +369,28 @@ impl SnakeInstance {
             is_game_over: false,
             steps_without_food: 0,
             score: 0,
-            color: Self::assign_color(id, total_snakes),
+            color,
             previous_state: [0.0; BASE_STATE_SIZE],
             frames_survived: 0,
             wall_distance_sum: 0.0,
             turn_count: 0,
             previous_action: crate::brain::Action::Straight,
+            last_food_frame: 0,
+            start_frame: 0,
         }
     }
 
     pub fn reset(&mut self, grid: &GridDimensions, total_snakes: usize) {
+        self.reset_with_color(grid, total_snakes, None);
+    }
+
+    /// Reset snake with a specific genetic color (or None to keep existing color)
+    pub fn reset_with_color(
+        &mut self,
+        grid: &GridDimensions,
+        _total_snakes: usize,
+        genetic_color: Option<crate::brain::GenomeColor>,
+    ) {
         let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
 
         self.snake.clear();
@@ -380,12 +403,17 @@ impl SnakeInstance {
             x: (spawn_pos.x + 5) % grid.width,
             y: (spawn_pos.y + 5) % grid.height,
         };
-        self.color = Self::assign_color(self.id, total_snakes);
+        // Use genetic color if provided, otherwise keep existing color
+        if let Some(c) = genetic_color {
+            self.color = c.to_bevy_color();
+        }
         self.previous_state = [0.0; BASE_STATE_SIZE];
         self.frames_survived = 0;
         self.wall_distance_sum = 0.0;
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
+        self.last_food_frame = 0;
+        self.start_frame = 0;
     }
 
     /// Calculate courage descriptor (average distance from walls)
@@ -406,9 +434,78 @@ impl SnakeInstance {
         }
     }
 
-    /// Calculate fitness
-    pub fn fitness(&self) -> f64 {
-        (self.score as f64) * 1000.0 + self.frames_survived as f64
+    /// Calculate par time (ideal time) to reach food based on grid dimensions and snake length
+    /// Returns the ideal number of frames to reach the food
+    pub fn calculate_par_time(&self, grid: &GridDimensions) -> u32 {
+        let grid_size = (grid.width + grid.height) as f64;
+        // Base par time on grid diagonal-ish measure
+        let base_par = (grid_size * 0.5) as u32;
+        // Adjust based on current snake length (longer snakes = slightly more time allowed)
+        let length_adjustment = (self.snake.len() as f64 * 0.1) as u32;
+        base_par + length_adjustment
+    }
+
+    /// Calculate efficiency bonus: reward for reaching food faster than par time
+    fn efficiency_bonus(&self, grid: &GridDimensions) -> f64 {
+        if self.frames_survived == 0 || self.score == 0 {
+            return 0.0;
+        }
+
+        let par_time = self.calculate_par_time(grid);
+
+        // If snake reached food faster than par time, award bonus
+        // We estimate food eaten frequency based on score
+        // Approximate frames per apple = total frames / score
+        let frames_per_apple = if self.score > 0 {
+            self.frames_survived / self.score
+        } else {
+            u32::MAX
+        };
+
+        if frames_per_apple < par_time {
+            // Bonus proportional to time saved
+            let time_saved = par_time as f64 - frames_per_apple as f64;
+            // Scale bonus: more for greater efficiency
+            let bonus = time_saved * 2.0;
+            bonus.min(500.0) // Cap the bonus to avoid runaway values
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate improved fitness function
+    /// Combines:
+    /// - Food reward (high weight)
+    /// - Survival frames (base reward)
+    /// - Death penalty (negative)
+    /// - Minimum constant reward (encourage early performance)
+    /// - Efficiency bonus (reward for reaching food quickly)
+    pub fn fitness(&self, grid: &GridDimensions) -> f64 {
+        // Constants for fitness calculation
+        const FOOD_REWARD: f64 = 1000.0; // High reward per apple
+        const SURVIVAL_REWARD: f64 = 1.0; // Base reward per frame survived
+        const DEATH_PENALTY: f64 = -100.0; // Penalty when snake dies
+        const MIN_REWARD: f64 = 0.1; // Minimum constant reward per frame
+
+        // Base components
+        let food_reward = (self.score as f64) * FOOD_REWARD;
+        let survival_reward = (self.frames_survived as f64) * SURVIVAL_REWARD;
+
+        // Death penalty (only if dead)
+        let death_penalty = if self.is_game_over {
+            DEATH_PENALTY
+        } else {
+            0.0
+        };
+
+        // Minimum constant reward to encourage early performance
+        let min_reward = (self.frames_survived as f64) * MIN_REWARD;
+
+        // Efficiency bonus for reaching food quickly
+        let efficiency_bonus = self.efficiency_bonus(grid);
+
+        // Total fitness
+        food_reward + survival_reward + death_penalty + min_reward + efficiency_bonus
     }
 }
 
@@ -420,10 +517,28 @@ pub struct GameState {
 }
 
 impl GameState {
+    #[allow(dead_code)]
     pub fn new(grid: &GridDimensions, snake_count: usize) -> Self {
-        let snakes = (0..snake_count)
-            .map(|id| SnakeInstance::new(id, grid, snake_count))
-            .collect();
+        Self::new_with_colors(grid, snake_count, None)
+    }
+
+    /// Create GameState with optional genetic colors
+    pub fn new_with_colors(
+        grid: &GridDimensions,
+        snake_count: usize,
+        colors: Option<Vec<crate::brain::GenomeColor>>,
+    ) -> Self {
+        let snakes = if let Some(colors) = colors {
+            (0..snake_count)
+                .map(|id| {
+                    SnakeInstance::new_with_color(id, grid, snake_count, colors.get(id).copied())
+                })
+                .collect()
+        } else {
+            (0..snake_count)
+                .map(|id| SnakeInstance::new(id, grid, snake_count))
+                .collect()
+        };
         Self {
             high_score: 0,
             total_iterations: 0,
@@ -632,18 +747,20 @@ pub fn get_or_create_run_dir() -> std::path::PathBuf {
             .collect();
 
         if !dirs.is_empty() {
+            // UUIDv7 are lexicographically sortable, so we can just sort
             dirs.sort_by(|a, b| b.cmp(a));
             return dirs[0].clone();
         }
     }
 
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let new_dir = runs_dir.join(&timestamp);
+    // Generate new UUIDv7 (time-ordered, collision-free)
+    let uuid = Uuid::now_v7();
+    let new_dir = runs_dir.join(uuid.to_string());
     std::fs::create_dir_all(&new_dir).ok();
     let sessions_dir = new_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).ok();
 
-    println!("📂 Created new run: {}", timestamp);
+    println!("📂 Created new run: {}", uuid);
     new_dir
 }
 
@@ -656,10 +773,37 @@ pub fn session_path(filename: &str) -> std::path::PathBuf {
 }
 
 pub fn new_session_path() -> std::path::PathBuf {
-    let timestamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
-    session_path(format!("{}.json", timestamp).as_str())
+    // Generate UUIDv7 for session file
+    let uuid = Uuid::now_v7();
+    session_path(format!("{}.json", uuid).as_str())
 }
 
+/// Find the most recent session file in the sessions directory
+#[allow(dead_code)]
+pub fn find_latest_session() -> Option<std::path::PathBuf> {
+    let sessions_dir = get_or_create_run_dir().join("sessions");
+
+    if let Ok(entries) = std::fs::read_dir(sessions_dir) {
+        let mut paths: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |ext| ext == "json"))
+            .collect();
+
+        if paths.is_empty() {
+            return None;
+        }
+
+        // Sort by filename (which contains timestamp)
+        paths.sort();
+        paths.last().cloned()
+    } else {
+        None
+    }
+}
+
+/// Load global training history from previous sessions
+/// Returns (history, max_generation_found)
 pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
     let sessions_dir = get_or_create_run_dir().join("sessions");
     let mut global_history = GlobalTrainingHistory::default();
@@ -680,8 +824,8 @@ pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
                     global_history.accumulated_time_secs += session.total_time_secs;
 
                     for record in session.records {
-                        if record.gen > max_gen {
-                            max_gen = record.gen;
+                        if record.generation > max_gen {
+                            max_gen = record.generation;
                         }
                         global_history.records.push(record);
                     }
@@ -690,15 +834,96 @@ pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
         }
     }
 
-    global_history.records.sort_by_key(|r| r.gen);
+    global_history.records.sort_by_key(|r| r.generation);
 
     println!(
-        "✅ Global History Loaded: {} records, {}s total",
+        "✅ Global History Loaded: {} records, {}s total, max gen: {}",
         global_history.records.len(),
-        global_history.accumulated_time_secs
+        global_history.accumulated_time_secs,
+        max_gen
     );
 
     (global_history, max_gen)
+}
+
+/// Load GameStats from the latest session file
+#[allow(dead_code)]
+pub fn load_game_stats() -> Option<GameStats> {
+    let latest_session = find_latest_session()?;
+
+    if let Ok(content) = std::fs::read_to_string(&latest_session) {
+        if let Ok(session) = serde_json::from_str::<TrainingSession>(&content) {
+            // Convert session records to GameStats
+            let mut stats = GameStats::new(10); // Default snake count
+
+            for record in &session.records {
+                stats.total_generations = record.generation.max(stats.total_generations);
+                // Use best_fitness as proxy for high_score
+                stats.high_score = stats.high_score.max(record.best_fitness as u32);
+            }
+
+            stats.last_saved = Some(latest_session.to_string_lossy().to_string());
+
+            println!("✅ GameStats loaded from: {:?}", latest_session);
+            return Some(stats);
+        }
+    }
+
+    None
+}
+
+/// Save training session (history + stats) to file
+pub fn save_training_session(
+    session_path: &std::path::Path,
+    history: &GlobalTrainingHistory,
+    _game_stats: &GameStats,
+    session_duration_secs: u64,
+) -> std::io::Result<()> {
+    let session = TrainingSession {
+        total_time_secs: session_duration_secs,
+        records: history.records.clone(),
+    };
+
+    let json = serde_json::to_string_pretty(&session)?;
+    std::fs::write(session_path, json)?;
+
+    println!("💾 Session saved to: {}", session_path.display());
+    Ok(())
+}
+
+/// Try to load latest archive, history, and stats for resuming training
+#[allow(dead_code)]
+pub fn try_resume_training() -> Option<(MapElitesArchive, GlobalTrainingHistory, GameStats)> {
+    let run_dir = get_or_create_run_dir();
+
+    // Try to load archive
+    let archive_path = run_dir.join("archive.json");
+    let archive = if archive_path.exists() {
+        match MapElitesArchive::load(archive_path.to_str().unwrap_or("archive.json")) {
+            Ok(a) => {
+                println!("📂 Resuming with archive: {} elites", a.filled_cells());
+                Some(a)
+            }
+            Err(e) => {
+                eprintln!("⚠️ Failed to load archive: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Load history
+    let (history, _max_gen) = load_global_history();
+
+    // Load stats
+    let stats = load_game_stats().unwrap_or_else(|| GameStats::new(10));
+
+    Some((
+        archive.unwrap_or_else(MapElitesArchive::default),
+        history,
+        stats,
+    ))
 }
 
 use bevy::sprite::MaterialMesh2dBundle;

@@ -21,8 +21,8 @@ use config::Hyperparameters;
 use evolution::{EvolutionConfig, EvolutionManager};
 use snake::{
     calculate_grid_dimensions, get_current_17_state, spawn_food, AppStartTime, CollisionSettings,
-    GameConfig, GameState, GameStats, GridDimensions, GridMap, MeshCache, ParallelConfig, Position,
-    RenderConfig, SegmentPool, TrainingStats, BLOCK_SIZE, STATE_SIZE,
+    GameConfig, GameState, GameStats, GlobalTrainingHistory, GridDimensions, GridMap, MeshCache,
+    ParallelConfig, Position, RenderConfig, SegmentPool, TrainingStats, BLOCK_SIZE, STATE_SIZE,
 };
 use ui::{GraphPanelState, UiPlugin, WindowSettings};
 
@@ -191,12 +191,10 @@ fn setup(
     evo_manager.load_archive();
     evo_manager.start_generation();
 
-    // Create population brains
-    let brains: Vec<_> = evo_manager
-        .get_population()
-        .iter()
-        .map(|i| i.brain.clone())
-        .collect();
+    // Create population brains and colors
+    let individuals = evo_manager.get_population();
+    let brains: Vec<_> = individuals.iter().map(|i| i.brain.clone()).collect();
+    let colors: Vec<_> = individuals.iter().map(|i| i.color).collect();
     commands.insert_resource(Population(brains));
 
     commands.insert_resource(global_history);
@@ -204,7 +202,7 @@ fn setup(
     commands.insert_resource(WindowSettings {
         is_fullscreen: false,
     });
-    commands.insert_resource(GameState::new(&grid, snake_count));
+    commands.insert_resource(GameState::new_with_colors(&grid, snake_count, Some(colors)));
     commands.insert_resource(grid);
     commands.insert_resource(TrainingStats {
         fps: 0.0,
@@ -222,6 +220,7 @@ fn simulation_step(
     grid: Res<GridDimensions>,
     mut population: ResMut<Population>,
     mut evo_manager: ResMut<EvolutionManager>,
+    mut global_history: ResMut<GlobalTrainingHistory>,
     collision_settings: Res<CollisionSettings>,
 ) {
     let config = &evo_manager.config;
@@ -312,12 +311,14 @@ fn simulation_step(
 
     // Check generation end
     if game.alive_count() == 0 {
-        end_generation(&mut game, &mut evo_manager);
+        end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
 
-        // 1. Resetta fisicamente tutti i serpenti
+        // 1. Resetta fisicamente tutti i serpenti con i nuovi colori genetici
         let total_snakes = game.snakes.len();
-        for snake in game.snakes.iter_mut() {
-            snake.reset(&grid, total_snakes);
+        let individuals = evo_manager.get_population();
+        for (i, snake) in game.snakes.iter_mut().enumerate() {
+            let genetic_color = individuals.get(i).map(|ind| ind.color);
+            snake.reset_with_color(&grid, total_snakes, genetic_color);
         }
 
         // 2. Sostituisci i vecchi cervelli con i nuovi appena evoluti
@@ -332,11 +333,16 @@ fn simulation_step(
     }
 }
 
-fn end_generation(game: &mut GameState, evo_manager: &mut EvolutionManager) {
+fn end_generation(
+    game: &mut GameState,
+    evo_manager: &mut EvolutionManager,
+    global_history: &mut GlobalTrainingHistory,
+    grid: &GridDimensions,
+) {
     // Update individuals in evolution manager
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
-            ind.fitness = snake.fitness();
+            ind.fitness = snake.fitness(grid);
             ind.courage = snake.courage();
             ind.agility = snake.agility();
             ind.frames_survived = snake.frames_survived;
@@ -346,6 +352,9 @@ fn end_generation(game: &mut GameState, evo_manager: &mut EvolutionManager) {
     }
 
     let record = evo_manager.end_generation();
+
+    // Sync to GlobalTrainingHistory for UI graph and JSON persistence
+    global_history.records.push(record.clone());
 
     println!(
         "Gen {:4} | Fitness: {:.0} (best: {:.0}) | Coverage: {:.1}% | {:.2}s",

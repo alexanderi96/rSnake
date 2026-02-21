@@ -5,7 +5,7 @@
 //! behavioral space by discovering diverse, high-quality solutions.
 
 use rand::seq::SliceRandom;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 
 use crate::brain::Individual;
@@ -13,10 +13,53 @@ use crate::brain::Individual;
 /// Number of bins for each behavioral descriptor dimension
 pub const GRID_RESOLUTION: usize = 20;
 
+/// Custom serializer for HashMap with (usize, usize) keys
+/// Converts tuple keys to "x,y" string format
+fn serialize_grid<S>(
+    grid: &HashMap<(usize, usize), Individual>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let string_keyed: std::collections::HashMap<String, &Individual> = grid
+        .iter()
+        .map(|((x, y), v)| (format!("{},{}", x, y), v))
+        .collect();
+    string_keyed.serialize(serializer)
+}
+
+/// Custom deserializer for HashMap with (usize, usize) keys
+/// Converts "x,y" string keys back to tuple format
+fn deserialize_grid<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<(usize, usize), Individual>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let string_keyed: std::collections::HashMap<String, Individual> =
+        Deserialize::deserialize(deserializer)?;
+
+    let mut grid = HashMap::new();
+    for (key, value) in string_keyed {
+        let parts: Vec<&str> = key.split(',').collect();
+        if parts.len() == 2 {
+            if let (Ok(x), Ok(y)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
+                grid.insert((x, y), value);
+            }
+        }
+    }
+    Ok(grid)
+}
+
 /// MAP-Elites Archive: a 2D grid storing elite individuals
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapElitesArchive {
     /// Grid storing elite individuals: key = (courage_bin, agility_bin)
+    #[serde(
+        serialize_with = "serialize_grid",
+        deserialize_with = "deserialize_grid"
+    )]
     grid: HashMap<(usize, usize), Individual>,
     /// Resolution of each dimension
     resolution: usize,
@@ -126,13 +169,21 @@ impl MapElitesArchive {
 
         let elites: Vec<_> = self.grid.values().collect();
 
+        // Color mutation strength (smaller than brain mutation)
+        const COLOR_MUTATION_STRENGTH: f64 = 0.05;
+
         for id in 0..population_size {
             // Select a random elite
             let parent = elites.choose(&mut rng).unwrap();
 
             // Create a mutated offspring
             let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
-            let mut individual = Individual::from_genome(id, mutated_brain.get_genome());
+
+            // Mutate color with small jitter
+            let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
+
+            let mut individual =
+                Individual::from_genome_with_color(id, mutated_brain.get_genome(), mutated_color);
             individual.is_alive = true;
 
             population.push(individual);
@@ -161,16 +212,29 @@ impl MapElitesArchive {
 
         let elites: Vec<_> = self.grid.values().collect();
 
+        // Color mutation strength (smaller than brain mutation)
+        const COLOR_MUTATION_STRENGTH: f64 = 0.05;
+
         for id in 0..population_size {
             let individual = if rng.gen::<f64>() < crossover_rate && elites.len() >= 2 {
                 // Crossover between two random elites
                 let parent1 = elites.choose(&mut rng).unwrap();
                 let parent2 = elites.choose(&mut rng).unwrap();
 
+                // Brain crossover
                 let child_brain = parent1.brain.crossover(&parent2.brain);
                 let mutated_brain = child_brain.mutate(mutation_rate, mutation_strength);
 
-                let mut ind = Individual::from_genome(id, mutated_brain.get_genome());
+                // Color inheritance: blend from parents + mutation
+                let blend_factor = rng.gen::<f64>();
+                let child_color = parent1.color.lerp(&parent2.color, blend_factor);
+                let mutated_color = child_color.mutate(COLOR_MUTATION_STRENGTH);
+
+                let mut ind = Individual::from_genome_with_color(
+                    id,
+                    mutated_brain.get_genome(),
+                    mutated_color,
+                );
                 ind.is_alive = true;
                 ind
             } else {
@@ -178,7 +242,14 @@ impl MapElitesArchive {
                 let parent = elites.choose(&mut rng).unwrap();
                 let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
 
-                let mut ind = Individual::from_genome(id, mutated_brain.get_genome());
+                // Mutate color with small jitter
+                let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
+
+                let mut ind = Individual::from_genome_with_color(
+                    id,
+                    mutated_brain.get_genome(),
+                    mutated_color,
+                );
                 ind.is_alive = true;
                 ind
             };
