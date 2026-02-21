@@ -194,15 +194,26 @@ fn setup(
     // Create population brains and colors
     let individuals = evo_manager.get_population();
     let brains: Vec<_> = individuals.iter().map(|i| i.brain.clone()).collect();
-    let colors: Vec<_> = individuals.iter().map(|i| i.color).collect();
     commands.insert_resource(Population(brains));
+
+    // Extract behavioral values for color calculation
+    // Format: (courage, agility, fitness, best_fitness)
+    let best_fitness = evo_manager.generation_state.best_fitness.max(1.0); // Avoid division by zero
+    let behaviors: Vec<(f64, f64, f64, f64)> = individuals
+        .iter()
+        .map(|i| (i.courage, i.agility, i.fitness, best_fitness))
+        .collect();
 
     commands.insert_resource(global_history);
     commands.insert_resource(GameConfig::default());
     commands.insert_resource(WindowSettings {
         is_fullscreen: false,
     });
-    commands.insert_resource(GameState::new_with_colors(&grid, snake_count, Some(colors)));
+    commands.insert_resource(GameState::new_with_behavioral_colors(
+        &grid,
+        snake_count,
+        Some(behaviors),
+    ));
     commands.insert_resource(grid);
     commands.insert_resource(TrainingStats {
         fps: 0.0,

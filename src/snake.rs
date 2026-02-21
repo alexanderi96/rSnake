@@ -269,6 +269,8 @@ pub struct TrainingSession {
 #[derive(Clone)]
 pub struct SnakeInstance {
     pub id: usize,
+    /// UUIDv7 per identificazione univoca dell'individuo
+    pub uuid: uuid::Uuid,
     pub snake: VecDeque<Position>,
     pub food: Position,
     pub direction: Direction,
@@ -293,9 +295,32 @@ pub struct SnakeInstance {
 }
 
 impl SnakeInstance {
-    /// Assegna un colore basato sull'ID del serpente:
+    /// Calcola il colore comportamentale basato su:
+    /// - R (Rosso): Courage (più vicino ai muri = più rosso)
+    /// - G (Verde): Agility (più curve = più verde)
+    /// - B (Blu): Fitness relativa (fitness / best_fitness_globale)
+    pub fn calculate_behavioral_color(
+        courage: f64,
+        agility: f64,
+        fitness: f64,
+        best_fitness: f64,
+    ) -> Color {
+        let r = courage as f32; // 0.0 - 1.0
+        let g = agility as f32; // 0.0 - 1.0
+                                // Fitness relativa: se best_fitness è 0, usa 0.5 come default
+        let b = if best_fitness > 0.0 {
+            (fitness / best_fitness).clamp(0.0, 1.0) as f32
+        } else {
+            0.5
+        };
+
+        Color::rgb(r, g, b)
+    }
+
+    /// Assegna un colore basato sull'ID del serpente (DEPRECATO - usa calculate_behavioral_color)
     /// - Agente 0: sempre verde
     /// - Altri agenti: gradiente da Rosso a Blu
+    #[allow(dead_code)]
     fn assign_color(id: usize, total_snakes: usize) -> Color {
         if id == 0 {
             return Color::rgb(0.0, 1.0, 0.0); // Agente 0 sempre Verde
@@ -337,29 +362,41 @@ impl SnakeInstance {
         (Position { x, y }, direction)
     }
 
+    /// Create a new snake with default behavioral color (for backwards compatibility)
     pub fn new(id: usize, grid: &GridDimensions, total_snakes: usize) -> Self {
-        Self::new_with_color(id, grid, total_snakes, None)
+        // Valori di default: courage=0.5, agility=0.5, fitness=0, best_fitness=1
+        // Questo produce un colore neutro (0.5, 0.5, 0.0)
+        Self::new_with_color(id, grid, total_snakes, None, 0.5, 0.5, 0.0, 1.0)
     }
 
-    /// Create a new snake with a specific genetic color (or None for random ID-based color)
+    /// Create a new snake with behavioral color based on parent's traits
+    /// Il colore comportamentale viene calcolato da courage/agility/fitness del genitore
     pub fn new_with_color(
         id: usize,
         grid: &GridDimensions,
-        total_snakes: usize,
-        genetic_color: Option<crate::brain::GenomeColor>,
+        _total_snakes: usize,
+        _genetic_color: Option<crate::brain::GenomeColor>,
+        parent_courage: f64,
+        parent_agility: f64,
+        parent_fitness: f64,
+        best_fitness: f64,
     ) -> Self {
         let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
 
         let mut snake = VecDeque::new();
         snake.push_back(spawn_pos);
 
-        // Use genetic color if provided, otherwise fallback to ID-based color
-        let color = genetic_color
-            .map(|c| c.to_bevy_color())
-            .unwrap_or_else(|| Self::assign_color(id, total_snakes));
+        // Usa colore comportamentale basato sui tratti del genitore
+        let color = Self::calculate_behavioral_color(
+            parent_courage,
+            parent_agility,
+            parent_fitness,
+            best_fitness,
+        );
 
         Self {
             id,
+            uuid: Uuid::now_v7(),
             snake,
             food: Position {
                 x: (spawn_pos.x + 5) % grid.width,
@@ -381,10 +418,51 @@ impl SnakeInstance {
     }
 
     pub fn reset(&mut self, grid: &GridDimensions, total_snakes: usize) {
-        self.reset_with_color(grid, total_snakes, None);
+        // Default behavioral values (neutral color)
+        self.reset_with_behavioral_color(grid, total_snakes, 0.5, 0.5, 0.0, 1.0);
     }
 
-    /// Reset snake with a specific genetic color (or None to keep existing color)
+    /// Reset snake with behavioral color based on parent's traits
+    pub fn reset_with_behavioral_color(
+        &mut self,
+        grid: &GridDimensions,
+        _total_snakes: usize,
+        parent_courage: f64,
+        parent_agility: f64,
+        parent_fitness: f64,
+        best_fitness: f64,
+    ) {
+        let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
+
+        self.uuid = Uuid::now_v7(); // Nuovo UUID per ogni vita
+        self.snake.clear();
+        self.snake.push_back(spawn_pos);
+        self.direction = spawn_dir;
+        self.is_game_over = false;
+        self.steps_without_food = 0;
+        self.score = 0;
+        self.food = Position {
+            x: (spawn_pos.x + 5) % grid.width,
+            y: (spawn_pos.y + 5) % grid.height,
+        };
+        // Calcola colore comportamentale basato sui tratti del genitore
+        self.color = Self::calculate_behavioral_color(
+            parent_courage,
+            parent_agility,
+            parent_fitness,
+            best_fitness,
+        );
+        self.previous_state = [0.0; BASE_STATE_SIZE];
+        self.frames_survived = 0;
+        self.wall_distance_sum = 0.0;
+        self.turn_count = 0;
+        self.previous_action = crate::brain::Action::Straight;
+        self.last_food_frame = 0;
+        self.start_frame = 0;
+    }
+
+    /// Reset snake with a specific genetic color (DEPRECATO - usa reset_with_behavioral_color)
+    #[allow(dead_code)]
     pub fn reset_with_color(
         &mut self,
         grid: &GridDimensions,
@@ -519,19 +597,31 @@ pub struct GameState {
 impl GameState {
     #[allow(dead_code)]
     pub fn new(grid: &GridDimensions, snake_count: usize) -> Self {
-        Self::new_with_colors(grid, snake_count, None)
+        Self::new_with_behavioral_colors(grid, snake_count, None)
     }
 
-    /// Create GameState with optional genetic colors
-    pub fn new_with_colors(
+    /// Create GameState with behavioral colors based on parent's courage/agility/fitness
+    /// Each tuple: (parent_courage, parent_agility, parent_fitness, best_fitness)
+    pub fn new_with_behavioral_colors(
         grid: &GridDimensions,
         snake_count: usize,
-        colors: Option<Vec<crate::brain::GenomeColor>>,
+        behaviors: Option<Vec<(f64, f64, f64, f64)>>,
     ) -> Self {
-        let snakes = if let Some(colors) = colors {
+        let snakes = if let Some(behaviors) = behaviors {
             (0..snake_count)
                 .map(|id| {
-                    SnakeInstance::new_with_color(id, grid, snake_count, colors.get(id).copied())
+                    let (courage, agility, fitness, best) =
+                        behaviors.get(id).copied().unwrap_or((0.5, 0.5, 0.0, 1.0));
+                    SnakeInstance::new_with_color(
+                        id,
+                        grid,
+                        snake_count,
+                        None,
+                        courage,
+                        agility,
+                        fitness,
+                        best,
+                    )
                 })
                 .collect()
         } else {
