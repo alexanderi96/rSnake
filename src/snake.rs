@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::map_elites::MapElitesArchive;
 use uuid::Uuid;
 
 pub const BLOCK_SIZE: f32 = 20.0;
@@ -211,11 +210,9 @@ impl GridMap {
         cell != 0 && cell != (self_snake_id + 1) as u8
     }
 
-    pub fn is_collision_no_snakes(&self, x: i32, y: i32) -> bool {
-        if x < 0 || x >= self.width || y < 0 || y >= self.height {
-            return true;
-        }
-        false
+    /// Controlla solo muri (usato quando snake_vs_snake = false)
+    pub fn is_wall_collision(&self, x: i32, y: i32) -> bool {
+        x < 0 || x >= self.width || y < 0 || y >= self.height
     }
 }
 
@@ -284,6 +281,8 @@ pub struct SnakeInstance {
     pub frames_survived: u32,
     /// Sum of wall distances (for courage descriptor)
     pub wall_distance_sum: f64,
+    /// Sum of local density readings (for congestion tolerance descriptor)
+    pub congestion_sum: f64,
     /// Number of turns made (for agility descriptor)
     pub turn_count: u32,
     /// Previous action (for turn detection)
@@ -315,33 +314,6 @@ impl SnakeInstance {
         };
 
         Color::rgb(r, g, b)
-    }
-
-    /// Assegna un colore basato sull'ID del serpente (DEPRECATO - usa calculate_behavioral_color)
-    /// - Agente 0: sempre verde
-    /// - Altri agenti: gradiente da Rosso a Blu
-    #[allow(dead_code)]
-    fn assign_color(id: usize, total_snakes: usize) -> Color {
-        if id == 0 {
-            return Color::rgb(0.0, 1.0, 0.0); // Agente 0 sempre Verde
-        }
-        if total_snakes <= 2 {
-            return Color::rgb(1.0, 0.2, 0.2); // Fallback se pochi agenti
-        }
-
-        // Gradiente da Rosso (start) a Blu (end)
-        let start = Color::rgb(1.0, 0.2, 0.2);
-        let end = Color::rgb(0.2, 0.2, 1.0);
-
-        // Normalizza l'indice tra 0.0 e 1.0 per gli agenti da 1 a N-1
-        let t = (id - 1) as f32 / (total_snakes - 2) as f32;
-
-        // Interpolazione lineare RGB manuale
-        Color::rgb(
-            start.r() + (end.r() - start.r()) * t,
-            start.g() + (end.g() - start.g()) * t,
-            start.b() + (end.b() - start.b()) * t,
-        )
     }
 
     pub fn get_random_spawn_data(grid: &GridDimensions) -> (Position, Direction) {
@@ -410,6 +382,7 @@ impl SnakeInstance {
             previous_state: [0.0; BASE_STATE_SIZE],
             frames_survived: 0,
             wall_distance_sum: 0.0,
+            congestion_sum: 0.0,
             turn_count: 0,
             previous_action: crate::brain::Action::Straight,
             last_food_frame: 0,
@@ -455,162 +428,54 @@ impl SnakeInstance {
         self.previous_state = [0.0; BASE_STATE_SIZE];
         self.frames_survived = 0;
         self.wall_distance_sum = 0.0;
+        self.congestion_sum = 0.0;
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
         self.last_food_frame = 0;
         self.start_frame = 0;
     }
 
-    /// Reset snake with a specific genetic color (DEPRECATO - usa reset_with_behavioral_color)
-    #[allow(dead_code)]
-    pub fn reset_with_color(
-        &mut self,
-        grid: &GridDimensions,
-        _total_snakes: usize,
-        genetic_color: Option<crate::brain::GenomeColor>,
-    ) {
-        let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
-
-        self.snake.clear();
-        self.snake.push_back(spawn_pos);
-        self.direction = spawn_dir;
-        self.is_game_over = false;
-        self.steps_without_food = 0;
-        self.score = 0;
-        self.food = Position {
-            x: (spawn_pos.x + 5) % grid.width,
-            y: (spawn_pos.y + 5) % grid.height,
-        };
-        // Use genetic color if provided, otherwise keep existing color
-        if let Some(c) = genetic_color {
-            self.color = c.to_bevy_color();
-        }
-        self.previous_state = [0.0; BASE_STATE_SIZE];
-        self.frames_survived = 0;
-        self.wall_distance_sum = 0.0;
-        self.turn_count = 0;
-        self.previous_action = crate::brain::Action::Straight;
-        self.last_food_frame = 0;
-        self.start_frame = 0;
-    }
-
-    /// Calculate courage descriptor (average distance from walls)
-    pub fn courage(&self) -> f64 {
+    /// Calculate congestion tolerance descriptor
+    /// Higher values = snake tolerates tight spaces better (based on local density sensors)
+    pub fn congestion_tolerance(&self) -> f64 {
         if self.frames_survived == 0 {
-            0.5
-        } else {
-            (self.wall_distance_sum / self.frames_survived as f64).clamp(0.0, 1.0)
+            return 0.0;
         }
+        (self.congestion_sum / self.frames_survived as f64).clamp(0.0, 1.0)
     }
 
     /// Calculate agility descriptor (turn frequency)
+    /// 0.0 = always straight, 1.0 = turns every frame
     pub fn agility(&self) -> f64 {
         if self.frames_survived == 0 {
-            0.5
-        } else {
-            (self.turn_count as f64 / self.frames_survived as f64).clamp(0.0, 1.0)
-        }
-    }
-
-    /// Calculate par time (ideal time) to reach food based on grid dimensions and snake length
-    /// Returns the ideal number of frames to reach the food
-    pub fn calculate_par_time(&self, grid: &GridDimensions) -> u32 {
-        let grid_size = (grid.width + grid.height) as f64;
-        // Base par time on grid diagonal-ish measure
-        let base_par = (grid_size * 0.5) as u32;
-        // Adjust based on current snake length (longer snakes = slightly more time allowed)
-        let length_adjustment = (self.snake.len() as f64 * 0.1) as u32;
-        base_par + length_adjustment
-    }
-
-    /// Calculate filling ratio descriptor (snake length / bounding box area)
-    /// Higher values indicate more compact snakes
-    pub fn filling_ratio(&self) -> f64 {
-        if self.snake.len() <= 1 {
-            return 1.0; // Single segment is maximally compact
-        }
-
-        // Calculate bounding box
-        let min_x = self.snake.iter().map(|p| p.x).min().unwrap_or(0);
-        let max_x = self.snake.iter().map(|p| p.x).max().unwrap_or(0);
-        let min_y = self.snake.iter().map(|p| p.y).min().unwrap_or(0);
-        let max_y = self.snake.iter().map(|p| p.y).max().unwrap_or(0);
-
-        let width = (max_x - min_x + 1) as f64;
-        let height = (max_y - min_y + 1) as f64;
-        let bounding_box_area = width * height;
-
-        if bounding_box_area == 0.0 {
-            return 1.0;
-        }
-
-        // Ratio of snake length to bounding box area
-        // Clamp to [0.0, 1.0] since length can never exceed area
-        let ratio = (self.snake.len() as f64) / bounding_box_area;
-        ratio.clamp(0.0, 1.0)
-    }
-
-    /// Calculate efficiency bonus: reward for reaching food faster than par time
-    fn efficiency_bonus(&self, grid: &GridDimensions) -> f64 {
-        if self.frames_survived == 0 || self.score == 0 {
             return 0.0;
         }
-
-        let par_time = self.calculate_par_time(grid);
-
-        // If snake reached food faster than par time, award bonus
-        // We estimate food eaten frequency based on score
-        // Approximate frames per apple = total frames / score
-        let frames_per_apple = if self.score > 0 {
-            self.frames_survived / self.score
-        } else {
-            u32::MAX
-        };
-
-        if frames_per_apple < par_time {
-            // Bonus proportional to time saved
-            let time_saved = par_time as f64 - frames_per_apple as f64;
-            // Scale bonus: more for greater efficiency
-            let bonus = time_saved * 2.0;
-            bonus.min(500.0) // Cap the bonus to avoid runaway values
-        } else {
-            0.0
-        }
+        (self.turn_count as f64 / self.frames_survived as f64).clamp(0.0, 1.0)
     }
 
-    /// Calculate improved fitness function
-    /// Combines:
-    /// - Food reward (high weight)
-    /// - Survival frames (base reward)
-    /// - Death penalty (negative)
-    /// - Minimum constant reward (encourage early performance)
-    /// - Efficiency bonus (reward for reaching food quickly)
-    pub fn fitness(&self, grid: &GridDimensions) -> f64 {
-        // Constants for fitness calculation
-        const FOOD_REWARD: f64 = 1000.0; // High reward per apple
-        const SURVIVAL_REWARD: f64 = 1.0; // Base reward per frame survived
-        const DEATH_PENALTY: f64 = -100.0; // Penalty when snake dies
-        const MIN_REWARD: f64 = 0.1; // Minimum constant reward per frame
+    /// Calculate fitness with time penalty and food reward
+    /// - Penalità temporale: -1 per frame (forces efficiency)
+    /// - Reward principale: +1000 per cibo
+    /// - Penalità morte precoce: -200 se morto entro 50 frame senza mangiare
+    pub fn fitness(&self, _grid: &GridDimensions) -> f64 {
+        // Penalità temporale: -1 per frame. Forza efficienza nella ricerca del cibo.
+        let survival_penalty = (self.frames_survived as f64) * -1.0;
 
-        // Base components
-        let food_reward = (self.score as f64) * FOOD_REWARD;
-        let survival_reward = (self.frames_survived as f64) * SURVIVAL_REWARD;
+        // Reward principale per il cibo
+        let food_reward = (self.score as f64) * 1000.0;
 
-        // Death penalty (only if dead)
-        let death_penalty = if self.is_game_over {
-            DEATH_PENALTY
+        // Penalità morte precoce: solo se il serpente non ha MAI mangiato
+        // ed è morto entro i primi 50 frame (suicidio immediato)
+        let death_penalty = if self.score == 0 && self.frames_survived < 50 {
+            -200.0
         } else {
             0.0
         };
 
-        // Minimum constant reward to encourage early performance
-        let min_reward = (self.frames_survived as f64) * MIN_REWARD;
-
-        // Efficiency bonus for reaching food quickly
-        let efficiency_bonus = self.efficiency_bonus(grid);
-
-        // Total fitness
-        food_reward + survival_reward + death_penalty + min_reward + efficiency_bonus
+        // Minimo a 0.0: MAP-Elites inserisce solo se fitness > 0.0,
+        // quindi NON usiamo .max(0.1) per non riempire l'archivio di spazzatura.
+        // Gli individui con fitness <= 0 vengono scartati naturalmente.
+        (food_reward + survival_penalty + death_penalty).max(0.0)
     }
 }
 
@@ -729,14 +594,15 @@ const RAY_DIRECTIONS: [(i32, i32); 8] = [
 /// - Sensor 4 (S) is always Behind the snake
 /// - Sensor 6 (W) is always to the snake's Left
 ///
-/// Sensors 0-7: Obstacle raycasting (8 directions) - value = 1.0 / distance
+/// Sensors 0-7: Obstacle raycasting (8 directions) - exponential decay based on Euclidean distance
 /// Sensors 8-15: Target direction dot products (8 directions) - value = max(0.0, dot_product)
-/// Sensor 16: Target distance - value = 1.0 / absolute_distance
+/// Sensor 16: Target distance - exponential decay based on Euclidean distance
 pub fn get_current_17_state(
     snake: &SnakeInstance,
     grid_map: &GridMap,
     grid: &GridDimensions,
 ) -> [f32; BASE_STATE_SIZE] {
+    let decay_rate = 0.1_f32;
     let mut current_state = [0.0f32; BASE_STATE_SIZE];
     let head = snake.snake[0];
 
@@ -749,33 +615,31 @@ pub fn get_current_17_state(
     };
 
     // === SENSORS 0-7: OBSTACLE RAYCASTING ===
-    // Cast rays in 8 egocentric directions
+    // Cast rays in 8 egocentric directions with exponential decay
     for i in 0..8 {
         let ray_idx = (i + dir_offset) % 8;
         let (dx, dy) = RAY_DIRECTIONS[ray_idx];
 
         let mut curr_x = head.x;
         let mut curr_y = head.y;
-        let mut distance = 1;
 
         loop {
             curr_x += dx;
             curr_y += dy;
 
-            if curr_x < 0
-                || curr_x >= grid.width
-                || curr_y < 0
-                || curr_y >= grid.height
-                || grid_map.is_collision(curr_x, curr_y, snake.id)
-            {
-                current_state[i] = 1.0 / (distance as f32);
-                break;
-            }
+            let hit_wall =
+                curr_x < 0 || curr_x >= grid.width || curr_y < 0 || curr_y >= grid.height;
+            let hit_obstacle = !hit_wall && grid_map.is_collision(curr_x, curr_y, snake.id);
 
-            distance += 1;
-
-            if distance > grid.width.max(grid.height) {
-                current_state[i] = 0.0;
+            if hit_wall || hit_obstacle {
+                // Calcola distanza fino all'ultimo punto VALIDO (prima dell'ostacolo)
+                // per i muri, il punto di contatto è sul bordo della griglia
+                let contact_x = curr_x.clamp(0, grid.width - 1);
+                let contact_y = curr_y.clamp(0, grid.height - 1);
+                let diff_x = (contact_x - head.x) as f32;
+                let diff_y = (contact_y - head.y) as f32;
+                let euclidean_dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
+                current_state[i] = (-decay_rate * euclidean_dist).exp();
                 break;
             }
         }
@@ -804,13 +668,8 @@ pub fn get_current_17_state(
     }
 
     // === SENSOR 16: TARGET DISTANCE ===
-    let max_possible_dist = ((grid.width * grid.width + grid.height * grid.height) as f32).sqrt();
-
-    current_state[16] = if target_dist > 0.0 {
-        1.0 - (target_dist / max_possible_dist) // Valore lineare da 1.0 (vicinissimo) a 0.0 (lontanissimo)
-    } else {
-        1.0
-    };
+    let target_euclidean_dist = target_dist; // Already calculated as Euclidean
+    current_state[16] = (-decay_rate * target_euclidean_dist).exp();
 
     current_state
 }
@@ -895,30 +754,6 @@ pub fn new_session_path() -> std::path::PathBuf {
     session_path(format!("{}.json", uuid).as_str())
 }
 
-/// Find the most recent session file in the sessions directory
-#[allow(dead_code)]
-pub fn find_latest_session() -> Option<std::path::PathBuf> {
-    let sessions_dir = get_or_create_run_dir().join("sessions");
-
-    if let Ok(entries) = std::fs::read_dir(sessions_dir) {
-        let mut paths: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "json"))
-            .collect();
-
-        if paths.is_empty() {
-            return None;
-        }
-
-        // Sort by filename (which contains timestamp)
-        paths.sort();
-        paths.last().cloned()
-    } else {
-        None
-    }
-}
-
 /// Load global training history from previous sessions
 /// Returns (history, max_generation_found)
 pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
@@ -963,32 +798,6 @@ pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
     (global_history, max_gen)
 }
 
-/// Load GameStats from the latest session file
-#[allow(dead_code)]
-pub fn load_game_stats() -> Option<GameStats> {
-    let latest_session = find_latest_session()?;
-
-    if let Ok(content) = std::fs::read_to_string(&latest_session) {
-        if let Ok(session) = serde_json::from_str::<TrainingSession>(&content) {
-            // Convert session records to GameStats
-            let mut stats = GameStats::new(10); // Default snake count
-
-            for record in &session.records {
-                stats.total_generations = record.generation.max(stats.total_generations);
-                // Use best_fitness as proxy for high_score
-                stats.high_score = stats.high_score.max(record.best_fitness as u32);
-            }
-
-            stats.last_saved = Some(latest_session.to_string_lossy().to_string());
-
-            println!("✅ GameStats loaded from: {:?}", latest_session);
-            return Some(stats);
-        }
-    }
-
-    None
-}
-
 /// Save training session (history + stats) to file
 pub fn save_training_session(
     session_path: &std::path::Path,
@@ -1006,41 +815,6 @@ pub fn save_training_session(
 
     println!("💾 Session saved to: {}", session_path.display());
     Ok(())
-}
-
-/// Try to load latest archive, history, and stats for resuming training
-#[allow(dead_code)]
-pub fn try_resume_training() -> Option<(MapElitesArchive, GlobalTrainingHistory, GameStats)> {
-    let run_dir = get_or_create_run_dir();
-
-    // Try to load archive
-    let archive_path = run_dir.join("archive.json");
-    let archive = if archive_path.exists() {
-        match MapElitesArchive::load(archive_path.to_str().unwrap_or("archive.json")) {
-            Ok(a) => {
-                println!("📂 Resuming with archive: {} elites", a.filled_cells());
-                Some(a)
-            }
-            Err(e) => {
-                eprintln!("⚠️ Failed to load archive: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Load history
-    let (history, _max_gen) = load_global_history();
-
-    // Load stats
-    let stats = load_game_stats().unwrap_or_else(|| GameStats::new(10));
-
-    Some((
-        archive.unwrap_or_else(MapElitesArchive::default),
-        history,
-        stats,
-    ))
 }
 
 use bevy::sprite::MaterialMesh2dBundle;

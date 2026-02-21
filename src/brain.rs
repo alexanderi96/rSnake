@@ -273,10 +273,12 @@ pub struct Individual {
     pub brain: Brain,
     /// Genetic color (RGB) for visual identification
     pub color: GenomeColor,
+    /// Archive color (from parent cell fitness: blue→green gradient)
+    pub archive_color: GenomeColor,
     /// Fitness score (apples * 1000 + frames)
     pub fitness: f64,
-    /// Behavioral descriptor 1: Courage (avg distance from walls)
-    pub courage: f64,
+    /// Behavioral descriptor 1: Congestion tolerance (spaces tight vs open)
+    pub congestion: f64,
     /// Behavioral descriptor 2: Agility (turn frequency)
     pub agility: f64,
     /// Frames survived
@@ -294,8 +296,9 @@ impl Individual {
             id,
             brain: Brain::new_random(),
             color: GenomeColor::random(),
+            archive_color: GenomeColor::default(),
             fitness: 0.0,
-            courage: 0.0,
+            congestion: 0.0,
             agility: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
@@ -310,8 +313,9 @@ impl Individual {
             id,
             brain: Brain::from_genome(genome),
             color: GenomeColor::random(),
+            archive_color: GenomeColor::default(),
             fitness: 0.0,
-            courage: 0.0,
+            congestion: 0.0,
             agility: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
@@ -319,14 +323,20 @@ impl Individual {
         }
     }
 
-    /// Create an individual from a genome with a specific color (for inheritance)
-    pub fn from_genome_with_color(id: usize, genome: &[f64], color: GenomeColor) -> Self {
+    /// Create an individual from a genome with archive color (from parent cell fitness)
+    pub fn from_genome_with_archive_color(
+        id: usize,
+        genome: &[f64],
+        color: GenomeColor,
+        archive_color: GenomeColor,
+    ) -> Self {
         Self {
             id,
             brain: Brain::from_genome(genome),
             color,
+            archive_color,
             fitness: 0.0,
-            courage: 0.0,
+            congestion: 0.0,
             agility: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
@@ -337,7 +347,7 @@ impl Individual {
     /// Reset for a new evaluation
     pub fn reset(&mut self) {
         self.fitness = 0.0;
-        self.courage = 0.0;
+        self.congestion = 0.0;
         self.agility = 0.0;
         self.frames_survived = 0;
         self.apples_eaten = 0;
@@ -384,7 +394,7 @@ mod tests {
             .genome
             .iter()
             .zip(mutated.genome.iter())
-            .filter(|(a, b)| (a - b).abs() > 1e-10)
+            .filter(|(&a, &b)| (a - b).abs() > 1e-10)
             .count();
 
         // With 10% mutation rate on ~4k genes, expect ~400 changes
@@ -402,7 +412,7 @@ mod tests {
             .genome
             .iter()
             .zip(child.genome.iter())
-            .filter(|(a, b)| (a - b).abs() < 1e-10)
+            .filter(|(&a, &b)| (a - b).abs() < 1e-10)
             .count();
 
         assert!(from_parent1 > 0 && from_parent1 < GENOME_SIZE);

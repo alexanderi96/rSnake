@@ -44,6 +44,11 @@ impl Default for Hyperparameters {
 }
 
 impl Hyperparameters {
+    /// Calculate timeout based on snake length
+    pub fn calculate_timeout(&self, snake_length: usize) -> u32 {
+        self.base_steps_without_food + (snake_length as u32 * self.steps_per_segment)
+    }
+
     /// Load configuration from TOML or JSON file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(&path)?;

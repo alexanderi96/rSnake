@@ -18,7 +18,7 @@ use clap::Parser;
 
 use brain::Action;
 use config::Hyperparameters;
-use evolution::{EvolutionConfig, EvolutionManager};
+use evolution::EvolutionManager;
 use snake::{
     calculate_grid_dimensions, get_current_17_state, spawn_food, AppStartTime, CollisionSettings,
     GameConfig, GameState, GameStats, GlobalTrainingHistory, GridDimensions, GridMap, MeshCache,
@@ -133,7 +133,7 @@ fn setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     // Get hyperparameters from a default since we can't pass CLI args to Bevy systems easily
-    let hyperparams = Hyperparameters::default();
+    let _hyperparams = Hyperparameters::default();
 
     commands.spawn(Camera2dBundle::default());
 
@@ -176,18 +176,13 @@ fn setup(
     // Use CPU core count as population size for parallel evaluation
     let snake_count = parallel_config.snake_count;
 
-    let evo_config = EvolutionConfig {
+    // Create Hyperparameters with population_size overridden to snake_count
+    let hyperparams = Hyperparameters {
         population_size: snake_count,
-        mutation_rate: hyperparams.mutation_rate,
-        mutation_strength: hyperparams.mutation_strength,
-        crossover_rate: hyperparams.crossover_rate,
-        max_frames: hyperparams.max_frames,
-        base_steps_without_food: hyperparams.base_steps_without_food,
-        steps_per_segment: hyperparams.steps_per_segment,
-        auto_save_interval: hyperparams.auto_save_interval,
+        ..Hyperparameters::default()
     };
 
-    let mut evo_manager = EvolutionManager::new(evo_config);
+    let mut evo_manager = EvolutionManager::new(hyperparams);
     evo_manager.load_archive();
     evo_manager.start_generation();
 
@@ -197,11 +192,11 @@ fn setup(
     commands.insert_resource(Population(brains));
 
     // Extract behavioral values for color calculation
-    // Format: (courage, agility, fitness, best_fitness)
+    // Format: (congestion, agility, fitness, best_fitness)
     let best_fitness = evo_manager.generation_state.best_fitness.max(1.0); // Avoid division by zero
     let behaviors: Vec<(f64, f64, f64, f64)> = individuals
         .iter()
-        .map(|i| (i.courage, i.agility, i.fitness, best_fitness))
+        .map(|i| (i.congestion, i.agility, i.fitness, best_fitness))
         .collect();
 
     commands.insert_resource(global_history);
@@ -260,6 +255,12 @@ fn simulation_step(
 
         // Calculate state
         let current_17 = get_current_17_state(snake, &grid_map, &grid);
+
+        // Densità locale: media dei sensori frontale, destro e sinistro (egocentrici)
+        // Sensors 0 (forward), 2 (right), 6 (left) in egocentric coordinates
+        let local_density = (current_17[0] + current_17[2] + current_17[6]) / 3.0;
+        snake.congestion_sum += local_density as f64;
+
         let mut state_34 = [0.0f32; STATE_SIZE];
         state_34[..17].copy_from_slice(&current_17);
         state_34[17..].copy_from_slice(&snake.previous_state);
@@ -302,11 +303,13 @@ fn simulation_step(
         snake.wall_distance_sum += ((dist_x + dist_y) / 2.0) * 2.0;
 
         // Check collisions
-        let is_collision = if collision_settings.snake_vs_snake {
-            grid_map.is_collision(new_head.x, new_head.y, snake.id)
-        } else {
-            grid_map.is_collision_no_snakes(new_head.x, new_head.y)
-        } || snake.snake.contains(&new_head);
+        // Self-collision is always checked first
+        let is_collision = snake.snake.contains(&new_head)
+            || if collision_settings.snake_vs_snake {
+                grid_map.is_collision(new_head.x, new_head.y, snake.id)
+            } else {
+                grid_map.is_wall_collision(new_head.x, new_head.y)
+            };
 
         let ate_food = new_head == snake.food;
         let is_timeout = snake.steps_without_food > config.calculate_timeout(snake.snake.len());
@@ -333,12 +336,16 @@ fn simulation_step(
     if game.alive_count() == 0 {
         end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
 
-        // 1. Resetta fisicamente tutti i serpenti con i nuovi colori genetici
+        // 1. Resetta fisicamente tutti i serpenti con i colori dall'archivio
         let total_snakes = game.snakes.len();
         let individuals = evo_manager.get_population();
         for (i, snake) in game.snakes.iter_mut().enumerate() {
-            let genetic_color = individuals.get(i).map(|ind| ind.color);
-            snake.reset_with_color(&grid, total_snakes, genetic_color);
+            // Reset snake first
+            snake.reset_with_behavioral_color(&grid, total_snakes, 0.0, 0.0, 0.0, 1.0);
+            // Apply archive_color after reset
+            if let Some(ind) = individuals.get(i) {
+                snake.color = ind.archive_color.to_bevy_color();
+            }
         }
 
         // 2. Sostituisci i vecchi cervelli con i nuovi appena evoluti
@@ -363,7 +370,7 @@ fn end_generation(
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
-            ind.courage = snake.courage();
+            ind.congestion = snake.congestion_tolerance();
             ind.agility = snake.agility();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;

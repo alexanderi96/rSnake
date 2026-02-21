@@ -101,9 +101,9 @@ impl MapElitesArchive {
 
     /// Get the grid cell coordinates for an individual
     pub fn get_cell(&self, individual: &Individual) -> (usize, usize) {
-        let courage_bin = self.discretize(individual.courage);
+        let congestion_bin = self.discretize(individual.congestion);
         let agility_bin = self.discretize(individual.agility);
-        (courage_bin, agility_bin)
+        (congestion_bin, agility_bin)
     }
 
     /// Try to insert an individual into the archive
@@ -167,14 +167,15 @@ impl MapElitesArchive {
             return population;
         }
 
-        let elites: Vec<_> = self.grid.values().collect();
+        // Collect elites with their cell coordinates for archive_color calculation
+        let elites_with_cells: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
 
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f64 = 0.05;
 
         for id in 0..population_size {
-            // Select a random elite
-            let parent = elites.choose(&mut rng).unwrap();
+            // Select a random elite with cell
+            let (_cell, parent) = elites_with_cells.choose(&mut rng).unwrap();
 
             // Create a mutated offspring
             let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
@@ -182,8 +183,20 @@ impl MapElitesArchive {
             // Mutate color with small jitter
             let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
 
-            let mut individual =
-                Individual::from_genome_with_color(id, mutated_brain.get_genome(), mutated_color);
+            // Calculate archive_color from parent cell fitness
+            let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0) as f32;
+            let archive_color = crate::brain::GenomeColor {
+                r: 0.1,
+                g: normalized as f64,
+                b: (1.0 - normalized) as f64,
+            };
+
+            let mut individual = Individual::from_genome_with_archive_color(
+                id,
+                mutated_brain.get_genome(),
+                mutated_color,
+                archive_color,
+            );
             individual.is_alive = true;
 
             population.push(individual);
@@ -210,16 +223,17 @@ impl MapElitesArchive {
             return self.generate_population(population_size, mutation_rate, mutation_strength);
         }
 
-        let elites: Vec<_> = self.grid.values().collect();
+        // Collect elites with their cell coordinates for archive_color calculation
+        let elites_with_cells: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
 
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f64 = 0.05;
 
         for id in 0..population_size {
-            let individual = if rng.gen::<f64>() < crossover_rate && elites.len() >= 2 {
+            let individual = if rng.gen::<f64>() < crossover_rate && elites_with_cells.len() >= 2 {
                 // Crossover between two random elites
-                let parent1 = elites.choose(&mut rng).unwrap();
-                let parent2 = elites.choose(&mut rng).unwrap();
+                let (_cell1, parent1) = elites_with_cells.choose(&mut rng).unwrap();
+                let (_cell2, parent2) = elites_with_cells.choose(&mut rng).unwrap();
 
                 // Brain crossover
                 let child_brain = parent1.brain.crossover(&parent2.brain);
@@ -230,25 +244,45 @@ impl MapElitesArchive {
                 let child_color = parent1.color.lerp(&parent2.color, blend_factor);
                 let mutated_color = child_color.mutate(COLOR_MUTATION_STRENGTH);
 
-                let mut ind = Individual::from_genome_with_color(
+                // Archive color from parent1's cell fitness
+                let normalized =
+                    (parent1.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0) as f32;
+                let archive_color = crate::brain::GenomeColor {
+                    r: 0.1,
+                    g: normalized as f64,
+                    b: (1.0 - normalized) as f64,
+                };
+
+                let mut ind = Individual::from_genome_with_archive_color(
                     id,
                     mutated_brain.get_genome(),
                     mutated_color,
+                    archive_color,
                 );
                 ind.is_alive = true;
                 ind
             } else {
                 // Just mutation
-                let parent = elites.choose(&mut rng).unwrap();
+                let (_cell, parent) = elites_with_cells.choose(&mut rng).unwrap();
                 let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
 
                 // Mutate color with small jitter
                 let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
 
-                let mut ind = Individual::from_genome_with_color(
+                // Archive color from parent's cell fitness
+                let normalized =
+                    (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0) as f32;
+                let archive_color = crate::brain::GenomeColor {
+                    r: 0.1,
+                    g: normalized as f64,
+                    b: (1.0 - normalized) as f64,
+                };
+
+                let mut ind = Individual::from_genome_with_archive_color(
                     id,
                     mutated_brain.get_genome(),
                     mutated_color,
+                    archive_color,
                 );
                 ind.is_alive = true;
                 ind
@@ -316,7 +350,7 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual = Individual::new_random(0);
-        individual.courage = 0.5;
+        individual.congestion = 0.5;
         individual.agility = 0.5;
         individual.fitness = 100.0;
 
@@ -329,14 +363,14 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.courage = 0.5;
+        individual1.congestion = 0.5;
         individual1.agility = 0.5;
         individual1.fitness = 100.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.courage = 0.5;
+        individual2.congestion = 0.5;
         individual2.agility = 0.5;
         individual2.fitness = 200.0;
 
@@ -350,14 +384,14 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.courage = 0.5;
+        individual1.congestion = 0.5;
         individual1.agility = 0.5;
         individual1.fitness = 200.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.courage = 0.5;
+        individual2.congestion = 0.5;
         individual2.agility = 0.5;
         individual2.fitness = 100.0;
 
@@ -372,7 +406,7 @@ mod tests {
         // Add some elites
         for i in 0..5 {
             let mut individual = Individual::new_random(i);
-            individual.courage = i as f64 / 10.0;
+            individual.congestion = i as f64 / 10.0;
             individual.agility = i as f64 / 10.0;
             individual.fitness = (i * 100) as f64;
             archive.insert(individual);

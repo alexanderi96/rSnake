@@ -812,7 +812,7 @@ fn spawn_heatmap_panel_internal(mut commands: Commands, heatmap_state: &HeatmapP
                 },))
                 .with_children(|header| {
                     header.spawn(TextBundle::from_section(
-                        "MAP-Elites Heatmap (Agility vs Courage)",
+                        "MAP-Elites Heatmap (Agility vs Congestion)",
                         TextStyle {
                             font_size: 16.0,
                             color: Color::WHITE,
@@ -951,9 +951,9 @@ pub fn draw_heatmap_in_panel(
                     let cell_opt = evo_manager.archive.grid.get(&(x, y));
 
                     let cell_color = if let Some(ind) = cell_opt {
-                        // Color based on fitness (Intense green = High fitness)
-                        let intensity = (ind.fitness / max_fitness).clamp(0.1, 1.0) as f32;
-                        Color::rgb(0.1, intensity, 0.2)
+                        // Color based on fitness: blue (low) → green (high)
+                        let intensity = (ind.fitness / max_fitness).clamp(0.0, 1.0) as f32;
+                        Color::rgb(0.1, intensity, 1.0 - intensity)
                     } else {
                         Color::rgb(0.05, 0.05, 0.07) // Empty
                     };
@@ -980,7 +980,7 @@ pub fn draw_heatmap_in_panel(
             // Axis Labels
             spawn_axis_label(
                 parent,
-                "Courage (Wall Dist) →",
+                "Congestion Tolerance →",
                 Val::Px(margin),
                 Val::Px(grid_height + margin + 5.0),
             );

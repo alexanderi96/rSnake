@@ -8,50 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 use crate::brain::Individual;
+use crate::config::Hyperparameters;
 use crate::map_elites::MapElitesArchive;
-
-/// Evolution configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvolutionConfig {
-    /// Population size per generation
-    pub population_size: usize,
-    /// Mutation rate (probability of mutating each gene)
-    pub mutation_rate: f64,
-    /// Mutation strength (magnitude of mutations)
-    pub mutation_strength: f64,
-    /// Crossover rate (probability of crossover vs just mutation)
-    pub crossover_rate: f64,
-    /// Maximum frames per individual before timeout
-    pub max_frames: u32,
-    /// Base steps without food before timeout
-    pub base_steps_without_food: u32,
-    /// Additional steps per snake segment
-    pub steps_per_segment: u32,
-    /// Auto-save interval (generations)
-    pub auto_save_interval: u32,
-}
-
-impl Default for EvolutionConfig {
-    fn default() -> Self {
-        Self {
-            population_size: 200,
-            mutation_rate: 0.1,
-            mutation_strength: 0.5,
-            crossover_rate: 0.3,
-            max_frames: 1000,
-            base_steps_without_food: 100,
-            steps_per_segment: 10,
-            auto_save_interval: 50,
-        }
-    }
-}
-
-impl EvolutionConfig {
-    /// Calculate timeout based on snake length
-    pub fn calculate_timeout(&self, snake_length: usize) -> u32 {
-        self.base_steps_without_food + (snake_length as u32 * self.steps_per_segment)
-    }
-}
 
 /// Generation state for tracking evaluation progress
 #[derive(Debug, Clone, Default)]
@@ -124,8 +82,8 @@ impl GenerationState {
 pub struct EvolutionManager {
     /// MAP-Elites archive
     pub archive: MapElitesArchive,
-    /// Evolution configuration
-    pub config: EvolutionConfig,
+    /// Evolution configuration (uses Hyperparameters)
+    pub config: Hyperparameters,
     /// Current generation state
     pub generation_state: GenerationState,
     /// History of generation records
@@ -134,14 +92,15 @@ pub struct EvolutionManager {
 
 impl Default for EvolutionManager {
     fn default() -> Self {
-        Self::new(EvolutionConfig::default())
+        let config = Hyperparameters::default();
+        Self::new(config)
     }
 }
 
 impl EvolutionManager {
-    pub fn new(config: EvolutionConfig) -> Self {
+    pub fn new(config: Hyperparameters) -> Self {
         Self {
-            archive: MapElitesArchive::default(),
+            archive: MapElitesArchive::new(config.grid_resolution),
             config,
             generation_state: GenerationState::new(),
             history: Vec::new(),
@@ -253,9 +212,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_evolution_config_default() {
-        let config = EvolutionConfig::default();
-        assert_eq!(config.population_size, 200);
-        assert_eq!(config.mutation_rate, 0.1);
+    fn test_evolution_manager_default() {
+        let manager = EvolutionManager::default();
+        assert_eq!(manager.config.population_size, 200);
+        assert_eq!(manager.config.mutation_rate, 0.1);
+        assert_eq!(manager.config.grid_resolution, 20);
     }
 }
