@@ -2,13 +2,14 @@
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
+use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
 use std::collections::HashMap;
 
 use crate::evolution::EvolutionManager;
 use crate::snake::{
     AppStartTime, CollisionSettings, GameState, GameStats, GlobalTrainingHistory, GridDimensions,
-    GridMap, MeshCache, RenderConfig, SegmentPool, SnakeInstance, TrainingStats, BLOCK_SIZE,
+    GridMap, MeshCache, RenderConfig, SnakeInstance, TrainingStats, BLOCK_SIZE,
 };
 
 /// UI Component markers
@@ -140,6 +141,39 @@ pub struct MaterialCache {
     pub cache: HashMap<[u8; 3], Handle<ColorMaterial>>,
 }
 
+/// Cell-based render map: one entity per grid cell, pre-spawned.
+/// Each frame only the highest-fitness snake occupying each cell is displayed.
+/// Entity index = y * grid_width + x
+#[derive(Resource)]
+pub struct CellRenderMap {
+    /// For each occupied cell: (color, fitness_of_best_snake_here)
+    /// Rebuilt from scratch every frame before rendering
+    pub cells: HashMap<(i32, i32), (Color, f64)>,
+    /// Pre-spawned Bevy entities — one per grid cell, indexed y*w+x
+    pub entities: Vec<Entity>,
+    pub grid_width: i32,
+    pub grid_height: i32,
+}
+
+impl CellRenderMap {
+    pub fn new(grid_width: i32, grid_height: i32) -> Self {
+        Self {
+            cells: HashMap::new(),
+            entities: Vec::new(),
+            grid_width,
+            grid_height,
+        }
+    }
+
+    /// Get entity index for grid position (x, y)
+    pub fn entity_index(&self, x: i32, y: i32) -> Option<usize> {
+        if x < 0 || x >= self.grid_width || y < 0 || y >= self.grid_height {
+            return None;
+        }
+        Some((y * self.grid_width + x) as usize)
+    }
+}
+
 /// Food entity pool - one pre-spawned food entity per snake
 #[derive(Resource, Default)]
 pub struct FoodPool {
@@ -170,6 +204,7 @@ impl Plugin for UiPlugin {
         .insert_resource(MaterialCache::default())
         .insert_resource(FoodPool::default())
         .insert_resource(UiUpdateTimer::default())
+        .insert_resource(CellRenderMap::new(0, 0)) // placeholder, re-created in setup
         .add_systems(
             Update,
             (handle_input, on_window_resize_collect, render_system),
@@ -588,6 +623,9 @@ pub fn on_window_resize_apply(
     mut game: ResMut<GameState>,
     mut grid_map: ResMut<GridMap>,
     mut graph_state: ResMut<GraphPanelState>,
+    mut cell_map: ResMut<CellRenderMap>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mesh_cache: Res<MeshCache>,
     _gen_seed: Option<Res<crate::snake::GenerationSeed>>,
     mut commands: Commands,
 ) {
@@ -608,6 +646,30 @@ pub fn on_window_resize_apply(
     grid.height = new_height;
     *grid_map = GridMap::new(new_width, new_height);
 
+    // Despawn old cell entities and re-create for new grid size
+    for &entity in cell_map.entities.iter() {
+        commands.entity(entity).despawn();
+    }
+    let cell_count = (new_width * new_height) as usize;
+    let default_material = materials.add(Color::rgb(0.05, 0.05, 0.05));
+    let mut new_entities = Vec::with_capacity(cell_count);
+    for _ in 0..cell_count {
+        let entity = commands
+            .spawn(MaterialMesh2dBundle {
+                mesh: mesh_cache.segment_mesh.clone().into(),
+                material: default_material.clone(),
+                transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                visibility: Visibility::Hidden,
+                ..default()
+            })
+            .id();
+        new_entities.push(entity);
+    }
+    cell_map.entities = new_entities;
+    cell_map.cells.clear();
+    cell_map.grid_width = new_width;
+    cell_map.grid_height = new_height;
+
     // Regenerate seed for new grid
     let new_seed = crate::snake::GenerationSeed::new_for_grid(&grid);
     let total_snakes = game.snakes.len();
@@ -623,25 +685,31 @@ pub fn on_window_resize_apply(
     );
 }
 
-/// Rendering system - now uses game state directly from ECS
+/// Rendering system - cell-based rendering (replaces per-segment entity approach)
 pub fn render_system(
     mut commands: Commands,
-    game: ResMut<GameState>,
-    _global_history: ResMut<GlobalTrainingHistory>,
+    game: Res<GameState>,
     windows: Query<&Window>,
-    mesh_cache: Res<MeshCache>,
+    _mesh_cache: Res<MeshCache>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut segment_pool: ResMut<SegmentPool>,
     mut mat_cache: ResMut<MaterialCache>,
     food_pool: Res<FoodPool>,
     render_config: Res<RenderConfig>,
     mut stats: ResMut<TrainingStats>,
+    mut cell_map: ResMut<CellRenderMap>,
+    evo_manager: Res<EvolutionManager>,
 ) {
     if !render_config.enabled {
+        // Hide everything when turbo mode is on
+        for snake in game.snakes.iter() {
+            if let Some(&food_entity) = food_pool.entities.get(snake.id) {
+                commands.entity(food_entity).insert(Visibility::Hidden);
+            }
+        }
         return;
     }
 
-    // Update FPS
+    // FPS counter
     stats.frame_count += 1;
     let now = std::time::Instant::now();
     if now.duration_since(stats.last_fps_update).as_secs_f32() >= 1.0 {
@@ -659,7 +727,45 @@ pub fn render_system(
     let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
     let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
 
-    // Helper function for material caching
+    // Build fitness lookup: snake_id → fitness from current generation population
+    // This is used to determine which snake "wins" a contested cell
+    let fitness_map: Vec<f64> = evo_manager
+        .generation_state
+        .population
+        .iter()
+        .map(|ind| ind.fitness)
+        .collect();
+
+    // === PHASE 1: Build cell color map ===
+    // For each occupied cell, keep only the color of the highest-fitness snake
+    cell_map.cells.clear();
+    for snake in game.snakes.iter() {
+        if snake.is_game_over {
+            continue;
+        }
+        let snake_fitness = fitness_map.get(snake.id).copied().unwrap_or(0.0);
+
+        for (seg_idx, pos) in snake.snake.iter().enumerate() {
+            let key = (pos.x, pos.y);
+            // Head is always white; body uses the snake's behavioral color
+            let color = if seg_idx == 0 {
+                Color::rgb(1.0, 1.0, 1.0)
+            } else {
+                snake.color
+            };
+            // Only update if this snake has higher fitness than the current winner
+            let entry = cell_map
+                .cells
+                .entry(key)
+                .or_insert((color, f64::NEG_INFINITY));
+            if snake_fitness > entry.1 {
+                *entry = (color, snake_fitness);
+            }
+        }
+    }
+
+    // === PHASE 2: Update cell entities ===
+    // Helper closure for material caching
     let get_or_create_material = |color: Color,
                                   cache: &mut MaterialCache,
                                   materials: &mut Assets<ColorMaterial>|
@@ -676,57 +782,61 @@ pub fn render_system(
             .clone()
     };
 
-    // Render the snakes
-    for snake in game.snakes.iter() {
-        if snake.is_game_over {
-            segment_pool.hide_excess(&mut commands, snake.id, 0);
-            // Hide food for dead snakes
-            if let Some(&food_entity) = food_pool.entities.get(snake.id) {
-                commands.entity(food_entity).insert(Visibility::Hidden);
+    // Show/update occupied cells
+    for (&(x, y), &(color, _)) in cell_map.cells.iter() {
+        let Some(idx) = cell_map.entity_index(x, y) else {
+            continue;
+        };
+        let Some(&entity) = cell_map.entities.get(idx) else {
+            continue;
+        };
+
+        let material = get_or_create_material(color, &mut mat_cache, &mut materials);
+        let transform = Transform::from_xyz(
+            offset_x + x as f32 * BLOCK_SIZE,
+            offset_y - y as f32 * BLOCK_SIZE,
+            0.0, // z=0 puts cells behind food (food is at z=1.0)
+        );
+        commands
+            .entity(entity)
+            .insert((material, transform, Visibility::Visible));
+    }
+
+    // Hide unoccupied cells
+    // Iterating all grid cells is cheap: max 57*33=1881 iterations
+    for y in 0..cell_map.grid_height {
+        for x in 0..cell_map.grid_width {
+            if !cell_map.cells.contains_key(&(x, y)) {
+                let Some(idx) = cell_map.entity_index(x, y) else {
+                    continue;
+                };
+                let Some(&entity) = cell_map.entities.get(idx) else {
+                    continue;
+                };
+                commands.entity(entity).insert(Visibility::Hidden);
             }
+        }
+    }
+
+    // === PHASE 3: Update food entities ===
+    for snake in game.snakes.iter() {
+        let Some(&food_entity) = food_pool.entities.get(snake.id) else {
+            continue;
+        };
+
+        if snake.is_game_over {
+            commands.entity(food_entity).insert(Visibility::Hidden);
             continue;
         }
 
-        let body_material = get_or_create_material(snake.color, &mut mat_cache, &mut materials);
-        let snake_len = snake.snake.len();
-
-        for (i, pos) in snake.snake.iter().enumerate() {
-            let material = if i == 0 {
-                mesh_cache.head_material.clone()
-            } else {
-                body_material.clone()
-            };
-
-            let transform = Transform::from_xyz(
-                offset_x + (pos.x as f32 * BLOCK_SIZE),
-                offset_y - (pos.y as f32 * BLOCK_SIZE),
-                0.0,
-            );
-
-            segment_pool.get_or_spawn(
-                &mut commands,
-                snake.id,
-                i,
-                mesh_cache.segment_mesh.clone(),
-                material,
-                transform,
-            );
-        }
-
-        segment_pool.hide_excess(&mut commands, snake.id, snake_len);
-        segment_pool.set_active_count(snake.id, snake_len);
-
-        // Update food entity from pool
-        if let Some(&food_entity) = food_pool.entities.get(snake.id) {
-            let food_transform = Transform::from_xyz(
-                offset_x + (snake.food.x as f32 * BLOCK_SIZE),
-                offset_y - (snake.food.y as f32 * BLOCK_SIZE),
-                0.0,
-            );
-            commands
-                .entity(food_entity)
-                .insert((food_transform, Visibility::Visible));
-        }
+        let food_transform = Transform::from_xyz(
+            offset_x + snake.food.x as f32 * BLOCK_SIZE,
+            offset_y - snake.food.y as f32 * BLOCK_SIZE,
+            1.0, // z=1.0 renders food above snake cells (z=0.0)
+        );
+        commands
+            .entity(food_entity)
+            .insert((food_transform, Visibility::Visible));
     }
 }
 

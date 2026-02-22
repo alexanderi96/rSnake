@@ -4,11 +4,28 @@
 
 #![recursion_limit = "256"]
 
+use std::collections::HashMap;
+
 mod brain;
 mod config;
 mod evolution;
 mod map_elites;
+#[cfg(feature = "profiling")]
 mod profiling;
+
+#[cfg(not(feature = "profiling"))]
+mod profiling {
+    pub struct ProfilingGuard;
+    impl ProfilingGuard {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+    pub fn is_profiling() -> bool {
+        false
+    }
+}
+
 mod snake;
 mod ui;
 
@@ -23,10 +40,10 @@ use evolution::EvolutionManager;
 use snake::{
     calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings, Food,
     GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions,
-    GridMap, MeshCache, ParallelConfig, Position, RenderConfig, SegmentPool, SnakeId,
-    TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
+    GridMap, MeshCache, ParallelConfig, Position, RenderConfig, SnakeId, TrainingStats,
+    BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
-use ui::{GraphPanelState, PauseState, UiPlugin, WindowSettings};
+use ui::{CellRenderMap, GraphPanelState, PauseState, UiPlugin, WindowSettings};
 
 /// CLI Arguments
 #[derive(Parser, Debug, Clone)]
@@ -163,6 +180,30 @@ fn setup(
         head_material: materials.add(Color::rgb(1.0, 1.0, 1.0)),
     };
 
+    // Pre-spawn one entity per grid cell for cell-based rendering
+    let cell_count = (grid_width * grid_height) as usize;
+    let mut cell_entities = Vec::with_capacity(cell_count);
+    // Use a neutral dark color as default (will be overwritten when visible)
+    let default_material = materials.add(Color::rgb(0.05, 0.05, 0.05));
+    for _ in 0..cell_count {
+        let entity = commands
+            .spawn(MaterialMesh2dBundle {
+                mesh: mesh_cache.segment_mesh.clone().into(),
+                material: default_material.clone(),
+                transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                visibility: Visibility::Hidden,
+                ..default()
+            })
+            .id();
+        cell_entities.push(entity);
+    }
+    commands.insert_resource(CellRenderMap {
+        cells: HashMap::new(),
+        entities: cell_entities,
+        grid_width,
+        grid_height,
+    });
+
     commands.insert_resource(CollisionSettings::default());
     commands.insert_resource(GraphPanelState::default());
     commands.insert_resource(RenderConfig::default());
@@ -172,7 +213,6 @@ fn setup(
     let snake_count = hyperparams.population_size;
 
     let parallel_config = ParallelConfig::new(snake_count);
-    commands.insert_resource(SegmentPool::new(snake_count));
     commands.insert_resource(AppStartTime::default());
 
     // Pre-spawn food entities for the pool (one per snake)
@@ -199,8 +239,9 @@ fn setup(
 
     commands.insert_resource(mesh_cache);
 
-    let (global_history, _) = snake::load_global_history();
+    let (global_history, max_gen) = snake::load_global_history();
     let _accumulated_time = global_history.accumulated_time_secs;
+    let persisted_high_score = global_history.all_time_high_score;
 
     let session_file = snake::new_session_path();
     println!("Session file: {}", session_file.display());
@@ -237,11 +278,11 @@ fn setup(
     commands.insert_resource(WindowSettings {
         is_fullscreen: false,
     });
-    commands.insert_resource(GameState::new_with_behavioral_colors(
-        &grid,
-        snake_count,
-        Some(behaviors),
-    ));
+    // Create GameState and restore persistent counters from loaded history
+    let mut game_state = GameState::new_with_behavioral_colors(&grid, snake_count, Some(behaviors));
+    game_state.total_iterations = max_gen;
+    game_state.high_score = persisted_high_score;
+    commands.insert_resource(game_state);
     commands.insert_resource(grid);
     commands.insert_resource(TrainingStats {
         fps: 0.0,
@@ -469,7 +510,18 @@ fn end_generation(
         }
     }
 
-    let record = evo_manager.end_generation();
+    // Compute generation high score before calling end_generation
+    let gen_high_score = game.snakes.iter().map(|s| s.score).max().unwrap_or(0);
+
+    let mut record = evo_manager.end_generation();
+
+    // Set generation_high_score on the record after creation
+    record.generation_high_score = gen_high_score;
+
+    // Update all_time_high_score
+    if gen_high_score > global_history.all_time_high_score {
+        global_history.all_time_high_score = gen_high_score;
+    }
 
     // Sync to GlobalTrainingHistory for UI graph and JSON persistence
     global_history.records.push(record.clone());

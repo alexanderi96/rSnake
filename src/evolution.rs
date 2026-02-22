@@ -142,6 +142,7 @@ impl EvolutionManager {
             archive_coverage: self.archive.coverage(),
             archive_filled: self.archive.filled_cells(),
             insertions,
+            generation_high_score: 0, // Will be set by caller
         };
 
         self.history.push(record.clone());
@@ -205,6 +206,8 @@ pub struct GenerationRecord {
     pub archive_coverage: f64,
     pub archive_filled: usize,
     pub insertions: usize,
+    #[serde(default)]
+    pub generation_high_score: u32, // max apples eaten this generation
 }
 
 #[cfg(test)]

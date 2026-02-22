@@ -5,8 +5,9 @@
 //!
 //! This will generate a flamegraph at: profile-{timestamp}.svg
 
+#![cfg(feature = "profiling")]
+
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 static PROFILER_ACTIVE: AtomicBool = AtomicBool::new(false);
 

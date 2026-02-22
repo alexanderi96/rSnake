@@ -140,82 +140,7 @@ pub struct MeshCache {
 }
 
 /// Object pool for snake segment entities
-#[derive(Resource, Default)]
-pub struct SegmentPool {
-    pub pools: Vec<Vec<Entity>>,
-    pub active_counts: Vec<usize>,
-}
-
-impl SegmentPool {
-    pub fn new(snake_count: usize) -> Self {
-        Self {
-            pools: vec![Vec::new(); snake_count],
-            active_counts: vec![0; snake_count],
-        }
-    }
-
-    pub fn get_or_spawn(
-        &mut self,
-        commands: &mut Commands,
-        snake_id: usize,
-        segment_idx: usize,
-        mesh: Handle<Mesh>,
-        material: Handle<ColorMaterial>,
-        transform: Transform,
-    ) -> Entity {
-        if snake_id >= self.pools.len() {
-            self.pools.resize_with(snake_id + 1, Vec::new);
-            self.active_counts.resize(snake_id + 1, 0);
-        }
-
-        let pool = &mut self.pools[snake_id];
-
-        if segment_idx < pool.len() {
-            let entity = pool[segment_idx];
-            commands
-                .entity(entity)
-                .insert((mesh, material, transform, Visibility::Visible));
-            entity
-        } else {
-            let entity = commands
-                .spawn((
-                    MaterialMesh2dBundle {
-                        mesh: mesh.into(),
-                        material,
-                        transform,
-                        ..default()
-                    },
-                    SnakeSegment,
-                    SnakeId(snake_id),
-                ))
-                .id();
-            pool.push(entity);
-            entity
-        }
-    }
-
-    pub fn hide_excess(&mut self, commands: &mut Commands, snake_id: usize, needed_count: usize) {
-        if snake_id >= self.pools.len() {
-            return;
-        }
-
-        let pool = &self.pools[snake_id];
-        for i in needed_count..pool.len() {
-            commands.entity(pool[i]).insert(Visibility::Hidden);
-        }
-
-        if snake_id < self.active_counts.len() {
-            self.active_counts[snake_id] = needed_count;
-        }
-    }
-
-    pub fn set_active_count(&mut self, snake_id: usize, count: usize) {
-        if snake_id >= self.active_counts.len() {
-            self.active_counts.resize(snake_id + 1, 0);
-        }
-        self.active_counts[snake_id] = count;
-    }
-}
+// SegmentPool removed - see Fix 4: Cell-based rendering in ui.rs
 
 #[derive(Resource)]
 pub struct CollisionSettings {
@@ -301,6 +226,7 @@ impl Default for AppStartTime {
 pub struct GlobalTrainingHistory {
     pub records: Vec<GenerationRecord>,
     pub accumulated_time_secs: u64,
+    pub all_time_high_score: u32, // persistent across sessions
 }
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
@@ -585,6 +511,7 @@ impl SnakeInstance {
 
     /// Legacy: Exploration ratio (grid-dependent, deprecated)
     /// Kept for backward compatibility but not used for archive descriptors
+    #[allow(dead_code)]
     pub fn exploration_ratio(&self, grid: &GridDimensions) -> f64 {
         let total_cells = (grid.width * grid.height) as f64;
         (self.visited_cells.len() as f64 / total_cells).clamp(0.0, 1.0)
@@ -592,6 +519,7 @@ impl SnakeInstance {
 
     /// Legacy: Agility (turn frequency)
     /// Kept for backward compatibility but not used for archive descriptors
+    #[allow(dead_code)]
     pub fn agility(&self) -> f64 {
         if self.frames_survived == 0 {
             return 0.0;
@@ -937,6 +865,14 @@ pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
 
     global_history.records.sort_by_key(|r| r.generation);
 
+    // Compute all_time_high_score from loaded records
+    global_history.all_time_high_score = global_history
+        .records
+        .iter()
+        .map(|r| r.generation_high_score)
+        .max()
+        .unwrap_or(0);
+
     println!(
         "✅ Global History Loaded: {} records, {}s total, max gen: {}",
         global_history.records.len(),
@@ -966,5 +902,4 @@ pub fn save_training_session(
     Ok(())
 }
 
-use bevy::sprite::MaterialMesh2dBundle;
 use rand::Rng;
