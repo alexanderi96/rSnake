@@ -18,7 +18,7 @@ echo "   Press 'T' in the game to enable turbo mode (no rendering) for best prof
 echo ""
 
 # Run with timeout
-timeout ${DURATION} ./target/release/snake-rs --features profiling 2>&1 || true
+timeout ${DURATION} ./target/release/snake-rs --features profiling --config config.toml 2>&1 || true
 
 echo ""
 echo "✅ Profiling complete!"

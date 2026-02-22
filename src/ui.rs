@@ -2,14 +2,13 @@
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
-use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
+use std::collections::HashMap;
 
 use crate::evolution::EvolutionManager;
 use crate::snake::{
-    AppStartTime, CollisionSettings, Food, GameState, GameStats, GlobalTrainingHistory,
-    GridDimensions, GridMap, MeshCache, RenderConfig, SegmentPool, SnakeId, SnakeInstance,
-    TrainingStats, BLOCK_SIZE,
+    AppStartTime, CollisionSettings, GameState, GameStats, GlobalTrainingHistory, GridDimensions,
+    GridMap, MeshCache, RenderConfig, SegmentPool, SnakeInstance, TrainingStats, BLOCK_SIZE,
 };
 
 /// UI Component markers
@@ -135,6 +134,28 @@ pub struct HeatmapPanel;
 #[derive(Component)]
 pub struct HeatmapGrid;
 
+/// Material cache to avoid creating duplicate ColorMaterial assets
+#[derive(Resource, Default)]
+pub struct MaterialCache {
+    pub cache: HashMap<[u8; 3], Handle<ColorMaterial>>,
+}
+
+/// Food entity pool - one pre-spawned food entity per snake
+#[derive(Resource, Default)]
+pub struct FoodPool {
+    pub entities: Vec<Entity>,
+}
+
+/// Timer to limit UI updates to ~10Hz
+#[derive(Resource)]
+pub struct UiUpdateTimer(pub Timer);
+
+impl Default for UiUpdateTimer {
+    fn default() -> Self {
+        Self(Timer::from_seconds(0.1, TimerMode::Repeating))
+    }
+}
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
@@ -146,6 +167,9 @@ impl Plugin for UiPlugin {
         .insert_resource(ResizeDebounce::default())
         .insert_resource(GraphPanelState::default())
         .insert_resource(HeatmapPanelState::default())
+        .insert_resource(MaterialCache::default())
+        .insert_resource(FoodPool::default())
+        .insert_resource(UiUpdateTimer::default())
         .add_systems(
             Update,
             (handle_input, on_window_resize_collect, render_system),
@@ -293,7 +317,15 @@ pub fn update_stats_ui(
     render_config: Res<RenderConfig>,
     app_start_time: Res<AppStartTime>,
     global_history: Res<GlobalTrainingHistory>,
+    mut ui_timer: ResMut<UiUpdateTimer>,
+    time: Res<Time>,
 ) {
+    // Limit UI updates to ~10Hz
+    ui_timer.0.tick(time.delta());
+    if !ui_timer.0.just_finished() {
+        return;
+    }
+
     use std::time::Instant;
 
     let now = Instant::now();
@@ -600,8 +632,9 @@ pub fn render_system(
     mesh_cache: Res<MeshCache>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut segment_pool: ResMut<SegmentPool>,
+    mut mat_cache: ResMut<MaterialCache>,
+    food_pool: Res<FoodPool>,
     render_config: Res<RenderConfig>,
-    q_food: Query<Entity, With<Food>>,
     mut stats: ResMut<TrainingStats>,
 ) {
     if !render_config.enabled {
@@ -622,23 +655,39 @@ pub fn render_system(
         return;
     };
 
-    // Remove old food
-    for e in q_food.iter() {
-        commands.entity(e).despawn();
-    }
-
     let ui_padding = 60.0;
     let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
     let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
+
+    // Helper function for material caching
+    let get_or_create_material = |color: Color,
+                                  cache: &mut MaterialCache,
+                                  materials: &mut Assets<ColorMaterial>|
+     -> Handle<ColorMaterial> {
+        let key = [
+            (color.r() * 255.0) as u8,
+            (color.g() * 255.0) as u8,
+            (color.b() * 255.0) as u8,
+        ];
+        cache
+            .cache
+            .entry(key)
+            .or_insert_with(|| materials.add(color))
+            .clone()
+    };
 
     // Render the snakes
     for snake in game.snakes.iter() {
         if snake.is_game_over {
             segment_pool.hide_excess(&mut commands, snake.id, 0);
+            // Hide food for dead snakes
+            if let Some(&food_entity) = food_pool.entities.get(snake.id) {
+                commands.entity(food_entity).insert(Visibility::Hidden);
+            }
             continue;
         }
 
-        let body_material = materials.add(snake.color);
+        let body_material = get_or_create_material(snake.color, &mut mat_cache, &mut materials);
         let snake_len = snake.snake.len();
 
         for (i, pos) in snake.snake.iter().enumerate() {
@@ -667,21 +716,17 @@ pub fn render_system(
         segment_pool.hide_excess(&mut commands, snake.id, snake_len);
         segment_pool.set_active_count(snake.id, snake_len);
 
-        // Render food
-        commands.spawn((
-            MaterialMesh2dBundle {
-                mesh: mesh_cache.food_mesh.clone().into(),
-                material: mesh_cache.food_material.clone(),
-                transform: Transform::from_xyz(
-                    offset_x + (snake.food.x as f32 * BLOCK_SIZE),
-                    offset_y - (snake.food.y as f32 * BLOCK_SIZE),
-                    0.0,
-                ),
-                ..default()
-            },
-            Food,
-            SnakeId(snake.id),
-        ));
+        // Update food entity from pool
+        if let Some(&food_entity) = food_pool.entities.get(snake.id) {
+            let food_transform = Transform::from_xyz(
+                offset_x + (snake.food.x as f32 * BLOCK_SIZE),
+                offset_y - (snake.food.y as f32 * BLOCK_SIZE),
+                0.0,
+            );
+            commands
+                .entity(food_entity)
+                .insert((food_transform, Visibility::Visible));
+        }
     }
 }
 

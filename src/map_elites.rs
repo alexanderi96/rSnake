@@ -4,7 +4,6 @@
 //! represents a unique behavioral niche. The algorithm illuminates the
 //! behavioral space by discovering diverse, high-quality solutions.
 
-use rand::seq::SliceRandom;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 
@@ -117,9 +116,9 @@ impl MapElitesArchive {
 
     /// Get the grid cell coordinates for an individual
     pub fn get_cell(&self, individual: &Individual) -> (usize, usize) {
-        let congestion_bin = self.discretize(individual.congestion);
-        let agility_bin = self.discretize(individual.agility);
-        (congestion_bin, agility_bin)
+        let path_directness_bin = self.discretize(individual.path_directness);
+        let body_avoidance_bin = self.discretize(individual.body_avoidance);
+        (path_directness_bin, body_avoidance_bin)
     }
 
     /// Try to insert an individual into the archive
@@ -171,6 +170,7 @@ impl MapElitesArchive {
         mutation_rate: f64,
         mutation_strength: f64,
     ) -> Vec<Individual> {
+        use rand::Rng;
         let mut rng = rand::thread_rng();
 
         let mut population = Vec::with_capacity(population_size);
@@ -184,14 +184,36 @@ impl MapElitesArchive {
         }
 
         // Collect elites with their cell coordinates for archive_color calculation
-        let elites_with_cells: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
+        let elites: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
+
+        // Build fitness-weighted index using sqrt to preserve diversity
+        let weights: Vec<f64> = elites
+            .iter()
+            .map(|(_, ind)| ind.fitness.max(1.0).powf(0.5))
+            .collect();
+        let total_weight: f64 = weights.iter().sum();
+        let normalized_weights: Vec<f64> = weights.iter().map(|w| w / total_weight).collect();
+
+        // Weighted selection closure
+        let weighted_select = |rng: &mut rand::rngs::ThreadRng| -> usize {
+            let r: f64 = rng.gen();
+            let mut cumulative = 0.0;
+            for (i, &w) in normalized_weights.iter().enumerate() {
+                cumulative += w;
+                if r <= cumulative {
+                    return i;
+                }
+            }
+            elites.len() - 1
+        };
 
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f64 = 0.05;
 
         for id in 0..population_size {
-            // Select a random elite with cell
-            let (_cell, parent) = elites_with_cells.choose(&mut rng).unwrap();
+            // Select elite using fitness-weighted selection
+            let idx = weighted_select(&mut rng);
+            let (_cell, parent) = elites[idx];
 
             // Create a mutated offspring
             let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
@@ -240,16 +262,39 @@ impl MapElitesArchive {
         }
 
         // Collect elites with their cell coordinates for archive_color calculation
-        let elites_with_cells: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
+        let elites: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
+
+        // Build fitness-weighted index using sqrt to preserve diversity
+        let weights: Vec<f64> = elites
+            .iter()
+            .map(|(_, ind)| ind.fitness.max(1.0).powf(0.5))
+            .collect();
+        let total_weight: f64 = weights.iter().sum();
+        let normalized_weights: Vec<f64> = weights.iter().map(|w| w / total_weight).collect();
+
+        // Weighted selection closure
+        let weighted_select = |rng: &mut rand::rngs::ThreadRng| -> usize {
+            let r: f64 = rng.gen();
+            let mut cumulative = 0.0;
+            for (i, &w) in normalized_weights.iter().enumerate() {
+                cumulative += w;
+                if r <= cumulative {
+                    return i;
+                }
+            }
+            elites.len() - 1
+        };
 
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f64 = 0.05;
 
         for id in 0..population_size {
-            let individual = if rng.gen::<f64>() < crossover_rate && elites_with_cells.len() >= 2 {
-                // Crossover between two random elites
-                let (_cell1, parent1) = elites_with_cells.choose(&mut rng).unwrap();
-                let (_cell2, parent2) = elites_with_cells.choose(&mut rng).unwrap();
+            let individual = if rng.gen::<f64>() < crossover_rate && elites.len() >= 2 {
+                // Crossover between two fitness-weighted selected elites
+                let idx1 = weighted_select(&mut rng);
+                let idx2 = weighted_select(&mut rng);
+                let (_cell1, parent1) = elites[idx1];
+                let (_cell2, parent2) = elites[idx2];
 
                 // Brain crossover
                 let child_brain = parent1.brain.crossover(&parent2.brain);
@@ -278,8 +323,9 @@ impl MapElitesArchive {
                 ind.is_alive = true;
                 ind
             } else {
-                // Just mutation
-                let (_cell, parent) = elites_with_cells.choose(&mut rng).unwrap();
+                // Just mutation with fitness-weighted selection
+                let idx = weighted_select(&mut rng);
+                let (_cell, parent) = elites[idx];
                 let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
 
                 // Mutate color with small jitter
@@ -400,8 +446,8 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual = Individual::new_random(0);
-        individual.congestion = 0.5;
-        individual.agility = 0.5;
+        individual.path_directness = 0.5;
+        individual.body_avoidance = 0.5;
         individual.fitness = 100.0;
 
         assert!(archive.insert(individual));
@@ -413,15 +459,15 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.congestion = 0.5;
-        individual1.agility = 0.5;
+        individual1.path_directness = 0.5;
+        individual1.body_avoidance = 0.5;
         individual1.fitness = 100.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.congestion = 0.5;
-        individual2.agility = 0.5;
+        individual2.path_directness = 0.5;
+        individual2.body_avoidance = 0.5;
         individual2.fitness = 200.0;
 
         assert!(archive.insert(individual2));
@@ -434,15 +480,15 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.congestion = 0.5;
-        individual1.agility = 0.5;
+        individual1.path_directness = 0.5;
+        individual1.body_avoidance = 0.5;
         individual1.fitness = 200.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.congestion = 0.5;
-        individual2.agility = 0.5;
+        individual2.path_directness = 0.5;
+        individual2.body_avoidance = 0.5;
         individual2.fitness = 100.0;
 
         assert!(!archive.insert(individual2));
@@ -456,8 +502,8 @@ mod tests {
         // Add some elites
         for i in 0..5 {
             let mut individual = Individual::new_random(i);
-            individual.congestion = i as f64 / 10.0;
-            individual.agility = i as f64 / 10.0;
+            individual.path_directness = i as f64 / 10.0;
+            individual.body_avoidance = i as f64 / 10.0;
             individual.fitness = (i * 100) as f64;
             archive.insert(individual);
         }

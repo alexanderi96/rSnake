@@ -8,21 +8,23 @@ mod brain;
 mod config;
 mod evolution;
 mod map_elites;
+mod profiling;
 mod snake;
 mod ui;
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
+use bevy::sprite::MaterialMesh2dBundle;
 use clap::Parser;
 
 use brain::Action;
 use config::Hyperparameters;
 use evolution::EvolutionManager;
 use snake::{
-    calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings, GameConfig,
-    GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions, GridMap,
-    MeshCache, ParallelConfig, Position, RenderConfig, SegmentPool, TrainingStats, BASE_STATE_SIZE,
-    BLOCK_SIZE, STATE_SIZE,
+    calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings, Food,
+    GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions,
+    GridMap, MeshCache, ParallelConfig, Position, RenderConfig, SegmentPool, SnakeId,
+    TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
 use ui::{GraphPanelState, PauseState, UiPlugin, WindowSettings};
 
@@ -153,17 +155,13 @@ fn setup(
     let (grid_width, grid_height) =
         calculate_grid_dimensions(window.resolution.width(), window.resolution.height());
 
-    let segment_mesh = meshes.add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0));
-    let food_mesh = meshes.add(Circle::new(BLOCK_SIZE / 2.0));
-    let food_material = materials.add(Color::rgb(1.0, 0.0, 0.0));
-    let head_material = materials.add(Color::rgb(1.0, 1.0, 1.0));
-
-    commands.insert_resource(MeshCache {
-        segment_mesh,
-        food_mesh,
-        food_material,
-        head_material,
-    });
+    // Create mesh cache and materials
+    let mesh_cache = MeshCache {
+        segment_mesh: meshes.add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0)),
+        food_mesh: meshes.add(Circle::new(BLOCK_SIZE / 2.0)),
+        food_material: materials.add(Color::rgb(1.0, 0.0, 0.0)),
+        head_material: materials.add(Color::rgb(1.0, 1.0, 1.0)),
+    };
 
     commands.insert_resource(CollisionSettings::default());
     commands.insert_resource(GraphPanelState::default());
@@ -176,6 +174,30 @@ fn setup(
     let parallel_config = ParallelConfig::new(snake_count);
     commands.insert_resource(SegmentPool::new(snake_count));
     commands.insert_resource(AppStartTime::default());
+
+    // Pre-spawn food entities for the pool (one per snake)
+    let mut food_entities = Vec::with_capacity(snake_count);
+    for i in 0..snake_count {
+        let entity = commands
+            .spawn((
+                MaterialMesh2dBundle {
+                    mesh: mesh_cache.food_mesh.clone().into(),
+                    material: mesh_cache.food_material.clone(),
+                    transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                    visibility: Visibility::Hidden,
+                    ..default()
+                },
+                Food,
+                SnakeId(i),
+            ))
+            .id();
+        food_entities.push(entity);
+    }
+    commands.insert_resource(ui::FoodPool {
+        entities: food_entities,
+    });
+
+    commands.insert_resource(mesh_cache);
 
     let (global_history, _) = snake::load_global_history();
     let _accumulated_time = global_history.accumulated_time_secs;
@@ -203,11 +225,11 @@ fn setup(
     commands.insert_resource(Population(brains));
 
     // Extract behavioral values for color calculation
-    // Format: (congestion, agility, fitness, best_fitness)
+    // Format: (path_directness, body_avoidance, fitness, best_fitness)
     let best_fitness = evo_manager.generation_state.best_fitness.max(1.0); // Avoid division by zero
     let behaviors: Vec<(f64, f64, f64, f64)> = individuals
         .iter()
-        .map(|i| (i.congestion, i.agility, i.fitness, best_fitness))
+        .map(|i| (i.path_directness, i.body_avoidance, i.fitness, best_fitness))
         .collect();
 
     commands.insert_resource(global_history);
@@ -350,8 +372,8 @@ fn apply_moves_serial(
         let visited = snake.visited_cells.len().max(1) as f64;
         snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
 
-        // Check collisions
-        let is_self_collision = snake.snake.contains(&new_head);
+        // Check collisions - O(1) self-collision via body_set
+        let is_self_collision = snake.body_set.contains(&new_head);
         let is_collision = is_self_collision
             || if collision_settings.snake_vs_snake {
                 grid_map.is_collision(new_head.x, new_head.y, snake.id)
@@ -365,7 +387,9 @@ fn apply_moves_serial(
         if is_collision || is_timeout {
             snake.is_game_over = true;
         } else {
+            // Update snake body and body_set
             snake.snake.push_front(new_head);
+            snake.body_set.insert(new_head);
             if ate_food {
                 // Path directness accumulation (grid-invariant)
                 if snake.food_spawn_distance > 0 {
@@ -388,6 +412,9 @@ fn apply_moves_serial(
                 snake.food = new_food;
                 snake.steps_without_food = 0;
             } else {
+                // Remove tail from body_set BEFORE pop_back
+                let tail = *snake.snake.back().unwrap();
+                snake.body_set.remove(&tail);
                 snake.snake.pop_back();
             }
         }
@@ -434,8 +461,8 @@ fn end_generation(
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
             // Grid-invariant behavioral descriptors
-            ind.congestion = snake.path_directness();
-            ind.agility = snake.body_avoidance();
+            ind.path_directness = snake.path_directness();
+            ind.body_avoidance = snake.body_avoidance();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

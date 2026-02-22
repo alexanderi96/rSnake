@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -121,7 +121,7 @@ pub struct Food;
 #[allow(dead_code)]
 pub struct SnakeId(pub usize);
 
-#[derive(Component, Clone, Copy, PartialEq, Debug, Default)]
+#[derive(Component, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Position {
     pub x: i32,
     pub y: i32,
@@ -328,6 +328,8 @@ pub struct SnakeInstance {
     /// UUIDv7 per identificazione univoca dell'individuo
     pub uuid: uuid::Uuid,
     pub snake: VecDeque<Position>,
+    /// O(1) lookup for self-collision detection
+    pub body_set: HashSet<Position>,
     pub food: Position,
     pub direction: Direction,
     pub is_game_over: bool,
@@ -422,6 +424,10 @@ impl SnakeInstance {
         let mut snake = VecDeque::new();
         snake.push_back(spawn_pos);
 
+        // Initialize body_set for O(1) collision detection
+        let mut body_set = HashSet::new();
+        body_set.insert(spawn_pos);
+
         // Usa colore comportamentale basato sui tratti del genitore
         let color = Self::calculate_behavioral_color(
             parent_courage,
@@ -443,6 +449,7 @@ impl SnakeInstance {
             id,
             uuid: Uuid::now_v7(),
             snake,
+            body_set,
             food,
             direction: spawn_dir,
             is_game_over: false,
@@ -483,6 +490,8 @@ impl SnakeInstance {
         self.uuid = Uuid::now_v7(); // Nuovo UUID per ogni vita
         self.snake.clear();
         self.snake.push_back(spawn_pos);
+        self.body_set.clear();
+        self.body_set.insert(spawn_pos);
         self.direction = spawn_dir;
         self.is_game_over = false;
         self.steps_without_food = 0;
@@ -525,6 +534,8 @@ impl SnakeInstance {
         self.uuid = Uuid::now_v7();
         self.snake.clear();
         self.snake.push_back(seed.spawn_pos);
+        self.body_set.clear();
+        self.body_set.insert(seed.spawn_pos);
         self.direction = seed.spawn_dir;
         self.is_game_over = false;
         self.steps_without_food = 0;

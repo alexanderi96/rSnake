@@ -310,10 +310,12 @@ pub struct Individual {
     pub archive_color: GenomeColor,
     /// Fitness score (apples * 1000 + frames)
     pub fitness: f64,
-    /// Behavioral descriptor 1: Exploration ratio (fraction of grid visited)
-    pub congestion: f64,
-    /// Behavioral descriptor 2: Agility (turn frequency)
-    pub agility: f64,
+    /// Behavioral descriptor 1: Path directness (how efficiently snake reaches food)
+    #[serde(rename = "congestion")]
+    pub path_directness: f64,
+    /// Behavioral descriptor 2: Body avoidance (how well snake navigates around itself)
+    #[serde(rename = "agility")]
+    pub body_avoidance: f64,
     /// Frames survived
     pub frames_survived: u32,
     /// Apples eaten
@@ -331,8 +333,8 @@ impl Individual {
             color: GenomeColor::random(),
             archive_color: GenomeColor::default(),
             fitness: 0.0,
-            congestion: 0.0,
-            agility: 0.0,
+            path_directness: 0.0,
+            body_avoidance: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -348,8 +350,8 @@ impl Individual {
             color: GenomeColor::random(),
             archive_color: GenomeColor::default(),
             fitness: 0.0,
-            congestion: 0.0,
-            agility: 0.0,
+            path_directness: 0.0,
+            body_avoidance: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -369,8 +371,8 @@ impl Individual {
             color,
             archive_color,
             fitness: 0.0,
-            congestion: 0.0,
-            agility: 0.0,
+            path_directness: 0.0,
+            body_avoidance: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -380,8 +382,8 @@ impl Individual {
     /// Reset for a new evaluation
     pub fn reset(&mut self) {
         self.fitness = 0.0;
-        self.congestion = 0.0;
-        self.agility = 0.0;
+        self.path_directness = 0.0;
+        self.body_avoidance = 0.0;
         self.frames_survived = 0;
         self.apples_eaten = 0;
         self.is_alive = true;
