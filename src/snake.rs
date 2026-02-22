@@ -279,12 +279,14 @@ pub struct SnakeInstance {
     pub previous_state: [f32; BASE_STATE_SIZE],
     /// Frames survived (for fitness calculation)
     pub frames_survived: u32,
-    /// Sum of local density readings (for congestion tolerance descriptor)
-    pub congestion_sum: f64,
+    /// Unique grid cells visited by the snake head (for exploration ratio)
+    pub visited_cells: std::collections::HashSet<(i32, i32)>,
     /// Number of turns made (for agility descriptor)
     pub turn_count: u32,
     /// Previous action (for turn detection)
     pub previous_action: crate::brain::Action,
+    /// Sum of frames spent to reach each apple (for per-apple efficiency)
+    pub food_time_sum: u64,
 }
 
 impl SnakeInstance {
@@ -375,9 +377,10 @@ impl SnakeInstance {
             color,
             previous_state: [0.0; BASE_STATE_SIZE],
             frames_survived: 0,
-            congestion_sum: 0.0,
+            visited_cells: std::collections::HashSet::new(),
             turn_count: 0,
             previous_action: crate::brain::Action::Straight,
+            food_time_sum: 0,
         }
     }
 
@@ -418,18 +421,17 @@ impl SnakeInstance {
         );
         self.previous_state = [0.0; BASE_STATE_SIZE];
         self.frames_survived = 0;
-        self.congestion_sum = 0.0;
+        self.visited_cells.clear();
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
+        self.food_time_sum = 0;
     }
 
-    /// Calculate congestion tolerance descriptor
-    /// Higher values = snake tolerates tight spaces better (based on local density sensors)
-    pub fn congestion_tolerance(&self) -> f64 {
-        if self.frames_survived == 0 {
-            return 0.0;
-        }
-        (self.congestion_sum / self.frames_survived as f64).clamp(0.0, 1.0)
+    /// Exploration ratio: fraction of grid cells visited by the snake head
+    /// 0.0 = stayed in one spot, 1.0 = visited every cell
+    pub fn exploration_ratio(&self, grid: &GridDimensions) -> f64 {
+        let total_cells = (grid.width * grid.height) as f64;
+        (self.visited_cells.len() as f64 / total_cells).clamp(0.0, 1.0)
     }
 
     /// Calculate agility descriptor (turn frequency)
@@ -441,29 +443,31 @@ impl SnakeInstance {
         (self.turn_count as f64 / self.frames_survived as f64).clamp(0.0, 1.0)
     }
 
-    /// Calculate fitness with time penalty and food reward
-    /// - Penalità temporale: -1 per frame (forces efficiency)
-    /// - Reward principale: +1000 per cibo
-    /// - Penalità morte precoce: -200 se morto entro 50 frame senza mangiare
+    /// Calculate fitness based on per-apple efficiency with quadratic penalty
+    /// Quadratic penalty makes circling much more costly than linear
     pub fn fitness(&self, _grid: &GridDimensions) -> f64 {
-        // Penalità temporale: -1 per frame. Forza efficienza nella ricerca del cibo.
-        let survival_penalty = (self.frames_survived as f64) * -1.0;
+        if self.score == 0 {
+            return 0.0;
+        }
 
-        // Reward principale per il cibo
-        let food_reward = (self.score as f64) * 1000.0;
+        // Timeout base per serpente di lunghezza 1 (60 + 8*1 = 68)
+        // Usiamo questo come riferimento per normalizzare l'efficienza
+        let baseline_timeout = 68.0_f64;
 
-        // Penalità morte precoce: solo se il serpente non ha MAI mangiato
-        // ed è morto entro i primi 50 frame (suicidio immediato)
-        let death_penalty = if self.score == 0 && self.frames_survived < 50 {
-            -200.0
-        } else {
-            0.0
-        };
+        let avg_frames = self.food_time_sum as f64 / self.score as f64;
 
-        // Minimo a 0.0: MAP-Elites inserisce solo se fitness > 0.0,
-        // quindi NON usiamo .max(0.1) per non riempire l'archivio di spazzatura.
-        // Gli individui con fitness <= 0 vengono scartati naturalmente.
-        (food_reward + survival_penalty + death_penalty).max(0.0)
+        // Efficiency: 1.0 = mangiato immediatamente, 0.0 = mangiato all'ultimo momento
+        // Clamp a 0 per evitare valori negativi se avg_frames > baseline
+        let efficiency = (1.0 - avg_frames / baseline_timeout).clamp(0.0, 1.0);
+
+        // Penalità QUADRATICA: il circling crolla molto più velocemente
+        // efficiency=0.85 (10 frames) → reward=724
+        // efficiency=0.50 (34 frames) → reward=250
+        // efficiency=0.15 (58 frames) → reward=22
+        let per_apple_reward = efficiency * efficiency * 1000.0;
+
+        // Scala con numero di mele mangiate
+        (per_apple_reward * self.score as f64).max(0.0)
     }
 }
 

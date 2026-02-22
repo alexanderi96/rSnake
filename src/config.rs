@@ -35,8 +35,8 @@ impl Default for Hyperparameters {
             mutation_strength: 0.3, // Lowered for stability with larger network
             crossover_rate: 0.3,
             max_frames: 2000,
-            base_steps_without_food: 100,
-            steps_per_segment: 10,
+            base_steps_without_food: 60, // Reduced from 100 - tighter timeout
+            steps_per_segment: 8,        // Reduced from 10 - scales slower with length
             grid_resolution: 20,
             auto_save_interval: 50,
         }
@@ -137,8 +137,8 @@ mod tests {
     #[test]
     fn test_calculate_timeout() {
         let h = Hyperparameters::default();
-        assert_eq!(h.calculate_timeout(1), 110); // 100 + 1*10
-        assert_eq!(h.calculate_timeout(5), 150); // 100 + 5*10
-        assert_eq!(h.calculate_timeout(10), 200); // 100 + 10*10
+        assert_eq!(h.calculate_timeout(1), 68); // 60 + 1*8
+        assert_eq!(h.calculate_timeout(5), 100); // 60 + 5*8
+        assert_eq!(h.calculate_timeout(10), 140); // 60 + 10*8
     }
 }

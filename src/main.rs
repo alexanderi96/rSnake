@@ -252,11 +252,6 @@ fn simulation_step(
         // Calculate state
         let current_17 = get_current_17_state(snake, &grid_map, &grid);
 
-        // Densità locale: media dei sensori frontale, destro e sinistro (egocentrici)
-        // Sensors 0 (forward), 2 (right), 6 (left) in egocentric coordinates
-        let local_density = (current_17[0] + current_17[2] + current_17[6]) / 3.0;
-        snake.congestion_sum += local_density as f64;
-
         let mut state_34 = [0.0f32; STATE_SIZE];
         state_34[..17].copy_from_slice(&current_17);
         state_34[17..].copy_from_slice(&snake.previous_state);
@@ -288,6 +283,9 @@ fn simulation_step(
         snake.steps_without_food += 1;
         snake.frames_survived += 1;
 
+        // Track visited cells for exploration_ratio descriptor
+        snake.visited_cells.insert((new_head.x, new_head.y));
+
         // Check collisions
         // Self-collision is always checked first
         let is_collision = snake.snake.contains(&new_head)
@@ -306,6 +304,8 @@ fn simulation_step(
             snake.snake.push_front(new_head);
             if ate_food {
                 snake.score += 1;
+                // Accumulate time spent to reach this apple
+                snake.food_time_sum += snake.steps_without_food as u64;
                 if snake.score > new_high_score {
                     new_high_score = snake.score;
                 }
@@ -356,7 +356,7 @@ fn end_generation(
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
-            ind.congestion = snake.congestion_tolerance();
+            ind.congestion = snake.exploration_ratio(grid);
             ind.agility = snake.agility();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;

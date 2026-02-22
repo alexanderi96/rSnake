@@ -812,7 +812,7 @@ fn spawn_heatmap_panel_internal(mut commands: Commands, heatmap_state: &HeatmapP
                 },))
                 .with_children(|header| {
                     header.spawn(TextBundle::from_section(
-                        "MAP-Elites Heatmap (Agility vs Congestion)",
+                        "MAP-Elites Heatmap (Agility vs Exploration)",
                         TextStyle {
                             font_size: 16.0,
                             color: Color::WHITE,
@@ -980,7 +980,7 @@ pub fn draw_heatmap_in_panel(
             // Axis Labels
             spawn_axis_label(
                 parent,
-                "Congestion Tolerance →",
+                "Exploration Ratio →",
                 Val::Px(margin),
                 Val::Px(grid_height + margin + 5.0),
             );

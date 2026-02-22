@@ -310,7 +310,7 @@ pub struct Individual {
     pub archive_color: GenomeColor,
     /// Fitness score (apples * 1000 + frames)
     pub fitness: f64,
-    /// Behavioral descriptor 1: Congestion tolerance (spaces tight vs open)
+    /// Behavioral descriptor 1: Exploration ratio (fraction of grid visited)
     pub congestion: f64,
     /// Behavioral descriptor 2: Agility (turn frequency)
     pub agility: f64,
