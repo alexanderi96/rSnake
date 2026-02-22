@@ -338,14 +338,23 @@ pub struct SnakeInstance {
     pub previous_state: [f32; BASE_STATE_SIZE],
     /// Frames survived (for fitness calculation)
     pub frames_survived: u32,
-    /// Unique grid cells visited by the snake head (for exploration ratio)
+    /// Unique grid cells visited by the snake head (for body avoidance calculation)
     pub visited_cells: std::collections::HashSet<(i32, i32)>,
-    /// Number of turns made (for agility descriptor)
+    /// Number of turns made (for legacy agility descriptor, deprecated)
     pub turn_count: u32,
     /// Previous action (for turn detection)
     pub previous_action: crate::brain::Action,
     /// Sum of frames spent to reach each apple (for per-apple efficiency)
     pub food_time_sum: u64,
+    /// Sum of (manhattan_distance / steps_taken) for each apple eaten
+    /// Used for path_directness descriptor
+    pub path_directness_sum: f64,
+    /// Manhattan distance from head to food at spawn time
+    /// Used to compute path_directness ratio when apple is eaten
+    pub food_spawn_distance: u32,
+    /// Sum of (body_len / visited_cells) for each frame
+    /// Used for body_avoidance descriptor
+    pub body_pressure_sum: f64,
 }
 
 impl SnakeInstance {
@@ -421,14 +430,20 @@ impl SnakeInstance {
             best_fitness,
         );
 
+        // Calculate initial food position
+        let food = Position {
+            x: (spawn_pos.x + 5) % grid.width,
+            y: (spawn_pos.y + 5) % grid.height,
+        };
+        // Calculate Manhattan distance to first food for path_directness
+        let food_spawn_distance =
+            ((food.x - spawn_pos.x).abs() + (food.y - spawn_pos.y).abs()) as u32;
+
         Self {
             id,
             uuid: Uuid::now_v7(),
             snake,
-            food: Position {
-                x: (spawn_pos.x + 5) % grid.width,
-                y: (spawn_pos.y + 5) % grid.height,
-            },
+            food,
             direction: spawn_dir,
             is_game_over: false,
             steps_without_food: 0,
@@ -440,6 +455,9 @@ impl SnakeInstance {
             turn_count: 0,
             previous_action: crate::brain::Action::Straight,
             food_time_sum: 0,
+            path_directness_sum: 0.0,
+            food_spawn_distance,
+            body_pressure_sum: 0.0,
         }
     }
 
@@ -486,6 +504,11 @@ impl SnakeInstance {
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
         self.food_time_sum = 0;
+        self.path_directness_sum = 0.0;
+        // Calculate Manhattan distance to first food for path_directness
+        self.food_spawn_distance =
+            ((self.food.x - spawn_pos.x).abs() + (self.food.y - spawn_pos.y).abs()) as u32;
+        self.body_pressure_sum = 0.0;
     }
 
     /// Reset snake with shared generation seed for fair comparison
@@ -519,17 +542,45 @@ impl SnakeInstance {
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
         self.food_time_sum = 0;
+        self.path_directness_sum = 0.0;
+        // Calculate Manhattan distance to first food for path_directness
+        self.food_spawn_distance = ((self.food.x - seed.spawn_pos.x).abs()
+            + (self.food.y - seed.spawn_pos.y).abs()) as u32;
+        self.body_pressure_sum = 0.0;
     }
 
-    /// Exploration ratio: fraction of grid cells visited by the snake head
-    /// 0.0 = stayed in one spot, 1.0 = visited every cell
+    /// Path Directness: how directly the snake reaches food
+    /// Mean of (manhattan_distance_at_spawn / steps_taken_to_eat) for each apple
+    /// Grid-invariant: measures efficiency relative to ideal path, not absolute cells
+    /// Returns 0.0 if no apples eaten, otherwise value in [0.0, 1.0]
+    pub fn path_directness(&self) -> f64 {
+        if self.score == 0 {
+            return 0.0;
+        }
+        (self.path_directness_sum / self.score as f64).clamp(0.0, 1.0)
+    }
+
+    /// Body Avoidance Ratio: how well snake navigates around itself when long
+    /// Mean of (body_length / visited_cells) across all frames
+    /// Grid-invariant: uses ratio, not absolute counts
+    /// Returns 0.0 if no frames survived, otherwise value in [0.0, 1.0]
+    /// Higher values = snake survived in tighter spaces (better navigation skill)
+    pub fn body_avoidance(&self) -> f64 {
+        if self.frames_survived == 0 {
+            return 0.0;
+        }
+        (self.body_pressure_sum / self.frames_survived as f64).clamp(0.0, 1.0)
+    }
+
+    /// Legacy: Exploration ratio (grid-dependent, deprecated)
+    /// Kept for backward compatibility but not used for archive descriptors
     pub fn exploration_ratio(&self, grid: &GridDimensions) -> f64 {
         let total_cells = (grid.width * grid.height) as f64;
         (self.visited_cells.len() as f64 / total_cells).clamp(0.0, 1.0)
     }
 
-    /// Calculate agility descriptor (turn frequency)
-    /// 0.0 = always straight, 1.0 = turns every frame
+    /// Legacy: Agility (turn frequency)
+    /// Kept for backward compatibility but not used for archive descriptors
     pub fn agility(&self) -> f64 {
         if self.frames_survived == 0 {
             return 0.0;

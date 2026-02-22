@@ -21,8 +21,8 @@ use evolution::EvolutionManager;
 use snake::{
     calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings, GameConfig,
     GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions, GridMap,
-    MeshCache, ParallelConfig, Position, RenderConfig, SegmentPool, TrainingStats, BLOCK_SIZE,
-    STATE_SIZE,
+    MeshCache, ParallelConfig, Position, RenderConfig, SegmentPool, TrainingStats, BASE_STATE_SIZE,
+    BLOCK_SIZE, STATE_SIZE,
 };
 use ui::{GraphPanelState, PauseState, UiPlugin, WindowSettings};
 
@@ -93,6 +93,11 @@ fn build_hyperparameters(args: &CliArgs) -> Hyperparameters {
 #[derive(Resource)]
 struct Population(pub Vec<brain::Brain>);
 
+/// Intermediate results from parallel brain forward pass
+/// Stores (action, current_17_state) for each snake, indexed by snake id
+#[derive(Resource, Default)]
+struct ComputedMoves(Vec<Option<(Action, [f32; BASE_STATE_SIZE])>>);
+
 fn main() {
     let args = CliArgs::parse();
     let hyperparams = build_hyperparameters(&args);
@@ -123,7 +128,15 @@ fn main() {
         .add_plugins(UiPlugin)
         .add_systems(Startup, setup)
         .add_systems(Startup, ui::spawn_stats_ui.after(setup))
-        .add_systems(Update, simulation_step)
+        // Two-phase parallel simulation: compute moves (parallel) then apply (serial)
+        .insert_resource(ComputedMoves::default())
+        .add_systems(
+            Update,
+            (
+                compute_moves_parallel,
+                apply_moves_serial.after(compute_moves_parallel),
+            ),
+        )
         .run();
 }
 
@@ -218,67 +231,105 @@ fn setup(
     commands.insert_resource(evo_manager);
 }
 
-fn simulation_step(
-    _commands: Commands,
-    mut game: ResMut<GameState>,
-    mut grid_map: ResMut<GridMap>,
+/// PHASE 1: Parallel brain forward pass
+/// Computes actions for all snakes in parallel using rayon.
+/// Read-only access to GameState, GridMap, Population.
+fn compute_moves_parallel(
+    game: Res<GameState>,
+    grid_map: Res<GridMap>,
     grid: Res<GridDimensions>,
-    mut population: ResMut<Population>,
-    mut evo_manager: ResMut<EvolutionManager>,
-    mut global_history: ResMut<GlobalTrainingHistory>,
-    collision_settings: Res<CollisionSettings>,
-    mut gen_seed: ResMut<GenerationSeed>,
+    population: Res<Population>,
+    mut computed: ResMut<ComputedMoves>,
     pause_state: Res<PauseState>,
 ) {
     if pause_state.paused {
         return;
     }
 
-    let config = &evo_manager.config;
+    let snake_count = game.snakes.len();
+    let mut results = vec![None; snake_count];
 
-    // Build grid map with overflow protection for >254 snakes
+    // Rayon parallel iterator — read-only access to GameState and GridMap
+    use rayon::prelude::*;
+    results
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(idx, result)| {
+            let snake = &game.snakes[idx];
+            if snake.is_game_over {
+                return;
+            }
+
+            let brain = match population.0.get(snake.id) {
+                Some(b) => b,
+                None => return,
+            };
+
+            let current_17 = get_current_17_state(snake, &grid_map, &grid);
+            let mut state_34 = [0.0f32; STATE_SIZE];
+            state_34[..17].copy_from_slice(&current_17);
+            state_34[17..].copy_from_slice(&snake.previous_state);
+
+            let action = brain.predict(&state_34);
+            *result = Some((action, current_17));
+        });
+
+    computed.0 = results;
+}
+
+/// PHASE 2: Serial state application
+/// Applies computed moves and updates all mutable state.
+/// Single-threaded due to GridMap writes.
+#[allow(clippy::too_many_arguments)]
+fn apply_moves_serial(
+    mut game: ResMut<GameState>,
+    mut grid_map: ResMut<GridMap>,
+    grid: Res<GridDimensions>,
+    computed: Res<ComputedMoves>,
+    config: Res<Hyperparameters>,
+    mut evo_manager: ResMut<EvolutionManager>,
+    mut global_history: ResMut<GlobalTrainingHistory>,
+    mut gen_seed: ResMut<GenerationSeed>,
+    mut population: ResMut<Population>,
+    collision_settings: Res<CollisionSettings>,
+    pause_state: Res<PauseState>,
+) {
+    if pause_state.paused {
+        return;
+    }
+
+    // Rebuild grid_map (serial — cannot be parallelized)
     grid_map.clear();
     for (idx, snake) in game.snakes.iter().enumerate() {
         if !snake.is_game_over {
-            let cell_val = ((idx + 1) as u16).min(255) as u8; // clamp sicuro
+            let cell_val = ((idx + 1) as u16).min(255) as u8;
             for pos in snake.snake.iter() {
                 grid_map.set(pos.x, pos.y, cell_val);
             }
         }
     }
 
-    // Process each snake
     let mut new_high_score = game.high_score;
-    for snake in game.snakes.iter_mut() {
+
+    for (idx, result) in computed.0.iter().enumerate() {
+        let Some((action, current_17)) = result else {
+            continue;
+        };
+        let snake = &mut game.snakes[idx];
         if snake.is_game_over {
             continue;
         }
 
-        let brain = match population.0.get(snake.id) {
-            Some(b) => b,
-            None => continue,
-        };
-
-        // Calculate state
-        let current_17 = get_current_17_state(snake, &grid_map, &grid);
-
-        let mut state_34 = [0.0f32; STATE_SIZE];
-        state_34[..17].copy_from_slice(&current_17);
-        state_34[17..].copy_from_slice(&snake.previous_state);
-
-        let action = brain.predict(&state_34);
-
-        // Update tracking
-        snake.previous_state = current_17;
+        snake.previous_state = *current_17;
 
         match action {
             Action::Left => {
                 snake.direction = snake.direction.turn_left();
-                snake.turn_count += 1; // Increment for Agility tracking
+                snake.turn_count += 1;
             }
             Action::Right => {
                 snake.direction = snake.direction.turn_right();
-                snake.turn_count += 1; // Increment for Agility tracking
+                snake.turn_count += 1;
             }
             Action::Straight => {}
         }
@@ -292,13 +343,16 @@ fn simulation_step(
 
         snake.steps_without_food += 1;
         snake.frames_survived += 1;
-
-        // Track visited cells for exploration_ratio descriptor
         snake.visited_cells.insert((new_head.x, new_head.y));
 
+        // Body pressure per body_avoidance descriptor (grid-invariant)
+        let body_len = snake.snake.len() as f64;
+        let visited = snake.visited_cells.len().max(1) as f64;
+        snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
+
         // Check collisions
-        // Self-collision is always checked first
-        let is_collision = snake.snake.contains(&new_head)
+        let is_self_collision = snake.snake.contains(&new_head);
+        let is_collision = is_self_collision
             || if collision_settings.snake_vs_snake {
                 grid_map.is_collision(new_head.x, new_head.y, snake.id)
             } else {
@@ -313,14 +367,25 @@ fn simulation_step(
         } else {
             snake.snake.push_front(new_head);
             if ate_food {
+                // Path directness accumulation (grid-invariant)
+                if snake.food_spawn_distance > 0 {
+                    let ratio = (snake.food_spawn_distance as f64
+                        / snake.steps_without_food as f64)
+                        .clamp(0.0, 1.0);
+                    snake.path_directness_sum += ratio;
+                }
                 snake.score += 1;
-                // Accumulate time spent to reach this apple
                 snake.food_time_sum += snake.steps_without_food as u64;
                 if snake.score > new_high_score {
                     new_high_score = snake.score;
                 }
-                // Next food from deterministic sequence
-                snake.food = gen_seed.food_at(snake.score as usize);
+
+                // Spawn next food and calculate new Manhattan distance
+                let new_food = gen_seed.food_at(snake.score as usize);
+                let new_manhattan =
+                    (new_food.x - new_head.x).abs() + (new_food.y - new_head.y).abs();
+                snake.food_spawn_distance = new_manhattan as u32;
+                snake.food = new_food;
                 snake.steps_without_food = 0;
             } else {
                 snake.snake.pop_back();
@@ -337,26 +402,23 @@ fn simulation_step(
         let new_seed = GenerationSeed::new_for_grid(&grid);
         *gen_seed = new_seed.clone();
 
-        // 1. Reset all snakes with the new seed and archive colors
+        // Reset all snakes with the new seed and archive colors
         let total_snakes = game.snakes.len();
         let individuals = evo_manager.get_population();
         for (i, snake) in game.snakes.iter_mut().enumerate() {
-            // Reset snake with shared seed
             snake.reset_with_seed(&grid, total_snakes, &gen_seed, 0.0, 0.0, 0.0, 1.0);
-            // Apply archive_color after reset
             if let Some(ind) = individuals.get(i) {
                 snake.color = ind.archive_color.to_bevy_color();
             }
         }
 
-        // 2. Sostituisci i vecchi cervelli con i nuovi appena evoluti
+        // Replace old brains with newly evolved ones
         population.0 = evo_manager
             .get_population()
             .iter()
             .map(|i| i.brain.clone())
             .collect();
 
-        // 3. Aggiorna il contatore per la UI
         game.total_iterations += 1;
     }
 }
@@ -371,8 +433,9 @@ fn end_generation(
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
-            ind.congestion = snake.exploration_ratio(grid);
-            ind.agility = snake.agility();
+            // Grid-invariant behavioral descriptors
+            ind.congestion = snake.path_directness();
+            ind.agility = snake.body_avoidance();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

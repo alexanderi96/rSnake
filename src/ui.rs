@@ -891,7 +891,7 @@ fn spawn_heatmap_panel_internal(mut commands: Commands, heatmap_state: &HeatmapP
                 },))
                 .with_children(|header| {
                     header.spawn(TextBundle::from_section(
-                        "MAP-Elites Heatmap (Agility vs Exploration)",
+                        "MAP-Elites Heatmap (Body Pressure vs Path Directness)",
                         TextStyle {
                             font_size: 16.0,
                             color: Color::WHITE,
@@ -1059,11 +1059,11 @@ pub fn draw_heatmap_in_panel(
             // Axis Labels
             spawn_axis_label(
                 parent,
-                "Exploration Ratio →",
+                "Path Directness →",
                 Val::Px(margin),
                 Val::Px(grid_height + margin + 5.0),
             );
-            spawn_axis_label(parent, "Agility (Turns) ↑", Val::Px(5.0), Val::Px(margin));
+            spawn_axis_label(parent, "Body Pressure ↑", Val::Px(5.0), Val::Px(margin));
 
             // Stats text
             let filled = evo_manager.archive.filled_cells();

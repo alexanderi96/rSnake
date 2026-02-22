@@ -55,7 +55,7 @@ where
 /// MAP-Elites Archive: a 2D grid storing elite individuals
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapElitesArchive {
-    /// Grid storing elite individuals: key = (courage_bin, agility_bin)
+    /// Grid storing elite individuals: key = (descriptor1_bin, descriptor2_bin)
     #[serde(
         serialize_with = "serialize_grid",
         deserialize_with = "deserialize_grid"
@@ -70,6 +70,20 @@ pub struct MapElitesArchive {
     pub best_fitness: f64,
     /// Generation counter
     pub generation: u32,
+    /// Name of first behavioral descriptor (X-axis)
+    #[serde(default = "default_descriptor_1")]
+    pub descriptor_1: String,
+    /// Name of second behavioral descriptor (Y-axis)
+    #[serde(default = "default_descriptor_2")]
+    pub descriptor_2: String,
+}
+
+fn default_descriptor_1() -> String {
+    "path_directness".to_string()
+}
+
+fn default_descriptor_2() -> String {
+    "body_avoidance".to_string()
 }
 
 impl Default for MapElitesArchive {
@@ -88,6 +102,8 @@ impl MapElitesArchive {
             successful_insertions: 0,
             best_fitness: 0.0,
             generation: 0,
+            descriptor_1: default_descriptor_1(),
+            descriptor_2: default_descriptor_2(),
         }
     }
 
@@ -332,6 +348,27 @@ impl MapElitesArchive {
                 );
                 return Ok(MapElitesArchive::new(archive.resolution));
             }
+        }
+
+        // Check descriptor compatibility
+        let current_desc1 = default_descriptor_1();
+        let current_desc2 = default_descriptor_2();
+        if archive.descriptor_1 != current_desc1 || archive.descriptor_2 != current_desc2 {
+            eprintln!(
+                "⚠️  Archive descriptors mismatch: loaded ({}, {}) != current ({}, {}).",
+                archive.descriptor_1, archive.descriptor_2, current_desc1, current_desc2
+            );
+            eprintln!("    Archive cells are misaligned.");
+            // Try to get the run directory from the path
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                if let Some(run_dir) = parent.parent() {
+                    eprintln!(
+                        "    Recommend starting a new run with: rm -rf {}",
+                        run_dir.display()
+                    );
+                }
+            }
+            eprintln!("    Loading anyway — archive will be repopulated with correct descriptors over time.");
         }
 
         Ok(archive)
