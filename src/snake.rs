@@ -22,20 +22,22 @@ pub fn init_parallel_threads() -> usize {
     threads
 }
 
-/// Configurazione parallelism - numero serpenti = core CPU
+/// Configurazione parallelism - snake_count separato dai core CPU
 #[derive(Resource, Clone)]
+#[allow(dead_code)]
 pub struct ParallelConfig {
-    pub snake_count: usize,
+    pub cpu_cores: usize,   // Numero di core CPU (solo per logging)
+    pub snake_count: usize, // Numero di serpenti (dal config)
 }
 
 impl ParallelConfig {
-    pub fn new() -> Self {
-        let snake_count = init_parallel_threads();
-        println!(
-            "CPU cores: {}, Parallel snakes: {}",
-            snake_count, snake_count
-        );
-        Self { snake_count }
+    pub fn new(snake_count: usize) -> Self {
+        let cpu_cores = init_parallel_threads();
+        println!("CPU cores: {}, Population size: {}", cpu_cores, snake_count);
+        Self {
+            cpu_cores,
+            snake_count,
+        }
     }
 }
 

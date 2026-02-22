@@ -140,7 +140,7 @@ impl Plugin for UiPlugin {
     }
 }
 
-pub fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
+pub fn spawn_stats_ui(mut commands: Commands, _game: Res<GameState>) {
     let mut leaderboard_sections = vec![TextSection::new(
         "[LEADERBOARD]\n",
         TextStyle {
@@ -150,7 +150,8 @@ pub fn spawn_stats_ui(mut commands: Commands, game: Res<GameState>) {
         },
     )];
 
-    for _snake in game.snakes.iter() {
+    // Create only 20 leaderboard slots (fixed size for performance)
+    for _ in 0..20 {
         leaderboard_sections.push(TextSection::new(
             "",
             TextStyle {
@@ -283,8 +284,11 @@ pub fn update_stats_ui(
     let mut snake_data: Vec<(usize, &SnakeInstance)> = game.snakes.iter().enumerate().collect();
     snake_data.sort_by(|a, b| b.1.score.cmp(&a.1.score));
 
+    // Limit leaderboard to top 20 for performance with large populations
+    let display_count = snake_data.len().min(20);
+
     if let Ok(mut lb_text) = leaderboard_query.get_single_mut() {
-        for (rank, (original_idx, snake)) in snake_data.iter().enumerate() {
+        for (rank, (original_idx, snake)) in snake_data.iter().take(display_count).enumerate() {
             let section_idx = rank + 1;
             if section_idx < lb_text.sections.len() {
                 let status = if snake.is_game_over { "[XX]" } else { "[OK]" };
@@ -301,6 +305,10 @@ pub fn update_stats_ui(
                     snake.color
                 };
             }
+        }
+        // Clear remaining sections if population is smaller than sections
+        for section_idx in (display_count + 1)..lb_text.sections.len() {
+            lb_text.sections[section_idx].value = String::new();
         }
     }
 

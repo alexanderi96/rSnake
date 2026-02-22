@@ -1,26 +1,12 @@
-# Hyperparameters per Snake DQN Training
-# Questo file può essere caricato con: cargo run -- --config config.toml
+# Hyperparameters for MAP-Elites Snake Training
+# Load with: cargo run -- --config config.toml
 
-# DQN / Rete
-learning_rate = 0.0001      # 1e-4
-gamma = 0.99
-batch_size = 512
-memory_size = 100000
-
-# Update Frequencies
-target_update_freq = 1000
-train_interval = 64
-
-# Reward System
-reward_food = 10.0
-reward_death = -10.0
-reward_step = -0.001
-
-# Timeout (morte per inedia)
-base_steps_without_food = 100
-steps_per_segment = 10
-
-# Dynamic Epsilon (Ape-X Spread)
-epsilon_decay_rate = 0.0005
-epsilon_min = 0.01
-epsilon_max = 0.5
+population_size = 64           # Snakes per generation (non più limitato ai core)
+mutation_rate = 0.05
+mutation_strength = 0.3
+crossover_rate = 0.3
+max_frames = 2000
+base_steps_without_food = 60
+steps_per_segment = 8
+grid_resolution = 20
+auto_save_interval = 50

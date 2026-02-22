@@ -156,8 +156,11 @@ fn setup(
     commands.insert_resource(RenderConfig::default());
     commands.insert_resource(GridMap::new(grid_width, grid_height));
 
-    let parallel_config = ParallelConfig::new();
-    commands.insert_resource(SegmentPool::new(parallel_config.snake_count));
+    // Use population_size from config, not CPU cores
+    let snake_count = hyperparams.population_size;
+
+    let parallel_config = ParallelConfig::new(snake_count);
+    commands.insert_resource(SegmentPool::new(snake_count));
     commands.insert_resource(AppStartTime::default());
 
     let (global_history, _) = snake::load_global_history();
@@ -171,14 +174,8 @@ fn setup(
         height: grid_height,
     };
 
-    // Use CPU core count as population size for parallel evaluation
-    let snake_count = parallel_config.snake_count;
-
-    // Override population_size with snake_count (CPU cores) for optimal parallelism
-    let mut evo_hyperparams = hyperparams.clone();
-    evo_hyperparams.population_size = snake_count;
-
-    let mut evo_manager = EvolutionManager::new(evo_hyperparams);
+    // Use hyperparams directly (population_size from config)
+    let mut evo_manager = EvolutionManager::new(hyperparams.clone());
     evo_manager.load_archive();
     evo_manager.start_generation();
 
@@ -227,12 +224,13 @@ fn simulation_step(
 ) {
     let config = &evo_manager.config;
 
-    // Build grid map
+    // Build grid map with overflow protection for >254 snakes
     grid_map.clear();
     for (idx, snake) in game.snakes.iter().enumerate() {
         if !snake.is_game_over {
+            let cell_val = ((idx + 1) as u16).min(255) as u8; // clamp sicuro
             for pos in snake.snake.iter() {
-                grid_map.set(pos.x, pos.y, (idx + 1) as u8);
+                grid_map.set(pos.x, pos.y, cell_val);
             }
         }
     }
