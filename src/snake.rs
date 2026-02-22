@@ -41,6 +41,63 @@ impl ParallelConfig {
     }
 }
 
+/// Seed condiviso per la generazione corrente.
+/// Tutti i serpenti usano la stessa spawn position, direction e food sequence.
+#[derive(Resource, Clone)]
+pub struct GenerationSeed {
+    #[allow(dead_code)]
+    pub seed: u64,
+    pub spawn_pos: Position,
+    pub spawn_dir: Direction,
+    pub food_sequence: Vec<Position>, // pre-generata, lunga FOOD_SEQ_LEN
+}
+
+pub const FOOD_SEQ_LEN: usize = 1000;
+
+impl GenerationSeed {
+    /// Genera un nuovo seed e pre-calcola spawn e food sequence per la griglia data.
+    pub fn new_for_grid(grid: &GridDimensions) -> Self {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+
+        let seed: u64 = rand::thread_rng().gen();
+        let mut rng = SmallRng::seed_from_u64(seed);
+
+        let margin = 3;
+        let spawn_pos = Position {
+            x: rng.gen_range(margin..(grid.width - margin)),
+            y: rng.gen_range(margin..(grid.height - margin)),
+        };
+        let spawn_dir = match rng.gen_range(0..4u8) {
+            0 => Direction::Up,
+            1 => Direction::Down,
+            2 => Direction::Left,
+            _ => Direction::Right,
+        };
+
+        // Pre-genera FOOD_SEQ_LEN posizioni di cibo.
+        // Non esclude il corpo del serpente — in pratica irrilevante per le prime mosse.
+        let food_sequence: Vec<Position> = (0..FOOD_SEQ_LEN)
+            .map(|_| Position {
+                x: rng.gen_range(0..grid.width),
+                y: rng.gen_range(0..grid.height),
+            })
+            .collect();
+
+        Self {
+            seed,
+            spawn_pos,
+            spawn_dir,
+            food_sequence,
+        }
+    }
+
+    /// Restituisce la posizione del cibo per l'indice dato (wrappa se necessario).
+    pub fn food_at(&self, index: usize) -> Position {
+        self.food_sequence[index % FOOD_SEQ_LEN]
+    }
+}
+
 /// Configurazione rendering - toggle per accelerare training
 #[derive(Resource)]
 pub struct RenderConfig {
@@ -386,12 +443,14 @@ impl SnakeInstance {
         }
     }
 
+    #[allow(dead_code)]
     pub fn reset(&mut self, grid: &GridDimensions, total_snakes: usize) {
         // Default behavioral values (neutral color)
         self.reset_with_behavioral_color(grid, total_snakes, 0.5, 0.5, 0.0, 1.0);
     }
 
     /// Reset snake with behavioral color based on parent's traits
+    #[allow(dead_code)]
     pub fn reset_with_behavioral_color(
         &mut self,
         grid: &GridDimensions,
@@ -415,6 +474,39 @@ impl SnakeInstance {
             y: (spawn_pos.y + 5) % grid.height,
         };
         // Calcola colore comportamentale basato sui tratti del genitore
+        self.color = Self::calculate_behavioral_color(
+            parent_courage,
+            parent_agility,
+            parent_fitness,
+            best_fitness,
+        );
+        self.previous_state = [0.0; BASE_STATE_SIZE];
+        self.frames_survived = 0;
+        self.visited_cells.clear();
+        self.turn_count = 0;
+        self.previous_action = crate::brain::Action::Straight;
+        self.food_time_sum = 0;
+    }
+
+    /// Reset snake with shared generation seed for fair comparison
+    pub fn reset_with_seed(
+        &mut self,
+        _grid: &GridDimensions,
+        _total_snakes: usize,
+        seed: &GenerationSeed,
+        parent_courage: f64,
+        parent_agility: f64,
+        parent_fitness: f64,
+        best_fitness: f64,
+    ) {
+        self.uuid = Uuid::now_v7();
+        self.snake.clear();
+        self.snake.push_back(seed.spawn_pos);
+        self.direction = seed.spawn_dir;
+        self.is_game_over = false;
+        self.steps_without_food = 0;
+        self.score = 0;
+        self.food = seed.food_at(0); // prima mela identica per tutti
         self.color = Self::calculate_behavioral_color(
             parent_courage,
             parent_agility,
@@ -668,6 +760,7 @@ pub fn get_current_17_state(
     current_state
 }
 
+#[allow(dead_code)]
 pub fn spawn_food(snake: &SnakeInstance, grid: &GridDimensions) -> Position {
     let mut rng = rand::thread_rng();
     loop {

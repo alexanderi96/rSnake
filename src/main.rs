@@ -19,11 +19,12 @@ use brain::Action;
 use config::Hyperparameters;
 use evolution::EvolutionManager;
 use snake::{
-    calculate_grid_dimensions, get_current_17_state, spawn_food, AppStartTime, CollisionSettings,
-    GameConfig, GameState, GameStats, GlobalTrainingHistory, GridDimensions, GridMap, MeshCache,
-    ParallelConfig, Position, RenderConfig, SegmentPool, TrainingStats, BLOCK_SIZE, STATE_SIZE,
+    calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings, GameConfig,
+    GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions, GridMap,
+    MeshCache, ParallelConfig, Position, RenderConfig, SegmentPool, TrainingStats, BLOCK_SIZE,
+    STATE_SIZE,
 };
-use ui::{GraphPanelState, UiPlugin, WindowSettings};
+use ui::{GraphPanelState, PauseState, UiPlugin, WindowSettings};
 
 /// CLI Arguments
 #[derive(Parser, Debug, Clone)]
@@ -174,6 +175,10 @@ fn setup(
         height: grid_height,
     };
 
+    // Create shared generation seed for fair comparison
+    let gen_seed = GenerationSeed::new_for_grid(&grid);
+    commands.insert_resource(gen_seed.clone());
+
     // Use hyperparams directly (population_size from config)
     let mut evo_manager = EvolutionManager::new(hyperparams.clone());
     evo_manager.load_archive();
@@ -214,6 +219,7 @@ fn setup(
 }
 
 fn simulation_step(
+    _commands: Commands,
     mut game: ResMut<GameState>,
     mut grid_map: ResMut<GridMap>,
     grid: Res<GridDimensions>,
@@ -221,7 +227,13 @@ fn simulation_step(
     mut evo_manager: ResMut<EvolutionManager>,
     mut global_history: ResMut<GlobalTrainingHistory>,
     collision_settings: Res<CollisionSettings>,
+    mut gen_seed: ResMut<GenerationSeed>,
+    pause_state: Res<PauseState>,
 ) {
+    if pause_state.paused {
+        return;
+    }
+
     let config = &evo_manager.config;
 
     // Build grid map with overflow protection for >254 snakes
@@ -307,7 +319,8 @@ fn simulation_step(
                 if snake.score > new_high_score {
                     new_high_score = snake.score;
                 }
-                snake.food = spawn_food(snake, &grid);
+                // Next food from deterministic sequence
+                snake.food = gen_seed.food_at(snake.score as usize);
                 snake.steps_without_food = 0;
             } else {
                 snake.snake.pop_back();
@@ -320,12 +333,16 @@ fn simulation_step(
     if game.alive_count() == 0 {
         end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
 
-        // 1. Resetta fisicamente tutti i serpenti con i colori dall'archivio
+        // Generate new seed for next generation
+        let new_seed = GenerationSeed::new_for_grid(&grid);
+        *gen_seed = new_seed.clone();
+
+        // 1. Reset all snakes with the new seed and archive colors
         let total_snakes = game.snakes.len();
         let individuals = evo_manager.get_population();
         for (i, snake) in game.snakes.iter_mut().enumerate() {
-            // Reset snake first
-            snake.reset_with_behavioral_color(&grid, total_snakes, 0.0, 0.0, 0.0, 1.0);
+            // Reset snake with shared seed
+            snake.reset_with_seed(&grid, total_snakes, &gen_seed, 0.0, 0.0, 0.0, 1.0);
             // Apply archive_color after reset
             if let Some(ind) = individuals.get(i) {
                 snake.color = ind.archive_color.to_bevy_color();

@@ -83,6 +83,32 @@ pub struct WindowSettings {
     pub is_fullscreen: bool,
 }
 
+/// Pause state for simulation
+#[derive(Resource, Default)]
+pub struct PauseState {
+    pub paused: bool,
+}
+
+/// Debounce for window resize events
+#[derive(Resource)]
+pub struct ResizeDebounce {
+    pub pending: Option<(f32, f32)>, // (width, height) waiting
+    pub last_event_time: std::time::Instant,
+}
+
+impl Default for ResizeDebounce {
+    fn default() -> Self {
+        Self {
+            pending: None,
+            last_event_time: std::time::Instant::now(),
+        }
+    }
+}
+
+/// Grid border visual component
+#[derive(Component)]
+pub struct GridBorder;
+
 /// Graph panel components
 #[derive(Component)]
 pub struct GraphPanel;
@@ -116,9 +142,15 @@ impl Plugin for UiPlugin {
         app.insert_resource(WindowSettings {
             is_fullscreen: false,
         })
+        .insert_resource(PauseState::default())
+        .insert_resource(ResizeDebounce::default())
         .insert_resource(GraphPanelState::default())
         .insert_resource(HeatmapPanelState::default())
-        .add_systems(Update, (handle_input, on_window_resize, render_system))
+        .add_systems(
+            Update,
+            (handle_input, on_window_resize_collect, render_system),
+        )
+        .add_systems(Update, on_window_resize_apply)
         .add_systems(Update, update_stats_ui)
         .add_systems(Update, update_graph_panel_visibility)
         .add_systems(Update, handle_graph_panel_interactions)
@@ -136,7 +168,8 @@ impl Plugin for UiPlugin {
         .add_systems(
             Update,
             draw_heatmap_in_panel.after(update_heatmap_panel_visibility),
-        );
+        )
+        .add_systems(Update, update_grid_border);
     }
 }
 
@@ -348,7 +381,7 @@ pub fn update_stats_ui(
             "OFF"
         };
         cmd_text.sections[0].value = format!(
-            "[R]Render:{}  [G]Graph:{}  [B]Board  [F]Fullscreen  [C]Collision:{}  [ESC]Exit",
+            "[R]Render:{}  [G]Graph:{}  [B]Board  [P]Pause  [F]Full  [C]Collision:{}  [ESC]Exit",
             render_status, graph_status, collision_status
         );
     }
@@ -368,6 +401,7 @@ pub fn handle_input(
     mut render_config: ResMut<RenderConfig>,
     mut graph_state: ResMut<GraphPanelState>,
     mut heatmap_state: ResMut<HeatmapPanelState>,
+    mut pause_state: ResMut<PauseState>,
 ) {
     use crate::snake::{get_or_create_run_dir, new_session_path, save_training_session};
     use std::time::Instant;
@@ -477,6 +511,18 @@ pub fn handle_input(
         );
     }
 
+    if keyboard_input.just_pressed(KeyCode::KeyP) {
+        pause_state.paused = !pause_state.paused;
+        println!(
+            "{}",
+            if pause_state.paused {
+                "PAUSED"
+            } else {
+                "RESUMED"
+            }
+        );
+    }
+
     if keyboard_input.just_pressed(KeyCode::KeyF) {
         window_settings.is_fullscreen = !window_settings.is_fullscreen;
         let mut window = windows.single_mut();
@@ -492,32 +538,57 @@ pub fn handle_input(
     }
 }
 
-pub fn on_window_resize(
+/// Collect resize events without applying immediately (debounce)
+pub fn on_window_resize_collect(
     mut resize_events: EventReader<bevy::window::WindowResized>,
+    mut debounce: ResMut<ResizeDebounce>,
+) {
+    for event in resize_events.read() {
+        debounce.pending = Some((event.width, event.height));
+        debounce.last_event_time = std::time::Instant::now();
+    }
+}
+
+/// Apply resize after 500ms debounce
+pub fn on_window_resize_apply(
+    mut debounce: ResMut<ResizeDebounce>,
     mut grid: ResMut<GridDimensions>,
     mut game: ResMut<GameState>,
     mut grid_map: ResMut<GridMap>,
     mut graph_state: ResMut<GraphPanelState>,
+    _gen_seed: Option<Res<crate::snake::GenerationSeed>>,
+    mut commands: Commands,
 ) {
-    for event in resize_events.read() {
-        let (new_width, new_height) =
-            crate::snake::calculate_grid_dimensions(event.width, event.height);
+    let Some((w, h)) = debounce.pending else {
+        return;
+    };
 
-        grid.width = new_width;
-        grid.height = new_height;
-        *grid_map = GridMap::new(new_width, new_height);
-
-        let total_snakes = game.snakes.len();
-        for snake in game.snakes.iter_mut() {
-            snake.reset(&grid, total_snakes);
-        }
-
-        graph_state.needs_redraw = true;
-        println!(
-            "Resized: GridMap re-initialized to {}x{}",
-            new_width, new_height
-        );
+    let elapsed = debounce.last_event_time.elapsed();
+    if elapsed.as_millis() < 500 {
+        return;
     }
+
+    // Apply resize
+    debounce.pending = None;
+
+    let (new_width, new_height) = crate::snake::calculate_grid_dimensions(w, h);
+    grid.width = new_width;
+    grid.height = new_height;
+    *grid_map = GridMap::new(new_width, new_height);
+
+    // Regenerate seed for new grid
+    let new_seed = crate::snake::GenerationSeed::new_for_grid(&grid);
+    let total_snakes = game.snakes.len();
+    for snake in game.snakes.iter_mut() {
+        snake.reset_with_seed(&grid, total_snakes, &new_seed, 0.0, 0.0, 0.0, 1.0);
+    }
+    commands.insert_resource(new_seed);
+    graph_state.needs_redraw = true;
+
+    println!(
+        "Resized: GridMap re-initialized to {}x{}",
+        new_width, new_height
+    );
 }
 
 /// Rendering system - now uses game state directly from ECS
@@ -1236,5 +1307,60 @@ pub fn draw_graph_in_panel(
                 }),
             );
         });
+    }
+}
+
+/// Update grid border visual (only when grid dimensions change)
+pub fn update_grid_border(
+    mut commands: Commands,
+    grid: Res<GridDimensions>,
+    windows: Query<&Window>,
+    border_query: Query<Entity, With<GridBorder>>,
+) {
+    if !grid.is_changed() {
+        return;
+    }
+
+    // Remove previous border
+    for entity in border_query.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    let Ok(_window) = windows.get_single() else {
+        return;
+    };
+
+    let border_color = Color::rgba(0.3, 0.3, 0.3, 0.8);
+    let thickness = 2.0;
+
+    // Calculate pixel bounds of the grid
+    let grid_w = grid.width as f32 * crate::snake::BLOCK_SIZE;
+    let grid_h = grid.height as f32 * crate::snake::BLOCK_SIZE;
+
+    // Border positions (top, bottom, left, right)
+    let borders: [(f32, f32, f32, f32); 4] = [
+        (0.0, 0.0, grid_w, thickness),                // top
+        (0.0, grid_h - thickness, grid_w, thickness), // bottom
+        (0.0, 0.0, thickness, grid_h),                // left
+        (grid_w - thickness, 0.0, thickness, grid_h), // right
+    ];
+
+    for (left, top, w, h) in borders {
+        commands.spawn((
+            NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(left),
+                    top: Val::Px(top),
+                    width: Val::Px(w),
+                    height: Val::Px(h),
+                    ..default()
+                },
+                background_color: border_color.into(),
+                z_index: ZIndex::Global(1),
+                ..default()
+            },
+            GridBorder,
+        ));
     }
 }
