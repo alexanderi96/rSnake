@@ -113,10 +113,6 @@ impl Default for ResizeDebounce {
     }
 }
 
-/// Grid border visual component
-#[derive(Component)]
-pub struct GridBorder;
-
 /// Graph panel components
 #[derive(Component)]
 pub struct GraphPanel;
@@ -218,9 +214,13 @@ impl Plugin for UiPlugin {
         .insert_resource(CellRenderMap::new(0, 0)) // placeholder, re-created in setup
         .add_systems(
             Update,
-            (handle_input, on_window_resize_collect, render_system),
+            (
+                handle_input,
+                on_window_resize_collect,
+                on_window_resize_apply.after(on_window_resize_collect),
+                render_system.after(on_window_resize_apply),
+            ),
         )
-        .add_systems(Update, on_window_resize_apply)
         .add_systems(Update, update_stats_ui)
         .add_systems(Update, update_graph_panel_visibility)
         .add_systems(Update, handle_graph_panel_interactions)
@@ -238,8 +238,7 @@ impl Plugin for UiPlugin {
         .add_systems(
             Update,
             draw_heatmap_in_panel.after(update_heatmap_panel_visibility),
-        )
-        .add_systems(Update, update_grid_border);
+        );
     }
 }
 
@@ -763,9 +762,20 @@ pub fn render_system(
         return;
     };
 
-    let ui_padding = 60.0;
-    let offset_x = -window.resolution.width() / 2.0 + BLOCK_SIZE / 2.0;
-    let offset_y = window.resolution.height() / 2.0 - ui_padding - BLOCK_SIZE / 2.0;
+    // Usiamo tutta l'altezza della finestra
+    let available_height = window.resolution.height();
+
+    // Calcola la dimensione totale in pixel della griglia
+    let grid_px_w = cell_map.grid_width as f32 * BLOCK_SIZE;
+    let grid_px_h = cell_map.grid_height as f32 * BLOCK_SIZE;
+
+    // Calcola lo spazio rimanente per centrare
+    let leftover_x = window.resolution.width() - grid_px_w;
+    let leftover_y = available_height - grid_px_h;
+
+    // Centra la griglia dividendo lo spazio rimanente equamente
+    let offset_x = -window.resolution.width() / 2.0 + (leftover_x / 2.0) + BLOCK_SIZE / 2.0;
+    let offset_y = available_height / 2.0 - (leftover_y / 2.0) - BLOCK_SIZE / 2.0;
 
     // Build fitness lookup: snake_id → fitness from current generation population
     // This is used to determine which snake "wins" a contested cell
@@ -1502,60 +1512,5 @@ pub fn draw_graph_in_panel(
                 }),
             );
         });
-    }
-}
-
-/// Update grid border visual (only when grid dimensions change)
-pub fn update_grid_border(
-    mut commands: Commands,
-    grid: Res<GridDimensions>,
-    windows: Query<&Window>,
-    border_query: Query<Entity, With<GridBorder>>,
-) {
-    if !grid.is_changed() {
-        return;
-    }
-
-    // Remove previous border
-    for entity in border_query.iter() {
-        commands.entity(entity).despawn();
-    }
-
-    let Ok(_window) = windows.get_single() else {
-        return;
-    };
-
-    let border_color = Color::rgba(0.3, 0.3, 0.3, 0.8);
-    let thickness = 2.0;
-
-    // Calculate pixel bounds of the grid
-    let grid_w = grid.width as f32 * crate::snake::BLOCK_SIZE;
-    let grid_h = grid.height as f32 * crate::snake::BLOCK_SIZE;
-
-    // Border positions (top, bottom, left, right)
-    let borders: [(f32, f32, f32, f32); 4] = [
-        (0.0, 0.0, grid_w, thickness),                // top
-        (0.0, grid_h - thickness, grid_w, thickness), // bottom
-        (0.0, 0.0, thickness, grid_h),                // left
-        (grid_w - thickness, 0.0, thickness, grid_h), // right
-    ];
-
-    for (left, top, w, h) in borders {
-        commands.spawn((
-            NodeBundle {
-                style: Style {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(left),
-                    top: Val::Px(top),
-                    width: Val::Px(w),
-                    height: Val::Px(h),
-                    ..default()
-                },
-                background_color: border_color.into(),
-                z_index: ZIndex::Global(1),
-                ..default()
-            },
-            GridBorder,
-        ));
     }
 }

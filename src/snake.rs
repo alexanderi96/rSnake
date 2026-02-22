@@ -761,11 +761,9 @@ pub fn spawn_food(snake: &SnakeInstance, grid: &GridDimensions) -> Position {
 }
 
 pub fn calculate_grid_dimensions(window_width: f32, window_height: f32) -> (i32, i32) {
-    let ui_padding = 60.0;
-    let available_height = window_height - ui_padding;
-
+    // Sfruttiamo tutto lo spazio a disposizione senza margini fissi
     let width = (window_width / BLOCK_SIZE).floor() as i32;
-    let height = (available_height / BLOCK_SIZE).floor() as i32;
+    let height = (window_height / BLOCK_SIZE).floor() as i32;
 
     (width.max(10), height.max(10))
 }

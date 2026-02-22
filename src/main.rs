@@ -61,8 +61,6 @@ pub struct CliArgs {
     #[arg(long)]
     pub crossover_rate: Option<f64>,
     #[arg(long)]
-    pub max_frames: Option<u32>,
-    #[arg(long)]
     pub base_steps_without_food: Option<u32>,
     #[arg(long)]
     pub steps_per_segment: Option<u32>,
@@ -95,9 +93,6 @@ fn build_hyperparameters(args: &CliArgs) -> Hyperparameters {
     }
     if let Some(v) = args.crossover_rate {
         config.crossover_rate = v;
-    }
-    if let Some(v) = args.max_frames {
-        config.max_frames = v;
     }
     if let Some(v) = args.base_steps_without_food {
         config.base_steps_without_food = v;
@@ -278,10 +273,40 @@ fn setup(
     commands.insert_resource(WindowSettings {
         is_fullscreen: false,
     });
+
     // Create GameState and restore persistent counters from loaded history
-    let mut game_state = GameState::new_with_behavioral_colors(&grid, snake_count, Some(behaviors));
+    let mut game_state =
+        GameState::new_with_behavioral_colors(&grid, snake_count, Some(behaviors.clone()));
     game_state.total_iterations = max_gen;
     game_state.high_score = persisted_high_score;
+
+    // --- FIX PULITO (DRY) ---
+    // Invece di duplicare la logica, usiamo reset_with_seed esattamente
+    // come avviene a fine generazione in apply_moves_serial.
+    let total_snakes = game_state.snakes.len();
+    for (i, snake) in game_state.snakes.iter_mut().enumerate() {
+        // Recuperiamo i comportamenti estratti poco sopra
+        let (courage, agility, fitness, best) =
+            behaviors.get(i).copied().unwrap_or((0.5, 0.5, 0.0, 1.0));
+
+        // Applichiamo il seed condiviso
+        snake.reset_with_seed(
+            &grid,
+            total_snakes,
+            &gen_seed,
+            courage,
+            agility,
+            fitness,
+            best,
+        );
+
+        // Riapplichiamo il colore dell'archivio (opzionale, ma mantiene la coerenza visiva)
+        if let Some(ind) = individuals.get(i) {
+            snake.color = ind.archive_color.to_bevy_color();
+        }
+    }
+    // ------------------------
+
     commands.insert_resource(game_state);
     commands.insert_resource(grid);
     commands.insert_resource(TrainingStats {

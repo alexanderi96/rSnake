@@ -7,23 +7,25 @@ use std::path::Path;
 /// MAP-Elites Hyperparameters
 #[derive(Debug, Clone, Serialize, Deserialize, Resource)]
 pub struct Hyperparameters {
-    // Population
+    /// Numero di individui (serpenti) valutati in parallelo per generazione
     pub population_size: usize,
 
-    // Variation operators
+    /// Probabilità (0.0 - 1.0) che un gene subisca una variazione casuale
     pub mutation_rate: f64,
+    /// Entità massima della variazione applicata a un gene mutato
     pub mutation_strength: f64,
+    /// Probabilità (0.0 - 1.0) di combinare due genitori (crossover) invece di clonarne uno
     pub crossover_rate: f64,
 
-    // Simulation limits
-    pub max_frames: u32,
+    /// Frame di sopravvivenza garantiti dopo aver mangiato una mela (o allo spawn)
     pub base_steps_without_food: u32,
+    /// Frame extra concessi per ogni unità di lunghezza del corpo del serpente
     pub steps_per_segment: u32,
 
-    // Archive
+    /// Numero di celle per asse dell'archivio (es: 20 = griglia 20x20 = 400 nicchie comportamentali)
     pub grid_resolution: usize,
 
-    // Auto-save
+    /// Frequenza di salvataggio automatico dell'archivio su disco (in generazioni)
     pub auto_save_interval: u32,
 }
 
@@ -31,12 +33,11 @@ impl Default for Hyperparameters {
     fn default() -> Self {
         Self {
             population_size: 200,
-            mutation_rate: 0.05,    // Lowered for larger genome (12931 params)
-            mutation_strength: 0.3, // Lowered for stability with larger network
+            mutation_rate: 0.05,
+            mutation_strength: 0.3,
             crossover_rate: 0.3,
-            max_frames: 2000,
-            base_steps_without_food: 60, // Reduced from 100 - tighter timeout
-            steps_per_segment: 8,        // Reduced from 10 - scales slower with length
+            base_steps_without_food: 60,
+            steps_per_segment: 8,
             grid_resolution: 20,
             auto_save_interval: 50,
         }
