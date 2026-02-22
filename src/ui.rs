@@ -300,6 +300,14 @@ pub fn spawn_stats_ui(mut commands: Commands, _game: Res<GameState>) {
                     ..default()
                 },
             ),
+            TextSection::new(
+                "  FPS: 0",
+                TextStyle {
+                    font_size: 14.0,
+                    color: Color::YELLOW,
+                    ..default()
+                },
+            ),
         ])
         .with_style(Style {
             position_type: PositionType::Absolute,
@@ -443,6 +451,7 @@ pub fn update_stats_ui(
             game_stats.total_food_eaten,
             game_stats.total_games_played
         );
+        st_text.sections[3].value = format!("  FPS: {:.0}", _stats.fps);
     }
 
     if let Ok(mut cmd_text) = commands_query.get_single_mut() {
@@ -736,6 +745,11 @@ pub fn render_system(
     if cell_map.rebuilding {
         cell_map.rebuilding = false;
         return;
+    }
+
+    // Clear stale material cache entries to prevent unbounded growth
+    if mat_cache.cache.len() > 512 {
+        mat_cache.cache.clear();
     }
 
     if !render_config.enabled {

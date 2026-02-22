@@ -104,22 +104,11 @@ impl Default for Action {
 ///
 /// Architecture: 34 inputs -> 128 hidden1 (ReLU) -> 64 hidden2 (ReLU) -> 3 outputs (argmax)
 /// The genome is a flat vector containing all weights and biases.
+/// Weights are indexed directly via byte offsets to avoid redundant allocations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Brain {
     /// Genome: flat vector of all weights and biases
     pub genome: Vec<f64>,
-    /// Input to hidden1 layer weights [HIDDEN_SIZE x INPUT_SIZE]
-    weights_ih: Vec<f64>,
-    /// Hidden1 layer biases [HIDDEN_SIZE]
-    biases_h1: Vec<f64>,
-    /// Hidden1 to hidden2 layer weights [HIDDEN2_SIZE x HIDDEN_SIZE]
-    weights_h1h2: Vec<f64>,
-    /// Hidden2 layer biases [HIDDEN2_SIZE]
-    biases_h2: Vec<f64>,
-    /// Hidden2 to output layer weights [OUTPUT_SIZE x HIDDEN2_SIZE]
-    weights_ho: Vec<f64>,
-    /// Output layer biases [OUTPUT_SIZE]
-    biases_o: Vec<f64>,
 }
 
 impl Brain {
@@ -132,7 +121,7 @@ impl Brain {
             .map(|_| rng.gen::<f64>() * 2.0 - 1.0) // Xavier-like initialization
             .collect();
 
-        Self::from_genome(&genome)
+        Self { genome }
     }
 
     /// Create a brain from a flat genome vector
@@ -145,40 +134,59 @@ impl Brain {
             genome.len()
         );
 
-        let mut offset = 0;
-
-        // Extract weights_ih [HIDDEN_SIZE * INPUT_SIZE]
-        let weights_ih: Vec<f64> = genome[offset..offset + INPUT_SIZE * HIDDEN_SIZE].to_vec();
-        offset += INPUT_SIZE * HIDDEN_SIZE;
-
-        // Extract biases_h1 [HIDDEN_SIZE]
-        let biases_h1: Vec<f64> = genome[offset..offset + HIDDEN_SIZE].to_vec();
-        offset += HIDDEN_SIZE;
-
-        // Extract weights_h1h2 [HIDDEN2_SIZE * HIDDEN_SIZE]
-        let weights_h1h2: Vec<f64> = genome[offset..offset + HIDDEN_SIZE * HIDDEN2_SIZE].to_vec();
-        offset += HIDDEN_SIZE * HIDDEN2_SIZE;
-
-        // Extract biases_h2 [HIDDEN2_SIZE]
-        let biases_h2: Vec<f64> = genome[offset..offset + HIDDEN2_SIZE].to_vec();
-        offset += HIDDEN2_SIZE;
-
-        // Extract weights_ho [OUTPUT_SIZE * HIDDEN2_SIZE]
-        let weights_ho: Vec<f64> = genome[offset..offset + HIDDEN2_SIZE * OUTPUT_SIZE].to_vec();
-        offset += HIDDEN2_SIZE * OUTPUT_SIZE;
-
-        // Extract biases_o [OUTPUT_SIZE]
-        let biases_o: Vec<f64> = genome[offset..offset + OUTPUT_SIZE].to_vec();
-
         Self {
             genome: genome.to_vec(),
-            weights_ih,
-            biases_h1,
-            weights_h1h2,
-            biases_h2,
-            weights_ho,
-            biases_o,
         }
+    }
+
+    /// Get the genome reference
+    pub fn get_genome(&self) -> &[f64] {
+        &self.genome
+    }
+
+    /// Forward pass returning raw output values (for debugging/analysis)
+    pub fn forward(&self, input: &[f32; STATE_SIZE]) -> [f64; OUTPUT_SIZE] {
+        let g = &self.genome;
+
+        // Offsets (must match GENOME_SIZE layout comments)
+        let wih_off = 0;
+        let bh1_off = wih_off + INPUT_SIZE * HIDDEN_SIZE;
+        let wh1h2_off = bh1_off + HIDDEN_SIZE;
+        let bh2_off = wh1h2_off + HIDDEN_SIZE * HIDDEN2_SIZE;
+        let who_off = bh2_off + HIDDEN2_SIZE;
+        let bo_off = who_off + HIDDEN2_SIZE * OUTPUT_SIZE;
+
+        // Layer 1: INPUT → HIDDEN1 (ReLU)
+        let mut hidden1 = [0.0f64; HIDDEN_SIZE];
+        for h in 0..HIDDEN_SIZE {
+            let mut sum = g[bh1_off + h];
+            for i in 0..INPUT_SIZE {
+                sum += g[wih_off + h * INPUT_SIZE + i] * input[i] as f64;
+            }
+            hidden1[h] = relu(sum);
+        }
+
+        // Layer 2: HIDDEN1 → HIDDEN2 (ReLU)
+        let mut hidden2 = [0.0f64; HIDDEN2_SIZE];
+        for h in 0..HIDDEN2_SIZE {
+            let mut sum = g[bh2_off + h];
+            for i in 0..HIDDEN_SIZE {
+                sum += g[wh1h2_off + h * HIDDEN_SIZE + i] * hidden1[i];
+            }
+            hidden2[h] = relu(sum);
+        }
+
+        // Output layer: HIDDEN2 → OUTPUT (linear, we use argmax)
+        let mut output = [0.0; OUTPUT_SIZE];
+        for o in 0..OUTPUT_SIZE {
+            let mut sum = g[bo_off + o];
+            for h in 0..HIDDEN2_SIZE {
+                sum += g[who_off + o * HIDDEN2_SIZE + h] * hidden2[h];
+            }
+            output[o] = sum;
+        }
+
+        output
     }
 
     /// Forward pass: compute action from input state
@@ -187,49 +195,10 @@ impl Brain {
     /// Output: Action (Left, Straight, Right)
     pub fn predict(&self, input: &[f32; STATE_SIZE]) -> Action {
         let output = self.forward(input);
-        self.argmax(&output)
-    }
 
-    /// Forward pass returning raw output values (for debugging/analysis)
-    pub fn forward(&self, input: &[f32; STATE_SIZE]) -> [f64; OUTPUT_SIZE] {
-        // Layer 1: INPUT → HIDDEN1 (ReLU)
-        let mut hidden1 = [0.0f64; HIDDEN_SIZE];
-        for h in 0..HIDDEN_SIZE {
-            let mut sum = self.biases_h1[h];
-            for i in 0..INPUT_SIZE {
-                sum += self.weights_ih[h * INPUT_SIZE + i] * input[i] as f64;
-            }
-            hidden1[h] = relu(sum);
-        }
-
-        // Layer 2: HIDDEN1 → HIDDEN2 (ReLU)
-        let mut hidden2 = [0.0f64; HIDDEN2_SIZE];
-        for h in 0..HIDDEN2_SIZE {
-            let mut sum = self.biases_h2[h];
-            for i in 0..HIDDEN_SIZE {
-                sum += self.weights_h1h2[h * HIDDEN_SIZE + i] * hidden1[i];
-            }
-            hidden2[h] = relu(sum);
-        }
-
-        // Output layer: HIDDEN2 → OUTPUT (linear, we use argmax)
-        let mut output = [0.0; OUTPUT_SIZE];
-        for o in 0..OUTPUT_SIZE {
-            let mut sum = self.biases_o[o];
-            for h in 0..HIDDEN2_SIZE {
-                sum += self.weights_ho[o * HIDDEN2_SIZE + h] * hidden2[h];
-            }
-            output[o] = sum;
-        }
-
-        output
-    }
-
-    /// Get the action with highest output value
-    fn argmax(&self, output: &[f64; OUTPUT_SIZE]) -> Action {
+        // Inline argmax to avoid separate method
         let mut max_idx = 0;
         let mut max_val = output[0];
-
         for (i, &val) in output.iter().enumerate().skip(1) {
             if val > max_val {
                 max_val = val;
@@ -240,14 +209,8 @@ impl Brain {
         match max_idx {
             0 => Action::Left,
             1 => Action::Straight,
-            2 => Action::Right,
-            _ => Action::Straight, // Fallback
+            _ => Action::Right,
         }
-    }
-
-    /// Get the genome reference
-    pub fn get_genome(&self) -> &[f64] {
-        &self.genome
     }
 
     /// Create a mutated copy of this brain

@@ -414,6 +414,7 @@ impl SnakeInstance {
         self.snake.clear();
         self.snake.push_back(spawn_pos);
         self.body_set.clear();
+        self.body_set.shrink_to_fit();
         self.body_set.insert(spawn_pos);
         self.direction = spawn_dir;
         self.is_game_over = false;
@@ -433,6 +434,7 @@ impl SnakeInstance {
         self.previous_state = [0.0; BASE_STATE_SIZE];
         self.frames_survived = 0;
         self.visited_cells.clear();
+        self.visited_cells.shrink_to_fit();
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
         self.food_time_sum = 0;
@@ -458,6 +460,7 @@ impl SnakeInstance {
         self.snake.clear();
         self.snake.push_back(seed.spawn_pos);
         self.body_set.clear();
+        self.body_set.shrink_to_fit();
         self.body_set.insert(seed.spawn_pos);
         self.direction = seed.spawn_dir;
         self.is_game_over = false;
@@ -473,6 +476,7 @@ impl SnakeInstance {
         self.previous_state = [0.0; BASE_STATE_SIZE];
         self.frames_survived = 0;
         self.visited_cells.clear();
+        self.visited_cells.shrink_to_fit();
         self.turn_count = 0;
         self.previous_action = crate::brain::Action::Straight;
         self.food_time_sum = 0;

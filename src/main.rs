@@ -551,6 +551,11 @@ fn end_generation(
     // Sync to GlobalTrainingHistory for UI graph and JSON persistence
     global_history.records.push(record.clone());
 
+    // Cap history to prevent unbounded memory growth
+    if global_history.records.len() > 10_000 {
+        global_history.records.drain(0..5_000);
+    }
+
     println!(
         "Gen {:4} | Fitness: {:.0} (best: {:.0}) | Coverage: {:.1}% | {:.2}s",
         record.generation,
