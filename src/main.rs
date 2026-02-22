@@ -177,7 +177,6 @@ fn setup(
         segment_mesh: meshes.add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0)),
         food_mesh: meshes.add(Circle::new(BLOCK_SIZE / 2.0)),
         food_material: materials.add(Color::rgb(1.0, 0.0, 0.0)),
-        head_material: materials.add(Color::rgb(1.0, 1.0, 1.0)),
     };
 
     // Pre-spawn one entity per grid cell for cell-based rendering
@@ -202,6 +201,7 @@ fn setup(
         entities: cell_entities,
         grid_width,
         grid_height,
+        rebuilding: false, // Initial spawn - safe, no deferred commands to worry about
     });
 
     commands.insert_resource(CollisionSettings::default());

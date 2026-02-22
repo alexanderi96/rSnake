@@ -89,11 +89,17 @@ pub struct PauseState {
     pub paused: bool,
 }
 
+/// Duration in seconds to ignore resize events after startup.
+/// Hyprland/Wayland sends 2-3 automatic resize events during window placement.
+const STARTUP_GRACE_PERIOD_SECS: f64 = 2.5;
+
 /// Debounce for window resize events
 #[derive(Resource)]
 pub struct ResizeDebounce {
     pub pending: Option<(f32, f32)>, // (width, height) waiting
     pub last_event_time: std::time::Instant,
+    pub startup_time: std::time::Instant, // when app started
+    pub post_startup_sync_done: bool,     // force one resize after grace period
 }
 
 impl Default for ResizeDebounce {
@@ -101,6 +107,8 @@ impl Default for ResizeDebounce {
         Self {
             pending: None,
             last_event_time: std::time::Instant::now(),
+            startup_time: std::time::Instant::now(),
+            post_startup_sync_done: false,
         }
     }
 }
@@ -153,6 +161,8 @@ pub struct CellRenderMap {
     pub entities: Vec<Entity>,
     pub grid_width: i32,
     pub grid_height: i32,
+    /// True for exactly 1 frame after entity respawn (Bevy deferred commands not yet applied)
+    pub rebuilding: bool,
 }
 
 impl CellRenderMap {
@@ -162,6 +172,7 @@ impl CellRenderMap {
             entities: Vec::new(),
             grid_width,
             grid_height,
+            rebuilding: false,
         }
     }
 
@@ -609,7 +620,23 @@ pub fn handle_input(
 pub fn on_window_resize_collect(
     mut resize_events: EventReader<bevy::window::WindowResized>,
     mut debounce: ResMut<ResizeDebounce>,
+    windows: Query<&Window>,
 ) {
+    // Discard resize events during startup grace period
+    if debounce.startup_time.elapsed().as_secs_f64() < STARTUP_GRACE_PERIOD_SECS {
+        // After grace period ends, do one forced sync if not yet done
+        if !debounce.post_startup_sync_done {
+            debounce.post_startup_sync_done = true;
+            if let Ok(window) = windows.get_single() {
+                debounce.pending = Some((window.width(), window.height()));
+                debounce.last_event_time =
+                    std::time::Instant::now() - std::time::Duration::from_millis(600);
+                // already past debounce threshold
+            }
+        }
+        return;
+    }
+
     for event in resize_events.read() {
         debounce.pending = Some((event.width, event.height));
         debounce.last_event_time = std::time::Instant::now();
@@ -629,6 +656,12 @@ pub fn on_window_resize_apply(
     _gen_seed: Option<Res<crate::snake::GenerationSeed>>,
     mut commands: Commands,
 ) {
+    // Ignore all resizes during Wayland/Hyprland startup window placement
+    if debounce.startup_time.elapsed().as_secs_f64() < STARTUP_GRACE_PERIOD_SECS {
+        debounce.pending = None; // discard any pending resize
+        return;
+    }
+
     let Some((w, h)) = debounce.pending else {
         return;
     };
@@ -669,6 +702,7 @@ pub fn on_window_resize_apply(
     cell_map.cells.clear();
     cell_map.grid_width = new_width;
     cell_map.grid_height = new_height;
+    cell_map.rebuilding = true; // Skip next render frame, entities not yet in World
 
     // Regenerate seed for new grid
     let new_seed = crate::snake::GenerationSeed::new_for_grid(&grid);
@@ -699,6 +733,12 @@ pub fn render_system(
     mut cell_map: ResMut<CellRenderMap>,
     evo_manager: Res<EvolutionManager>,
 ) {
+    // Skip 1 frame after entity rebuild — Bevy deferred commands not yet applied
+    if cell_map.rebuilding {
+        cell_map.rebuilding = false;
+        return;
+    }
+
     if !render_config.enabled {
         // Hide everything when turbo mode is on
         for snake in game.snakes.iter() {

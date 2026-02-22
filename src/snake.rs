@@ -112,9 +112,6 @@ impl Default for RenderConfig {
 
 /// ECS Components
 #[derive(Component)]
-pub struct SnakeSegment;
-
-#[derive(Component)]
 pub struct Food;
 
 #[derive(Component)]
@@ -136,7 +133,7 @@ pub struct MeshCache {
     pub segment_mesh: Handle<Mesh>,
     pub food_mesh: Handle<Mesh>,
     pub food_material: Handle<ColorMaterial>,
-    pub head_material: Handle<ColorMaterial>,
+    // head_material REMOVED — cell renderer uses Color::rgb(1.0,1.0,1.0) inline
 }
 
 /// Object pool for snake segment entities
