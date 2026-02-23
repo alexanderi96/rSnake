@@ -280,6 +280,9 @@ pub struct SnakeInstance {
     /// Sum of (body_len / visited_cells) for each frame
     /// Used for body_avoidance descriptor
     pub body_pressure_sum: f64,
+    /// Sum of timeout budgets for each apple eaten (adaptive to snake length)
+    /// Enables correct fitness normalization regardless of snake length
+    pub timeout_budget_sum: u64,
 }
 
 impl SnakeInstance {
@@ -388,6 +391,7 @@ impl SnakeInstance {
             path_directness_sum: 0.0,
             food_spawn_distance,
             body_pressure_sum: 0.0,
+            timeout_budget_sum: 0,
         }
     }
 
@@ -443,6 +447,7 @@ impl SnakeInstance {
         self.food_spawn_distance =
             ((self.food.x - spawn_pos.x).abs() + (self.food.y - spawn_pos.y).abs()) as u32;
         self.body_pressure_sum = 0.0;
+        self.timeout_budget_sum = 0;
     }
 
     /// Reset snake with shared generation seed for fair comparison
@@ -485,6 +490,7 @@ impl SnakeInstance {
         self.food_spawn_distance = ((self.food.x - seed.spawn_pos.x).abs()
             + (self.food.y - seed.spawn_pos.y).abs()) as u32;
         self.body_pressure_sum = 0.0;
+        self.timeout_budget_sum = 0;
     }
 
     /// Path Directness: how directly the snake reaches food
@@ -528,30 +534,22 @@ impl SnakeInstance {
         (self.turn_count as f64 / self.frames_survived as f64).clamp(0.0, 1.0)
     }
 
-    /// Calculate fitness based on per-apple efficiency with quadratic penalty
-    /// Quadratic penalty makes circling much more costly than linear
+    /// Fitness basata su efficienza relativa al budget di tempo disponibile.
+    ///
+    /// Per ogni mela mangiata si confrontano i frame usati con i frame disponibili
+    /// (timeout adattivo alla lunghezza del serpente al momento del mangiare).
+    /// efficiency = 1.0 → mela mangiata subito
+    /// efficiency = 0.0 → mela mangiata quasi al timeout
+    /// Penalità quadratica: circling crolla rapidamente.
     pub fn fitness(&self, _grid: &GridDimensions) -> f64 {
-        if self.score == 0 {
+        if self.score == 0 || self.timeout_budget_sum == 0 {
             return 0.0;
         }
 
-        // Timeout base per serpente di lunghezza 1 (60 + 8*1 = 68)
-        // Usiamo questo come riferimento per normalizzare l'efficienza
-        let baseline_timeout = 68.0_f64;
+        let efficiency =
+            (1.0 - self.food_time_sum as f64 / self.timeout_budget_sum as f64).clamp(0.0, 1.0);
 
-        let avg_frames = self.food_time_sum as f64 / self.score as f64;
-
-        // Efficiency: 1.0 = mangiato immediatamente, 0.0 = mangiato all'ultimo momento
-        // Clamp a 0 per evitare valori negativi se avg_frames > baseline
-        let efficiency = (1.0 - avg_frames / baseline_timeout).clamp(0.0, 1.0);
-
-        // Penalità QUADRATICA: il circling crolla molto più velocemente
-        // efficiency=0.85 (10 frames) → reward=724
-        // efficiency=0.50 (34 frames) → reward=250
-        // efficiency=0.15 (58 frames) → reward=22
         let per_apple_reward = efficiency * efficiency * 1000.0;
-
-        // Scala con numero di mele mangiate
         (per_apple_reward * self.score as f64).max(0.0)
     }
 }

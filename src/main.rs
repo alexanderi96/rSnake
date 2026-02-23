@@ -381,6 +381,7 @@ fn apply_moves_serial(
     mut population: ResMut<Population>,
     collision_settings: Res<CollisionSettings>,
     pause_state: Res<PauseState>,
+    mut game_stats: ResMut<GameStats>,
 ) {
     if pause_state.paused {
         return;
@@ -429,17 +430,16 @@ fn apply_moves_serial(
             y: old_head.y + dy,
         };
 
-        snake.steps_without_food += 1;
-        snake.frames_survived += 1;
-        snake.visited_cells.insert((new_head.x, new_head.y));
+        // Calcola ate_food PRIMA del collision check e degli aggiornamenti metriche:
+        // serve per la tail exception e per non inquinare le metriche col frame di morte
+        let ate_food = new_head == snake.food;
 
-        // Body pressure per body_avoidance descriptor (grid-invariant)
-        let body_len = snake.snake.len() as f64;
-        let visited = snake.visited_cells.len().max(1) as f64;
-        snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
+        // Tail exception: se non mangiamo, la coda si sposterà questo frame —
+        // muovere la testa dove c'è la coda è legale
+        let tail_pos = snake.snake.back().copied();
+        let is_self_collision =
+            snake.body_set.contains(&new_head) && (ate_food || Some(new_head) != tail_pos);
 
-        // Check collisions - O(1) self-collision via body_set
-        let is_self_collision = snake.body_set.contains(&new_head);
         let is_collision = is_self_collision
             || if collision_settings.snake_vs_snake {
                 grid_map.is_collision(new_head.x, new_head.y, snake.id)
@@ -447,8 +447,17 @@ fn apply_moves_serial(
                 grid_map.is_wall_collision(new_head.x, new_head.y)
             };
 
-        let ate_food = new_head == snake.food;
         let is_timeout = snake.steps_without_food > config.calculate_timeout(snake.snake.len());
+
+        // Aggiorna metriche SOLO se il serpente sopravvive questo frame
+        if !is_collision && !is_timeout {
+            snake.steps_without_food += 1;
+            snake.frames_survived += 1;
+            snake.visited_cells.insert((new_head.x, new_head.y));
+            let body_len = snake.snake.len() as f64;
+            let visited = snake.visited_cells.len().max(1) as f64;
+            snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
+        }
 
         if is_collision || is_timeout {
             snake.is_game_over = true;
@@ -465,7 +474,11 @@ fn apply_moves_serial(
                     snake.path_directness_sum += ratio;
                 }
                 snake.score += 1;
+                game_stats.total_food_eaten += 1;
                 snake.food_time_sum += snake.steps_without_food as u64;
+                // Budget timeout disponibile per questa mela (scala con la lunghezza)
+                // Dopo push_front il len() include già la nuova testa
+                snake.timeout_budget_sum += config.calculate_timeout(snake.snake.len()) as u64;
                 if snake.score > new_high_score {
                     new_high_score = snake.score;
                 }
@@ -489,6 +502,7 @@ fn apply_moves_serial(
 
     // Check generation end
     if game.alive_count() == 0 {
+        game_stats.total_games_played += game.snakes.len() as u64;
         end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
 
         // Generate new seed for next generation
@@ -498,8 +512,28 @@ fn apply_moves_serial(
         // Reset all snakes with the new seed and archive colors
         let total_snakes = game.snakes.len();
         let individuals = evo_manager.get_population();
+        let best_fitness = evo_manager.archive.best_fitness.max(1.0);
         for (i, snake) in game.snakes.iter_mut().enumerate() {
-            snake.reset_with_seed(&grid, total_snakes, &gen_seed, 0.0, 0.0, 0.0, 1.0);
+            let (courage, agility, fitness, best) = individuals
+                .get(i)
+                .map(|ind| {
+                    (
+                        ind.path_directness,
+                        ind.body_avoidance,
+                        ind.fitness,
+                        best_fitness,
+                    )
+                })
+                .unwrap_or((0.0, 0.0, 0.0, 1.0));
+            snake.reset_with_seed(
+                &grid,
+                total_snakes,
+                &gen_seed,
+                courage,
+                agility,
+                fitness,
+                best,
+            );
             if let Some(ind) = individuals.get(i) {
                 snake.color = ind.archive_color.to_bevy_color();
             }
