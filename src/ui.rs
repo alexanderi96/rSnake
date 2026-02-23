@@ -4,7 +4,7 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::evolution::EvolutionManager;
 use crate::snake::{
@@ -145,6 +145,14 @@ pub struct MaterialCache {
     pub cache: HashMap<[u8; 3], Handle<ColorMaterial>>,
 }
 
+/// Fixed material palette to prevent unbounded material allocations
+/// Pre-created at startup - colors are quantized to nearest palette entry
+#[derive(Resource)]
+pub struct MaterialPalette {
+    pub handles: Vec<Handle<ColorMaterial>>,
+    pub colors: Vec<[u8; 3]>,
+}
+
 /// Cell-based render map: one entity per grid cell, pre-spawned.
 /// Each frame only the highest-fitness snake occupying each cell is displayed.
 /// Entity index = y * grid_width + x
@@ -159,6 +167,8 @@ pub struct CellRenderMap {
     pub grid_height: i32,
     /// True for exactly 1 frame after entity respawn (Bevy deferred commands not yet applied)
     pub rebuilding: bool,
+    /// Previous frame's occupied cells for delta tracking (Fix 5)
+    pub prev_occupied: HashSet<(i32, i32)>,
 }
 
 impl CellRenderMap {
@@ -169,6 +179,7 @@ impl CellRenderMap {
             grid_width,
             grid_height,
             rebuilding: false,
+            prev_occupied: HashSet::new(),
         }
     }
 
@@ -212,6 +223,7 @@ impl Plugin for UiPlugin {
         .insert_resource(FoodPool::default())
         .insert_resource(UiUpdateTimer::default())
         .insert_resource(CellRenderMap::new(0, 0)) // placeholder, re-created in setup
+        // MaterialPalette is created in main.rs setup (needs access to materials asset)
         .add_systems(
             Update,
             (
@@ -708,6 +720,7 @@ pub fn on_window_resize_apply(
     }
     cell_map.entities = new_entities;
     cell_map.cells.clear();
+    cell_map.prev_occupied.clear();
     cell_map.grid_width = new_width;
     cell_map.grid_height = new_height;
     cell_map.rebuilding = true; // Skip next render frame, entities not yet in World
@@ -733,8 +746,8 @@ pub fn render_system(
     game: Res<GameState>,
     windows: Query<&Window>,
     _mesh_cache: Res<MeshCache>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut mat_cache: ResMut<MaterialCache>,
+    _materials: ResMut<Assets<ColorMaterial>>, // Unused - palette pre-allocates all materials
+    mat_palette: Res<MaterialPalette>,         // Fixed palette - no allocations
     food_pool: Res<FoodPool>,
     render_config: Res<RenderConfig>,
     mut stats: ResMut<TrainingStats>,
@@ -745,11 +758,6 @@ pub fn render_system(
     if cell_map.rebuilding {
         cell_map.rebuilding = false;
         return;
-    }
-
-    // Clear stale material cache entries to prevent unbounded growth
-    if mat_cache.cache.len() > 512 {
-        mat_cache.cache.clear();
     }
 
     if !render_config.enabled {
@@ -829,24 +837,27 @@ pub fn render_system(
     }
 
     // === PHASE 2: Update cell entities ===
-    // Helper closure for material caching
-    let get_or_create_material = |color: Color,
-                                  cache: &mut MaterialCache,
-                                  materials: &mut Assets<ColorMaterial>|
-     -> Handle<ColorMaterial> {
-        let key = [
-            (color.r() * 255.0) as u8,
-            (color.g() * 255.0) as u8,
-            (color.b() * 255.0) as u8,
-        ];
-        cache
-            .cache
-            .entry(key)
-            .or_insert_with(|| materials.add(color))
-            .clone()
-    };
+    // Helper function to find nearest palette color
+    fn nearest_palette_color(color: Color, palette: &MaterialPalette) -> Handle<ColorMaterial> {
+        let r = (color.r() * 255.0) as u8;
+        let g = (color.g() * 255.0) as u8;
+        let b = (color.b() * 255.0) as u8;
+        let idx = palette
+            .colors
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, c)| {
+                let dr = r as i32 - c[0] as i32;
+                let dg = g as i32 - c[1] as i32;
+                let db = b as i32 - c[2] as i32;
+                dr * dr + dg * dg + db * db
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        palette.handles[idx].clone()
+    }
 
-    // Show/update occupied cells
+    // Show/update occupied cells (only changed cells need updates)
     for (&(x, y), &(color, _)) in cell_map.cells.iter() {
         let Some(idx) = cell_map.entity_index(x, y) else {
             continue;
@@ -855,7 +866,7 @@ pub fn render_system(
             continue;
         };
 
-        let material = get_or_create_material(color, &mut mat_cache, &mut materials);
+        let material = nearest_palette_color(color, &mat_palette);
         let transform = Transform::from_xyz(
             offset_x + x as f32 * BLOCK_SIZE,
             offset_y - y as f32 * BLOCK_SIZE,
@@ -866,21 +877,30 @@ pub fn render_system(
             .insert((material, transform, Visibility::Visible));
     }
 
-    // Hide unoccupied cells
-    // Iterating all grid cells is cheap: max 57*33=1881 iterations
-    for y in 0..cell_map.grid_height {
-        for x in 0..cell_map.grid_width {
-            if !cell_map.cells.contains_key(&(x, y)) {
-                let Some(idx) = cell_map.entity_index(x, y) else {
-                    continue;
-                };
-                let Some(&entity) = cell_map.entities.get(idx) else {
-                    continue;
-                };
-                commands.entity(entity).insert(Visibility::Hidden);
-            }
-        }
+    // Hide only cells that WERE occupied last frame but are NOT now (delta tracking)
+    // This reduces Bevy commands from ~1881 to only the delta
+    let newly_empty: Vec<(i32, i32)> = cell_map
+        .prev_occupied
+        .iter()
+        .filter(|pos| !cell_map.cells.contains_key(pos))
+        .copied()
+        .collect();
+
+    for (x, y) in newly_empty {
+        let Some(idx) = cell_map.entity_index(x, y) else {
+            continue;
+        };
+        let Some(&entity) = cell_map.entities.get(idx) else {
+            continue;
+        };
+        commands.entity(entity).insert(Visibility::Hidden);
     }
+
+    // Update prev_occupied for next frame
+    // Note: collect keys first to avoid borrow conflict
+    let current_keys: Vec<(i32, i32)> = cell_map.cells.keys().cloned().collect();
+    cell_map.prev_occupied.clear();
+    cell_map.prev_occupied.extend(current_keys);
 
     // === PHASE 3: Update food entities ===
     for snake in game.snakes.iter() {

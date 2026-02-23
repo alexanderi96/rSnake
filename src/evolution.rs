@@ -147,6 +147,11 @@ impl EvolutionManager {
 
         self.history.push(record.clone());
 
+        // Cap history to prevent unbounded growth
+        if self.history.len() > 500 {
+            self.history.drain(0..250);
+        }
+
         // Auto-save if needed
         if self.generation_state.generation % self.config.auto_save_interval == 0 {
             self.save_archive();

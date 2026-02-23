@@ -351,7 +351,7 @@ impl SnakeInstance {
         snake.push_back(spawn_pos);
 
         // Initialize body_set for O(1) collision detection
-        let mut body_set = HashSet::new();
+        let mut body_set = HashSet::with_capacity(32);
         body_set.insert(spawn_pos);
 
         // Usa colore comportamentale basato sui tratti del genitore
@@ -384,7 +384,7 @@ impl SnakeInstance {
             color,
             previous_state: [0.0; BASE_STATE_SIZE],
             frames_survived: 0,
-            visited_cells: std::collections::HashSet::new(),
+            visited_cells: std::collections::HashSet::with_capacity(64),
             turn_count: 0,
             previous_action: crate::brain::Action::Straight,
             food_time_sum: 0,
@@ -714,7 +714,15 @@ pub fn get_current_17_state(
                 let diff_x = (contact_x - head.x) as f32;
                 let diff_y = (contact_y - head.y) as f32;
                 let euclidean_dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
-                current_state[i] = (-decay_rate * euclidean_dist).exp();
+
+                // Threshold esattamente 1.0: solo celle cardinali adiacenti
+                // sono immediatamente fatali (il serpente non si muove in diagonale).
+                // Diagonale adiacente: dist = sqrt(2) ≈ 1.414 → NON cappata, corretto.
+                if euclidean_dist <= 1.0 {
+                    current_state[i] = 1.0;
+                } else {
+                    current_state[i] = (-decay_rate * euclidean_dist).exp();
+                }
                 break;
             }
         }

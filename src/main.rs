@@ -43,7 +43,7 @@ use snake::{
     GridMap, MeshCache, ParallelConfig, Position, RenderConfig, SnakeId, TrainingStats,
     BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
-use ui::{CellRenderMap, GraphPanelState, PauseState, UiPlugin, WindowSettings};
+use ui::{CellRenderMap, GraphPanelState, MaterialPalette, PauseState, UiPlugin, WindowSettings};
 
 /// CLI Arguments
 #[derive(Parser, Debug, Clone)]
@@ -197,6 +197,28 @@ fn setup(
         grid_width,
         grid_height,
         rebuilding: false, // Initial spawn - safe, no deferred commands to worry about
+        prev_occupied: std::collections::HashSet::new(),
+    });
+
+    // Create fixed material palette (512 colors) - prevents unbounded material allocations
+    const PALETTE_STEPS: usize = 8; // 8^3 = 512 colors
+    let mut palette_handles = Vec::new();
+    let mut palette_colors = Vec::new();
+    for r in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
+        for g in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
+            for b in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
+                palette_colors.push([r, g, b]);
+                palette_handles.push(materials.add(Color::rgb(
+                    r as f32 / 255.0,
+                    g as f32 / 255.0,
+                    b as f32 / 255.0,
+                )));
+            }
+        }
+    }
+    commands.insert_resource(MaterialPalette {
+        handles: palette_handles,
+        colors: palette_colors,
     });
 
     commands.insert_resource(CollisionSettings::default());
@@ -539,12 +561,12 @@ fn apply_moves_serial(
             }
         }
 
-        // Replace old brains with newly evolved ones
-        population.0 = evo_manager
-            .get_population()
-            .iter()
-            .map(|i| i.brain.clone())
-            .collect();
+        // Replace old brains with newly evolved ones (reuse allocation)
+        let new_pop = evo_manager.get_population();
+        population.0.clear();
+        for ind in new_pop.iter() {
+            population.0.push(ind.brain.clone());
+        }
 
         game.total_iterations += 1;
     }
