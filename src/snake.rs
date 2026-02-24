@@ -540,7 +540,7 @@ impl SnakeInstance {
     /// (timeout adattivo alla lunghezza del serpente al momento del mangiare).
     /// efficiency = 1.0 → mela mangiata subito
     /// efficiency = 0.0 → mela mangiata quasi al timeout
-    /// Penalità quadratica: circling crolla rapidamente.
+    /// score² ensures longer snakes always dominate shorter ones in fitness.
     pub fn fitness(&self, _grid: &GridDimensions) -> f64 {
         if self.score == 0 || self.timeout_budget_sum == 0 {
             return 0.0;
@@ -549,8 +549,14 @@ impl SnakeInstance {
         let efficiency =
             (1.0 - self.food_time_sum as f64 / self.timeout_budget_sum as f64).clamp(0.0, 1.0);
 
-        let per_apple_reward = efficiency * efficiency * 1000.0;
-        (per_apple_reward * self.score as f64).max(0.0)
+        // score² ensures longer snakes always dominate shorter ones in fitness,
+        // even if their per-apple efficiency is lower due to body-avoidance detours.
+        // efficiency bonus rewards speed but doesn't override length advantage.
+        // A score=40 eff=0.3 snake: 1600 * (1 + 0.3) = 2080 base * 50 = 104000
+        // A score=10 eff=0.8 snake: 100  * (1 + 0.8) = 180  base * 50 = 9000
+        let score_component = (self.score as f64) * (self.score as f64); // quadratic
+        let efficiency_bonus = 1.0 + efficiency; // 1.0 to 2.0 multiplier
+        (score_component * efficiency_bonus * 50.0).max(0.0)
     }
 }
 
