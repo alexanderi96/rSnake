@@ -10,26 +10,16 @@ mod brain;
 mod config;
 mod evolution;
 mod map_elites;
-#[cfg(feature = "profiling")]
 mod profiling;
-
-#[cfg(not(feature = "profiling"))]
-mod profiling {
-    pub struct ProfilingGuard;
-    impl ProfilingGuard {
-        pub fn new() -> Self {
-            Self
-        }
-    }
-    pub fn is_profiling() -> bool {
-        false
-    }
-}
 
 mod snake;
 mod ui;
 
 use bevy::app::AppExit;
+use bevy::diagnostic::{
+    DiagnosticsStore, EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
+    SystemInformationDiagnosticsPlugin,
+};
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use clap::Parser;
@@ -134,8 +124,8 @@ fn main() {
         hyperparams.mutation_rate, hyperparams.mutation_strength
     );
 
-    #[cfg(feature = "profiling")]
-    let _profiling_guard = profiling::ProfilingGuard::new();
+    // ProfilingGuard MUST be the first binding in main to be dropped last
+    let _profiling = profiling::ProfilingGuard::new();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -143,10 +133,14 @@ fn main() {
                 title: "MAP-Elites Snake".into(),
                 resolution: (800.0, 600.0).into(),
                 resizable: true,
+                present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
             }),
             ..default()
         }))
+        .add_plugins(FrameTimeDiagnosticsPlugin)
+        .add_plugins(EntityCountDiagnosticsPlugin)
+        .add_plugins(SystemInformationDiagnosticsPlugin)
         .add_event::<AppExit>()
         .insert_resource(args) // Insert CLI args as resource
         .insert_resource(hyperparams)
@@ -161,9 +155,54 @@ fn main() {
             (
                 compute_moves_parallel,
                 apply_moves_serial.after(compute_moves_parallel),
+                log_diagnostics_periodic,
             ),
         )
         .run();
+}
+
+/// Logga diagnostics ogni 5 secondi su stderr (non interferisce con UI)
+fn log_diagnostics_periodic(
+    diagnostics: Res<DiagnosticsStore>,
+    time: Res<Time>,
+    mut last_log: Local<f64>,
+) {
+    let now = time.elapsed_seconds_f64();
+    if now - *last_log < 5.0 {
+        return;
+    }
+    *last_log = now;
+
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0);
+
+    let frame_ms = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0)
+        * 1000.0;
+
+    let entities = diagnostics
+        .get(&EntityCountDiagnosticsPlugin::ENTITY_COUNT)
+        .and_then(|d| d.value())
+        .unwrap_or(0.0);
+
+    let cpu = diagnostics
+        .get(&SystemInformationDiagnosticsPlugin::CPU_USAGE)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0);
+
+    let mem_mb = diagnostics
+        .get(&SystemInformationDiagnosticsPlugin::MEM_USAGE)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0);
+
+    eprintln!(
+        "[DIAG] FPS:{:.1} frame:{:.2}ms entities:{:.0} CPU:{:.1}% MEM:{:.1}MB",
+        fps, frame_ms, entities, cpu, mem_mb
+    );
 }
 
 fn setup(
@@ -374,6 +413,9 @@ fn compute_moves_parallel(
     mut computed: ResMut<ComputedMoves>,
     pause_state: Res<PauseState>,
 ) {
+    #[cfg(feature = "tracy")]
+    let _span = tracing::info_span!("compute_moves_parallel").entered();
+
     if pause_state.paused {
         return;
     }
@@ -424,6 +466,9 @@ fn apply_moves_serial(
     pause_state: Res<PauseState>,
     mut game_stats: ResMut<GameStats>,
 ) {
+    #[cfg(feature = "tracy")]
+    let _span = tracing::info_span!("apply_moves_serial").entered();
+
     if pause_state.paused {
         return;
     }

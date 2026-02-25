@@ -762,6 +762,9 @@ pub fn render_system(
     mut cell_map: ResMut<CellRenderMap>,
     evo_manager: Res<EvolutionManager>,
 ) {
+    #[cfg(feature = "tracy")]
+    let _span = tracing::info_span!("render_system").entered();
+
     // Skip 1 frame after entity rebuild — Bevy deferred commands not yet applied
     if cell_map.rebuilding {
         cell_map.rebuilding = false;

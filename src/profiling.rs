@@ -1,92 +1,91 @@
-//! Profiling support for snake-rs
+//! Profiling support: pprof (flamegraph), dhat (heap), Tracy (real-time)
 //!
-//! To enable profiling, compile with:
-//!   cargo run --features profiling
-//!
-//! This will generate a flamegraph at: profile-{timestamp}.svg
+//! Compile con:
+//!   cargo run --release --features profiling       → flamegraph SVG on exit
+//!   cargo run --release --features dhat-heap       → heap report JSON on exit
+//!   cargo run --release --features tracy           → Tracy real-time (apri Tracy GUI prima)
 
-#![cfg(feature = "profiling")]
+// ─── dhat heap profiler ───────────────────────────────────────────────────────
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+// ─── ProfilingGuard RAII ──────────────────────────────────────────────────────
 
-static PROFILER_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// RAII guard that starts profiling on creation and saves reports on drop.
+/// Works with any combination of profiling features.
+pub struct ProfilingGuard {
+    #[cfg(feature = "profiling")]
+    pprof_guard: Option<pprof::ProfilerGuard<'static>>,
 
-/// Start CPU profiling
-/// Call this at the beginning of your main function
-pub fn start_profiling() -> Option<pprof::ProfilerGuard<'static>> {
-    if PROFILER_ACTIVE.swap(true, Ordering::SeqCst) {
-        eprintln!("⚠️ Profiling already active");
-        return None;
-    }
-
-    println!("🔥 CPU Profiling started - will save flamegraph on exit");
-    println!("   Compile with: cargo run --features profiling");
-
-    // Start profiler with 100Hz sampling (Go-like default)
-    match pprof::ProfilerGuard::new(100) {
-        Ok(guard) => Some(guard),
-        Err(e) => {
-            eprintln!("❌ Failed to start profiler: {}", e);
-            PROFILER_ACTIVE.store(false, Ordering::SeqCst);
-            None
-        }
-    }
+    #[cfg(feature = "dhat-heap")]
+    _dhat_profiler: dhat::Profiler,
 }
-
-/// Stop profiling and save flamegraph
-/// Call this before exit (or in Drop implementation)
-pub fn stop_profiling(guard: Option<pprof::ProfilerGuard>) {
-    if guard.is_none() {
-        return;
-    }
-
-    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let filename = format!("profile-{}.svg", timestamp);
-
-    println!(
-        "🔥 Stopping profiler and generating flamegraph: {}",
-        filename
-    );
-
-    match guard.unwrap().report().build() {
-        Ok(report) => {
-            // Generate flamegraph SVG
-            let file = std::fs::File::create(&filename).expect("Failed to create profile file");
-            match report.flamegraph(file) {
-                Ok(_) => {
-                    println!("✅ Flamegraph saved to: {}", filename);
-                    println!("   Open in browser: firefox {}\n", filename);
-                }
-                Err(e) => eprintln!("❌ Failed to write flamegraph: {}", e),
-            }
-
-            // Also print top functions to console (Go pprof style)
-            println!("\n📊 Profiling complete - view flamegraph for details");
-            println!("   File: {}", filename);
-            println!();
-        }
-        Err(e) => eprintln!("❌ Failed to build report: {}", e),
-    }
-
-    PROFILER_ACTIVE.store(false, Ordering::SeqCst);
-}
-
-/// RAII guard for automatic profiling stop
-pub struct ProfilingGuard(Option<pprof::ProfilerGuard<'static>>);
 
 impl ProfilingGuard {
+    /// Create a new profiling guard.
+    /// All profiling backends are initialized if their features are enabled.
     pub fn new() -> Self {
-        Self(start_profiling())
+        #[cfg(feature = "dhat-heap")]
+        {
+            println!("🧠 dhat heap profiler attivo — report su exit: dhat-heap.json");
+        }
+
+        #[cfg(feature = "profiling")]
+        println!("🔥 pprof CPU profiler attivo — flamegraph su exit");
+
+        #[cfg(feature = "tracy")]
+        println!("📡 Tracy profiler attivo — connetti Tracy GUI ora");
+
+        Self {
+            #[cfg(feature = "profiling")]
+            pprof_guard: { pprof::ProfilerGuard::new(100).ok() },
+
+            #[cfg(feature = "dhat-heap")]
+            _dhat_profiler: dhat::Profiler::new_heap(),
+        }
     }
 }
 
 impl Drop for ProfilingGuard {
     fn drop(&mut self) {
-        stop_profiling(self.0.take());
+        #[cfg(feature = "profiling")]
+        if let Some(guard) = self.pprof_guard.take() {
+            save_flamegraph(guard);
+        }
+        // dhat saves automatically in Drop
     }
 }
 
-/// Check if profiling is active
+#[cfg(feature = "profiling")]
+fn save_flamegraph(guard: pprof::ProfilerGuard<'static>) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let filename = format!("flamegraph-{}.svg", ts);
+
+    match guard.report().build() {
+        Ok(report) => match std::fs::File::create(&filename) {
+            Ok(file) => match report.flamegraph(file) {
+                Ok(_) => println!(
+                    "✅ Flamegraph salvato: {}\n   Apri con: firefox {}",
+                    filename, filename
+                ),
+                Err(e) => eprintln!("❌ Errore scrittura flamegraph: {}", e),
+            },
+            Err(e) => eprintln!("❌ Errore creazione file {}: {}", filename, e),
+        },
+        Err(e) => eprintln!("❌ Errore build report pprof: {}", e),
+    }
+}
+
+/// Check if any profiling feature is enabled at compile time.
 pub fn is_profiling() -> bool {
-    PROFILER_ACTIVE.load(Ordering::SeqCst)
+    cfg!(any(
+        feature = "profiling",
+        feature = "dhat-heap",
+        feature = "tracy"
+    ))
 }
