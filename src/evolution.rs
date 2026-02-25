@@ -171,8 +171,9 @@ impl EvolutionManager {
     }
 
     /// Save the archive to disk
+    /// Uses false to retrieve the current (latest) run directory
     pub fn save_archive(&self) {
-        let path = crate::snake::get_or_create_run_dir().join("archive.json");
+        let path = crate::snake::get_or_create_run_dir(false).join("archive.json");
         if let Err(e) = self.archive.save(path.to_str().unwrap_or("archive.json")) {
             eprintln!("⚠️ Error saving archive: {}", e);
         } else {
@@ -180,19 +181,30 @@ impl EvolutionManager {
         }
     }
 
-    /// Load the archive from disk
-    pub fn load_archive(&mut self) {
-        let path = crate::snake::get_or_create_run_dir().join("archive.json");
+    /// Load the archive from a specific directory
+    /// Updated to accept the Path from main.rs setup
+    pub fn load_archive(&mut self, run_dir: &std::path::Path) {
+        let path = run_dir.join("archive.json");
+
         if path.exists() {
             match MapElitesArchive::load(path.to_str().unwrap_or("archive.json")) {
                 Ok(archive) => {
                     self.archive = archive;
-                    println!("✅ Archive loaded: {} elites", self.archive.filled_cells());
+                    println!(
+                        "✅ Archive loaded: {} elites from {}",
+                        self.archive.filled_cells(),
+                        path.display()
+                    );
                 }
                 Err(e) => {
-                    eprintln!("⚠️ Error loading archive: {}", e);
+                    eprintln!("⚠️ Error loading archive from {}: {}", path.display(), e);
                 }
             }
+        } else {
+            println!(
+                "ℹ️  No archive found at {}, starting fresh.",
+                path.display()
+            );
         }
     }
 }

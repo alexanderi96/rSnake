@@ -485,6 +485,8 @@ pub fn update_stats_ui(
     }
 }
 
+// In src/ui.rs
+
 pub fn handle_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut app_exit_events: EventWriter<AppExit>,
@@ -500,8 +502,10 @@ pub fn handle_input(
     mut graph_state: ResMut<GraphPanelState>,
     mut heatmap_state: ResMut<HeatmapPanelState>,
     mut pause_state: ResMut<PauseState>,
+    // AGGIUNTA: Recuperiamo la directory della run corrente
+    run_dir: Res<crate::snake::RunDirectory>,
 ) {
-    use crate::snake::{get_or_create_run_dir, new_session_path, save_training_session};
+    use crate::snake::{new_session_path, save_training_session}; // Rimosso get_or_create_run_dir non più necessario qui
     use std::time::Instant;
 
     if keyboard_input.just_pressed(KeyCode::Escape) {
@@ -524,7 +528,9 @@ pub fn handle_input(
         println!("💾 Archive saved on exit");
 
         // Save session data
-        let session_path = new_session_path();
+        // CORREZIONE 1: Passiamo il path contenuto nella risorsa RunDirectory
+        let session_path = new_session_path(&run_dir.0);
+
         if let Err(e) = save_training_session(
             &session_path,
             &global_history,
@@ -534,12 +540,14 @@ pub fn handle_input(
             eprintln!("⚠️ Error saving session: {}", e);
         }
 
-        println!("Saved to: {}", get_or_create_run_dir().display());
+        // CORREZIONE 2: Usiamo direttamente il path della risorsa invece di ricalcolarlo
+        println!("Saved to: {}", run_dir.0.display());
         println!("====================\n");
 
         app_exit_events.send(AppExit);
     }
 
+    // ... (il resto della funzione rimane identico: tasti C, R, G, B, P, F) ...
     if keyboard_input.just_pressed(KeyCode::KeyC) {
         collision_settings.snake_vs_snake = !collision_settings.snake_vs_snake;
         println!(
@@ -625,9 +633,9 @@ pub fn handle_input(
         window_settings.is_fullscreen = !window_settings.is_fullscreen;
         let mut window = windows.single_mut();
         window.mode = if window_settings.is_fullscreen {
-            WindowMode::Fullscreen
+            bevy::window::WindowMode::Fullscreen
         } else {
-            WindowMode::Windowed
+            bevy::window::WindowMode::Windowed
         };
         if window_settings.is_fullscreen {
             graph_state.visible = true;

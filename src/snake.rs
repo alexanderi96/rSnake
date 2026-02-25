@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -41,8 +42,11 @@ impl ParallelConfig {
     }
 }
 
+/// Risorsa per tenere traccia della directory della Run attuale
+#[derive(Resource, Clone, Debug)]
+pub struct RunDirectory(pub PathBuf);
+
 /// Seed condiviso per la generazione corrente.
-/// Tutti i serpenti usano la stessa spawn position, direction e food sequence.
 #[derive(Resource, Clone)]
 pub struct GenerationSeed {
     #[allow(dead_code)]
@@ -55,7 +59,6 @@ pub struct GenerationSeed {
 pub const FOOD_SEQ_LEN: usize = 1000;
 
 impl GenerationSeed {
-    /// Genera un nuovo seed e pre-calcola spawn e food sequence per la griglia data.
     pub fn new_for_grid(grid: &GridDimensions) -> Self {
         use rand::rngs::SmallRng;
         use rand::{Rng, SeedableRng};
@@ -75,8 +78,6 @@ impl GenerationSeed {
             _ => Direction::Right,
         };
 
-        // Pre-genera FOOD_SEQ_LEN posizioni di cibo.
-        // Non esclude il corpo del serpente — in pratica irrilevante per le prime mosse.
         let food_sequence: Vec<Position> = (0..FOOD_SEQ_LEN)
             .map(|_| Position {
                 x: rng.gen_range(0..grid.width),
@@ -92,13 +93,12 @@ impl GenerationSeed {
         }
     }
 
-    /// Restituisce la posizione del cibo per l'indice dato (wrappa se necessario).
     pub fn food_at(&self, index: usize) -> Position {
         self.food_sequence[index % FOOD_SEQ_LEN]
     }
 }
 
-/// Configurazione rendering - toggle per accelerare training
+/// Configurazione rendering
 #[derive(Resource)]
 pub struct RenderConfig {
     pub enabled: bool,
@@ -133,11 +133,7 @@ pub struct MeshCache {
     pub segment_mesh: Handle<Mesh>,
     pub food_mesh: Handle<Mesh>,
     pub food_material: Handle<ColorMaterial>,
-    // head_material REMOVED — cell renderer uses Color::rgb(1.0,1.0,1.0) inline
 }
-
-/// Object pool for snake segment entities
-// SegmentPool removed - see Fix 4: Cell-based rendering in ui.rs
 
 #[derive(Resource)]
 pub struct CollisionSettings {
@@ -191,7 +187,6 @@ impl GridMap {
         cell != 0 && cell != (self_snake_id + 1) as u8
     }
 
-    /// Controlla solo muri (usato quando snake_vs_snake = false)
     pub fn is_wall_collision(&self, x: i32, y: i32) -> bool {
         x < 0 || x >= self.width || y < 0 || y >= self.height
     }
@@ -223,7 +218,7 @@ impl Default for AppStartTime {
 pub struct GlobalTrainingHistory {
     pub records: Vec<GenerationRecord>,
     pub accumulated_time_secs: u64,
-    pub all_time_high_score: u32, // persistent across sessions
+    pub all_time_high_score: u32,
 }
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
@@ -236,7 +231,6 @@ pub struct GameStats {
     pub last_saved: Option<String>,
 }
 
-// Use GenerationRecord from evolution module
 pub use crate::evolution::GenerationRecord;
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default)]
@@ -248,10 +242,8 @@ pub struct TrainingSession {
 #[derive(Clone)]
 pub struct SnakeInstance {
     pub id: usize,
-    /// UUIDv7 per identificazione univoca dell'individuo
     pub uuid: uuid::Uuid,
     pub snake: VecDeque<Position>,
-    /// O(1) lookup for self-collision detection
     pub body_set: HashSet<Position>,
     pub food: Position,
     pub direction: Direction,
@@ -259,46 +251,27 @@ pub struct SnakeInstance {
     pub steps_without_food: u32,
     pub score: u32,
     pub color: Color,
-    /// Previous frame state for temporal frame stacking [f32; 17]
     pub previous_state: [f32; BASE_STATE_SIZE],
-    /// Frames survived (for fitness calculation)
     pub frames_survived: u32,
-    /// Unique grid cells visited by the snake head (for body avoidance calculation)
     pub visited_cells: std::collections::HashSet<(i32, i32)>,
-    /// Number of turns made (for legacy agility descriptor, deprecated)
     pub turn_count: u32,
-    /// Previous action (for turn detection)
     pub previous_action: crate::brain::Action,
-    /// Sum of frames spent to reach each apple (for per-apple efficiency)
     pub food_time_sum: u64,
-    /// Sum of (manhattan_distance / steps_taken) for each apple eaten
-    /// Used for path_directness descriptor
     pub path_directness_sum: f64,
-    /// Manhattan distance from head to food at spawn time
-    /// Used to compute path_directness ratio when apple is eaten
     pub food_spawn_distance: u32,
-    /// Sum of (body_len / visited_cells) for each frame
-    /// Used for body_avoidance descriptor
     pub body_pressure_sum: f64,
-    /// Sum of timeout budgets for each apple eaten (adaptive to snake length)
-    /// Enables correct fitness normalization regardless of snake length
     pub timeout_budget_sum: u64,
 }
 
 impl SnakeInstance {
-    /// Calcola il colore comportamentale basato su:
-    /// - R (Rosso): Courage (più vicino ai muri = più rosso)
-    /// - G (Verde): Agility (più curve = più verde)
-    /// - B (Blu): Fitness relativa (fitness / best_fitness_globale)
     pub fn calculate_behavioral_color(
         courage: f64,
         agility: f64,
         fitness: f64,
         best_fitness: f64,
     ) -> Color {
-        let r = courage as f32; // 0.0 - 1.0
-        let g = agility as f32; // 0.0 - 1.0
-                                // Fitness relativa: se best_fitness è 0, usa 0.5 come default
+        let r = courage as f32;
+        let g = agility as f32;
         let b = if best_fitness > 0.0 {
             (fitness / best_fitness).clamp(0.0, 1.0) as f32
         } else {
@@ -326,15 +299,10 @@ impl SnakeInstance {
         (Position { x, y }, direction)
     }
 
-    /// Create a new snake with default behavioral color (for backwards compatibility)
     pub fn new(id: usize, grid: &GridDimensions, total_snakes: usize) -> Self {
-        // Valori di default: courage=0.5, agility=0.5, fitness=0, best_fitness=1
-        // Questo produce un colore neutro (0.5, 0.5, 0.0)
         Self::new_with_color(id, grid, total_snakes, None, 0.5, 0.5, 0.0, 1.0)
     }
 
-    /// Create a new snake with behavioral color based on parent's traits
-    /// Il colore comportamentale viene calcolato da courage/agility/fitness del genitore
     pub fn new_with_color(
         id: usize,
         grid: &GridDimensions,
@@ -350,11 +318,9 @@ impl SnakeInstance {
         let mut snake = VecDeque::new();
         snake.push_back(spawn_pos);
 
-        // Initialize body_set for O(1) collision detection
         let mut body_set = HashSet::with_capacity(32);
         body_set.insert(spawn_pos);
 
-        // Usa colore comportamentale basato sui tratti del genitore
         let color = Self::calculate_behavioral_color(
             parent_courage,
             parent_agility,
@@ -362,12 +328,10 @@ impl SnakeInstance {
             best_fitness,
         );
 
-        // Calculate initial food position
         let food = Position {
             x: (spawn_pos.x + 5) % grid.width,
             y: (spawn_pos.y + 5) % grid.height,
         };
-        // Calculate Manhattan distance to first food for path_directness
         let food_spawn_distance =
             ((food.x - spawn_pos.x).abs() + (food.y - spawn_pos.y).abs()) as u32;
 
@@ -395,62 +359,6 @@ impl SnakeInstance {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn reset(&mut self, grid: &GridDimensions, total_snakes: usize) {
-        // Default behavioral values (neutral color)
-        self.reset_with_behavioral_color(grid, total_snakes, 0.5, 0.5, 0.0, 1.0);
-    }
-
-    /// Reset snake with behavioral color based on parent's traits
-    #[allow(dead_code)]
-    pub fn reset_with_behavioral_color(
-        &mut self,
-        grid: &GridDimensions,
-        _total_snakes: usize,
-        parent_courage: f64,
-        parent_agility: f64,
-        parent_fitness: f64,
-        best_fitness: f64,
-    ) {
-        let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
-
-        self.uuid = Uuid::now_v7(); // Nuovo UUID per ogni vita
-        self.snake.clear();
-        self.snake.push_back(spawn_pos);
-        self.body_set.clear();
-        self.body_set.shrink_to_fit();
-        self.body_set.insert(spawn_pos);
-        self.direction = spawn_dir;
-        self.is_game_over = false;
-        self.steps_without_food = 0;
-        self.score = 0;
-        self.food = Position {
-            x: (spawn_pos.x + 5) % grid.width,
-            y: (spawn_pos.y + 5) % grid.height,
-        };
-        // Calcola colore comportamentale basato sui tratti del genitore
-        self.color = Self::calculate_behavioral_color(
-            parent_courage,
-            parent_agility,
-            parent_fitness,
-            best_fitness,
-        );
-        self.previous_state = [0.0; BASE_STATE_SIZE];
-        self.frames_survived = 0;
-        self.visited_cells.clear();
-        self.visited_cells.shrink_to_fit();
-        self.turn_count = 0;
-        self.previous_action = crate::brain::Action::Straight;
-        self.food_time_sum = 0;
-        self.path_directness_sum = 0.0;
-        // Calculate Manhattan distance to first food for path_directness
-        self.food_spawn_distance =
-            ((self.food.x - spawn_pos.x).abs() + (self.food.y - spawn_pos.y).abs()) as u32;
-        self.body_pressure_sum = 0.0;
-        self.timeout_budget_sum = 0;
-    }
-
-    /// Reset snake with shared generation seed for fair comparison
     pub fn reset_with_seed(
         &mut self,
         _grid: &GridDimensions,
@@ -471,7 +379,7 @@ impl SnakeInstance {
         self.is_game_over = false;
         self.steps_without_food = 0;
         self.score = 0;
-        self.food = seed.food_at(0); // prima mela identica per tutti
+        self.food = seed.food_at(0);
         self.color = Self::calculate_behavioral_color(
             parent_courage,
             parent_agility,
@@ -486,17 +394,12 @@ impl SnakeInstance {
         self.previous_action = crate::brain::Action::Straight;
         self.food_time_sum = 0;
         self.path_directness_sum = 0.0;
-        // Calculate Manhattan distance to first food for path_directness
         self.food_spawn_distance = ((self.food.x - seed.spawn_pos.x).abs()
             + (self.food.y - seed.spawn_pos.y).abs()) as u32;
         self.body_pressure_sum = 0.0;
         self.timeout_budget_sum = 0;
     }
 
-    /// Path Directness: how directly the snake reaches food
-    /// Mean of (manhattan_distance_at_spawn / steps_taken_to_eat) for each apple
-    /// Grid-invariant: measures efficiency relative to ideal path, not absolute cells
-    /// Returns 0.0 if no apples eaten, otherwise value in [0.0, 1.0]
     pub fn path_directness(&self) -> f64 {
         if self.score == 0 {
             return 0.0;
@@ -504,11 +407,6 @@ impl SnakeInstance {
         (self.path_directness_sum / self.score as f64).clamp(0.0, 1.0)
     }
 
-    /// Body Avoidance Ratio: how well snake navigates around itself when long
-    /// Mean of (body_length / visited_cells) across all frames
-    /// Grid-invariant: uses ratio, not absolute counts
-    /// Returns 0.0 if no frames survived, otherwise value in [0.0, 1.0]
-    /// Higher values = snake survived in tighter spaces (better navigation skill)
     pub fn body_avoidance(&self) -> f64 {
         if self.frames_survived == 0 {
             return 0.0;
@@ -516,47 +414,28 @@ impl SnakeInstance {
         (self.body_pressure_sum / self.frames_survived as f64).clamp(0.0, 1.0)
     }
 
-    /// Legacy: Exploration ratio (grid-dependent, deprecated)
-    /// Kept for backward compatibility but not used for archive descriptors
-    #[allow(dead_code)]
-    pub fn exploration_ratio(&self, grid: &GridDimensions) -> f64 {
-        let total_cells = (grid.width * grid.height) as f64;
-        (self.visited_cells.len() as f64 / total_cells).clamp(0.0, 1.0)
-    }
-
-    /// Legacy: Agility (turn frequency)
-    /// Kept for backward compatibility but not used for archive descriptors
-    #[allow(dead_code)]
-    pub fn agility(&self) -> f64 {
-        if self.frames_survived == 0 {
-            return 0.0;
-        }
-        (self.turn_count as f64 / self.frames_survived as f64).clamp(0.0, 1.0)
-    }
-
-    /// Fitness basata su efficienza relativa al budget di tempo disponibile.
-    ///
-    /// Per ogni mela mangiata si confrontano i frame usati con i frame disponibili
-    /// (timeout adattivo alla lunghezza del serpente al momento del mangiare).
-    /// efficiency = 1.0 → mela mangiata subito
-    /// efficiency = 0.0 → mela mangiata quasi al timeout
-    /// score² ensures longer snakes always dominate shorter ones in fitness.
+    /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)
     pub fn fitness(&self, _grid: &GridDimensions) -> f64 {
-        if self.score == 0 || self.timeout_budget_sum == 0 {
-            return 0.0;
+        // Se non ha mangiato nulla, piccolo premio di sopravvivenza
+        if self.score == 0 {
+            return (self.frames_survived as f64 * 0.1).min(10.0);
         }
 
-        let efficiency =
-            (1.0 - self.food_time_sum as f64 / self.timeout_budget_sum as f64).clamp(0.0, 1.0);
+        // 1. Base Reward (Lineare): 1000 punti per mela
+        let base_reward = self.score as f64 * 1000.0;
 
-        // score² ensures longer snakes always dominate shorter ones in fitness,
-        // even if their per-apple efficiency is lower due to body-avoidance detours.
-        // efficiency bonus rewards speed but doesn't override length advantage.
-        // A score=40 eff=0.3 snake: 1600 * (1 + 0.3) = 2080 base * 50 = 104000
-        // A score=10 eff=0.8 snake: 100  * (1 + 0.8) = 180  base * 50 = 9000
-        let score_component = (self.score as f64) * (self.score as f64); // quadratic
-        let efficiency_bonus = 1.0 + efficiency; // 1.0 to 2.0 multiplier
-        (score_component * efficiency_bonus * 50.0).max(0.0)
+        // 2. Efficiency Bonus: fino a 500 punti per mela se veloce
+        let efficiency = if self.timeout_budget_sum > 0 {
+            (1.0 - self.food_time_sum as f64 / self.timeout_budget_sum as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let efficiency_bonus = (self.score as f64) * efficiency * 500.0;
+
+        // 3. Survival Tie-Breaker: minuscolo premio per frame
+        let survival_reward = self.frames_survived as f64 * 0.01;
+
+        base_reward + efficiency_bonus + survival_reward
     }
 }
 
@@ -568,13 +447,6 @@ pub struct GameState {
 }
 
 impl GameState {
-    #[allow(dead_code)]
-    pub fn new(grid: &GridDimensions, snake_count: usize) -> Self {
-        Self::new_with_behavioral_colors(grid, snake_count, None)
-    }
-
-    /// Create GameState with behavioral colors based on parent's courage/agility/fitness
-    /// Each tuple: (parent_courage, parent_agility, parent_fitness, best_fitness)
     pub fn new_with_behavioral_colors(
         grid: &GridDimensions,
         snake_count: usize,
@@ -609,7 +481,6 @@ impl GameState {
         }
     }
 
-    /// Count alive snakes
     pub fn alive_count(&self) -> usize {
         self.snakes.iter().filter(|s| !s.is_game_over).count()
     }
@@ -653,8 +524,6 @@ impl Direction {
     }
 }
 
-/// 8 compass directions (N, NE, E, SE, S, SW, W, NW)
-/// These are normalized direction vectors for raycasting
 const RAY_DIRECTIONS: [(i32, i32); 8] = [
     (0, 1),   // N
     (1, 1),   // NE
@@ -666,18 +535,6 @@ const RAY_DIRECTIONS: [(i32, i32); 8] = [
     (-1, 1),  // NW
 ];
 
-/// Calculate current 17 sensors in pure read-only mode.
-/// This function is thread-safe and can be used with par_iter().
-///
-/// SENSORS ARE EGOCENTRIC (First-Person):
-/// - Sensor 0 (N) is always where the snake is looking (Forward)
-/// - Sensor 2 (E) is always to the snake's Right
-/// - Sensor 4 (S) is always Behind the snake
-/// - Sensor 6 (W) is always to the snake's Left
-///
-/// Sensors 0-7: Obstacle raycasting (8 directions) - exponential decay based on Euclidean distance
-/// Sensors 8-15: Target direction dot products (8 directions) - value = max(0.0, dot_product)
-/// Sensor 16: Target distance - exponential decay based on Euclidean distance
 pub fn get_current_17_state(
     snake: &SnakeInstance,
     grid_map: &GridMap,
@@ -687,16 +544,13 @@ pub fn get_current_17_state(
     let mut current_state = [0.0f32; BASE_STATE_SIZE];
     let head = snake.snake[0];
 
-    // Direction offset: N=0, E=2, S=4, W=6 (indices in RAY_DIRECTIONS)
     let dir_offset: usize = match snake.direction {
-        Direction::Up => 0,    // N
-        Direction::Right => 2, // E
-        Direction::Down => 4,  // S
-        Direction::Left => 6,  // W
+        Direction::Up => 0,
+        Direction::Right => 2,
+        Direction::Down => 4,
+        Direction::Left => 6,
     };
 
-    // === SENSORS 0-7: OBSTACLE RAYCASTING ===
-    // Cast rays in 8 egocentric directions with exponential decay
     for i in 0..8 {
         let ray_idx = (i + dir_offset) % 8;
         let (dx, dy) = RAY_DIRECTIONS[ray_idx];
@@ -713,17 +567,12 @@ pub fn get_current_17_state(
             let hit_obstacle = !hit_wall && grid_map.is_collision(curr_x, curr_y, snake.id);
 
             if hit_wall || hit_obstacle {
-                // Calcola distanza fino all'ultimo punto VALIDO (prima dell'ostacolo)
-                // per i muri, il punto di contatto è sul bordo della griglia
                 let contact_x = curr_x.clamp(0, grid.width - 1);
                 let contact_y = curr_y.clamp(0, grid.height - 1);
                 let diff_x = (contact_x - head.x) as f32;
                 let diff_y = (contact_y - head.y) as f32;
                 let euclidean_dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
 
-                // Threshold esattamente 1.0: solo celle cardinali adiacenti
-                // sono immediatamente fatali (il serpente non si muove in diagonale).
-                // Diagonale adiacente: dist = sqrt(2) ≈ 1.414 → NON cappata, corretto.
                 if euclidean_dist <= 1.0 {
                     current_state[i] = 1.0;
                 } else {
@@ -734,7 +583,6 @@ pub fn get_current_17_state(
         }
     }
 
-    // === SENSORS 8-15: TARGET DIRECTION DOT PRODUCTS ===
     let target_dx = (snake.food.x - head.x) as f32;
     let target_dy = (snake.food.y - head.y) as f32;
     let target_dist = (target_dx * target_dx + target_dy * target_dy).sqrt();
@@ -748,39 +596,21 @@ pub fn get_current_17_state(
     for i in 0..8 {
         let ray_idx = (i + dir_offset) % 8;
         let (dx, dy) = RAY_DIRECTIONS[ray_idx];
-
         let dir_len = ((dx * dx + dy * dy) as f32).sqrt();
         let dir_vec = (dx as f32 / dir_len, dy as f32 / dir_len);
-
         let dot_product = target_vec.0 * dir_vec.0 + target_vec.1 * dir_vec.1;
         current_state[8 + i] = dot_product.max(0.0);
     }
 
-    // === SENSOR 16: TARGET DISTANCE ===
-    let target_euclidean_dist = target_dist; // Already calculated as Euclidean
+    let target_euclidean_dist = target_dist;
     current_state[16] = (-decay_rate * target_euclidean_dist).exp();
 
     current_state
 }
 
-#[allow(dead_code)]
-pub fn spawn_food(snake: &SnakeInstance, grid: &GridDimensions) -> Position {
-    let mut rng = rand::thread_rng();
-    loop {
-        let x = rng.gen_range(0..grid.width);
-        let y = rng.gen_range(0..grid.height);
-        let pos = Position { x, y };
-        if !snake.snake.contains(&pos) {
-            return pos;
-        }
-    }
-}
-
 pub fn calculate_grid_dimensions(window_width: f32, window_height: f32) -> (i32, i32) {
-    // Sfruttiamo tutto lo spazio a disposizione senza margini fissi
     let width = (window_width / BLOCK_SIZE).floor() as i32;
     let height = (window_height / BLOCK_SIZE).floor() as i32;
-
     (width.max(10), height.max(10))
 }
 
@@ -797,55 +627,50 @@ impl GameStats {
     }
 }
 
-// --- GESTIONE CARTELLE DI SALVATAGGIO ---
+// --- GESTIONE CARTELLE E FILE ---
 
-pub fn get_or_create_run_dir() -> std::path::PathBuf {
-    let runs_dir = std::path::PathBuf::from("runs");
+/// Crea o recupera la directory di run.
+/// Se `force_new` è true, crea sempre una nuova directory con timestamp/UUID.
+/// Se false, tenta di recuperare l'ultima creata.
+pub fn get_or_create_run_dir(force_new: bool) -> PathBuf {
+    let runs_dir = PathBuf::from("runs");
     std::fs::create_dir_all(&runs_dir).ok();
 
-    if let Ok(entries) = std::fs::read_dir(&runs_dir) {
-        let mut dirs: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.path())
-            .collect();
+    if !force_new {
+        if let Ok(entries) = std::fs::read_dir(&runs_dir) {
+            let mut dirs: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.path())
+                .collect();
 
-        if !dirs.is_empty() {
-            // UUIDv7 are lexicographically sortable, so we can just sort
-            dirs.sort_by(|a, b| b.cmp(a));
-            return dirs[0].clone();
+            if !dirs.is_empty() {
+                // Ordina per UUIDv7 (timestamp decrescente)
+                dirs.sort_by(|a, b| b.cmp(a));
+                println!("Resume last run: {}", dirs[0].display());
+                return dirs[0].clone();
+            }
         }
     }
 
-    // Generate new UUIDv7 (time-ordered, collision-free)
+    // Crea nuova se richiesto o se non ne esistono
     let uuid = Uuid::now_v7();
     let new_dir = runs_dir.join(uuid.to_string());
     std::fs::create_dir_all(&new_dir).ok();
     let sessions_dir = new_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).ok();
 
-    println!("📂 Created new run: {}", uuid);
+    println!("✨ Created NEW run: {}", uuid);
     new_dir
 }
 
-// In snake.rs
-
-pub fn session_path(filename: &str) -> std::path::PathBuf {
-    let sessions_dir = get_or_create_run_dir().join("sessions");
-    std::fs::create_dir_all(&sessions_dir).ok();
-    sessions_dir.join(filename)
-}
-
-pub fn new_session_path() -> std::path::PathBuf {
-    // Generate UUIDv7 for session file
+pub fn new_session_path(run_dir: &std::path::Path) -> PathBuf {
     let uuid = Uuid::now_v7();
-    session_path(format!("{}.json", uuid).as_str())
+    run_dir.join("sessions").join(format!("{}.json", uuid))
 }
 
-/// Load global training history from previous sessions
-/// Returns (history, max_generation_found)
-pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
-    let sessions_dir = get_or_create_run_dir().join("sessions");
+pub fn load_global_history(run_dir: &std::path::Path) -> (GlobalTrainingHistory, u32) {
+    let sessions_dir = run_dir.join("sessions");
     let mut global_history = GlobalTrainingHistory::default();
     let mut max_gen = 0;
 
@@ -876,7 +701,6 @@ pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
 
     global_history.records.sort_by_key(|r| r.generation);
 
-    // Compute all_time_high_score from loaded records
     global_history.all_time_high_score = global_history
         .records
         .iter()
@@ -884,17 +708,9 @@ pub fn load_global_history() -> (GlobalTrainingHistory, u32) {
         .max()
         .unwrap_or(0);
 
-    println!(
-        "✅ Global History Loaded: {} records, {}s total, max gen: {}",
-        global_history.records.len(),
-        global_history.accumulated_time_secs,
-        max_gen
-    );
-
     (global_history, max_gen)
 }
 
-/// Save training session (history + stats) to file
 pub fn save_training_session(
     session_path: &std::path::Path,
     history: &GlobalTrainingHistory,
