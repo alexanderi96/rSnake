@@ -160,7 +160,7 @@ pub struct MaterialPalette {
 pub struct CellRenderMap {
     /// For each occupied cell: (color, fitness_of_best_snake_here)
     /// Rebuilt from scratch every frame before rendering
-    pub cells: HashMap<(i32, i32), (Color, f64)>,
+    pub cells: HashMap<(i32, i32), (Color, f32)>,
     /// Pre-spawned Bevy entities — one per grid cell, indexed y*w+x
     pub entities: Vec<Entity>,
     pub grid_width: i32,
@@ -812,7 +812,7 @@ pub fn render_system(
 
     // Build fitness lookup: snake_id → fitness from current generation population
     // This is used to determine which snake "wins" a contested cell
-    let fitness_map: Vec<f64> = evo_manager
+    let fitness_map: Vec<f32> = evo_manager
         .generation_state
         .population
         .iter()
@@ -840,7 +840,7 @@ pub fn render_system(
             let entry = cell_map
                 .cells
                 .entry(key)
-                .or_insert((color, f64::NEG_INFINITY));
+                .or_insert((color, f32::NEG_INFINITY));
             if snake_fitness > entry.1 {
                 *entry = (color, snake_fitness);
             }
@@ -1401,7 +1401,7 @@ pub fn draw_graph_in_panel(
         return;
     }
 
-    let data_changed = global_history.records.len() != graph_state.last_entry_count;
+    let data_changed = global_history.all_records().count() != graph_state.last_entry_count;
     if !graph_state.needs_redraw && !data_changed && graph_state.last_entry_count != 0 {
         return;
     }
@@ -1415,9 +1415,9 @@ pub fn draw_graph_in_panel(
     }
 
     graph_state.needs_redraw = false;
-    graph_state.last_entry_count = global_history.records.len();
+    graph_state.last_entry_count = global_history.all_records().count();
 
-    if global_history.records.is_empty() {
+    if global_history.all_records().next().is_none() {
         return;
     }
 
@@ -1446,26 +1446,27 @@ pub fn draw_graph_in_panel(
 
             let bar_width_px = 2.0;
             let max_bars = (graph_width / bar_width_px).floor() as usize;
-            let total_records = global_history.records.len();
+            let total_records = global_history.all_records().count();
             let chunk_size = (total_records as f32 / max_bars as f32).ceil() as usize;
             let chunk_size = chunk_size.max(1);
 
             struct AggregatedPoint {
-                avg: f64,
-                max: f64,
-                min: f64,
+                avg: f32,
+                max: f32,
+                min: f32,
             }
 
             let mut visual_points = Vec::new();
 
-            let global_max = global_history
-                .records
+            let records: Vec<_> = global_history.all_records().collect();
+
+            let global_max = records
                 .iter()
                 .map(|r| r.best_fitness)
-                .fold(0.0_f64, |a, b| a.max(b))
+                .fold(0.0_f32, |a, b| a.max(b))
                 .max(10.0);
 
-            for chunk in global_history.records.chunks(chunk_size) {
+            for chunk in records.chunks(chunk_size) {
                 if chunk.is_empty() {
                     continue;
                 }
@@ -1473,13 +1474,13 @@ pub fn draw_graph_in_panel(
                 let max_in_chunk = chunk
                     .iter()
                     .map(|r| r.best_fitness)
-                    .fold(0.0_f64, |a, b| a.max(b));
+                    .fold(0.0_f32, |a, b| a.max(b));
                 let min_in_chunk = chunk
                     .iter()
                     .map(|r| r.avg_fitness)
-                    .fold(f64::INFINITY, |a, b| a.min(b));
-                let sum_avg: f64 = chunk.iter().map(|r| r.avg_fitness).sum();
-                let avg_in_chunk = sum_avg / chunk.len() as f64;
+                    .fold(f32::INFINITY, |a, b| a.min(b));
+                let sum_avg: f32 = chunk.iter().map(|r| r.avg_fitness).sum();
+                let avg_in_chunk = sum_avg / chunk.len() as f32;
 
                 visual_points.push(AggregatedPoint {
                     avg: avg_in_chunk,
@@ -1494,8 +1495,8 @@ pub fn draw_graph_in_panel(
             for (i, point) in visual_points.iter().enumerate() {
                 let x_pos = margin_left + (i as f32 * exact_bar_width);
 
-                let get_height = |val: f64| -> f32 {
-                    let ratio = (val / global_max).clamp(0.0, 1.0) as f32;
+                let get_height = |val: f32| -> f32 {
+                    let ratio = (val / global_max).clamp(0.0, 1.0);
                     ratio * graph_height
                 };
 

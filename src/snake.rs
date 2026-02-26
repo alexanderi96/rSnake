@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -214,11 +215,30 @@ impl Default for AppStartTime {
     }
 }
 
+/// Global training history with separated read-only history and current session
+/// This prevents the "Matrioska" effect where each session saved all previous data
 #[derive(Resource, Default)]
 pub struct GlobalTrainingHistory {
-    pub records: Vec<GenerationRecord>,
+    /// Historical records loaded from previous sessions (read-only, from .json/.json.gz files)
+    pub history_log: Vec<GenerationRecord>,
+    /// Current session records (write-only, saved to new file)
+    pub current_session: Vec<GenerationRecord>,
+    /// Total accumulated time from all previous sessions
     pub accumulated_time_secs: u64,
+    /// All-time high score across all sessions
     pub all_time_high_score: u32,
+}
+
+impl GlobalTrainingHistory {
+    /// Get all records combined (for UI display)
+    pub fn all_records(&self) -> impl Iterator<Item = &GenerationRecord> {
+        self.history_log.iter().chain(self.current_session.iter())
+    }
+
+    /// Add a record to the current session
+    pub fn push(&mut self, record: GenerationRecord) {
+        self.current_session.push(record);
+    }
 }
 
 #[derive(Resource, Serialize, Deserialize, Debug, Default, Clone)]
@@ -257,23 +277,23 @@ pub struct SnakeInstance {
     pub turn_count: u32,
     pub previous_action: crate::brain::Action,
     pub food_time_sum: u64,
-    pub path_directness_sum: f64,
+    pub path_directness_sum: f32,
     pub food_spawn_distance: u32,
-    pub body_pressure_sum: f64,
+    pub body_pressure_sum: f32,
     pub timeout_budget_sum: u64,
 }
 
 impl SnakeInstance {
     pub fn calculate_behavioral_color(
-        courage: f64,
-        agility: f64,
-        fitness: f64,
-        best_fitness: f64,
+        courage: f32,
+        agility: f32,
+        fitness: f32,
+        best_fitness: f32,
     ) -> Color {
-        let r = courage as f32;
-        let g = agility as f32;
+        let r = courage;
+        let g = agility;
         let b = if best_fitness > 0.0 {
-            (fitness / best_fitness).clamp(0.0, 1.0) as f32
+            (fitness / best_fitness).clamp(0.0, 1.0)
         } else {
             0.5
         };
@@ -308,10 +328,10 @@ impl SnakeInstance {
         grid: &GridDimensions,
         _total_snakes: usize,
         _genetic_color: Option<crate::brain::GenomeColor>,
-        parent_courage: f64,
-        parent_agility: f64,
-        parent_fitness: f64,
-        best_fitness: f64,
+        parent_courage: f32,
+        parent_agility: f32,
+        parent_fitness: f32,
+        best_fitness: f32,
     ) -> Self {
         let (spawn_pos, spawn_dir) = Self::get_random_spawn_data(grid);
 
@@ -364,10 +384,10 @@ impl SnakeInstance {
         _grid: &GridDimensions,
         _total_snakes: usize,
         seed: &GenerationSeed,
-        parent_courage: f64,
-        parent_agility: f64,
-        parent_fitness: f64,
-        best_fitness: f64,
+        parent_courage: f32,
+        parent_agility: f32,
+        parent_fitness: f32,
+        best_fitness: f32,
     ) {
         self.uuid = Uuid::now_v7();
         self.snake.clear();
@@ -400,40 +420,41 @@ impl SnakeInstance {
         self.timeout_budget_sum = 0;
     }
 
-    pub fn path_directness(&self) -> f64 {
+    pub fn path_directness(&self) -> f32 {
         if self.score == 0 {
             return 0.0;
         }
-        (self.path_directness_sum / self.score as f64).clamp(0.0, 1.0)
+        (self.path_directness_sum / self.score as f32).clamp(0.0, 1.0)
     }
 
-    pub fn body_avoidance(&self) -> f64 {
+    pub fn body_avoidance(&self) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
-        (self.body_pressure_sum / self.frames_survived as f64).clamp(0.0, 1.0)
+        (self.body_pressure_sum / self.frames_survived as f32).clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)
-    pub fn fitness(&self, _grid: &GridDimensions) -> f64 {
+    pub fn fitness(&self, _grid: &GridDimensions) -> f32 {
         // Se non ha mangiato nulla, piccolo premio di sopravvivenza
         if self.score == 0 {
-            return (self.frames_survived as f64 * 0.1).min(10.0);
+            return (self.frames_survived as f32 * 0.1).min(10.0);
         }
 
-        // 1. Base Reward (Lineare): 1000 punti per mela
-        let base_reward = self.score as f64 * 1000.0;
+        let base_reward = self.score as f32 * 1000.0;
 
-        // 2. Efficiency Bonus: fino a 500 punti per mela se veloce
+        // Efficienza: quanto velocemente ha raggiunto il cibo
         let efficiency = if self.timeout_budget_sum > 0 {
-            (1.0 - self.food_time_sum as f64 / self.timeout_budget_sum as f64).clamp(0.0, 1.0)
+            (1.0 - self.food_time_sum as f32 / self.timeout_budget_sum as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let efficiency_bonus = (self.score as f64) * efficiency * 500.0;
 
-        // 3. Survival Tie-Breaker: minuscolo premio per frame
-        let survival_reward = self.frames_survived as f64 * 0.01;
+        // Bonus per efficienza (maggiore se ha mangiato più mele)
+        let efficiency_bonus = (self.score as f32) * efficiency * 500.0;
+
+        // Premio extra per sopravvivenza
+        let survival_reward = self.frames_survived as f32 * 0.01;
 
         base_reward + efficiency_bonus + survival_reward
     }
@@ -450,7 +471,7 @@ impl GameState {
     pub fn new_with_behavioral_colors(
         grid: &GridDimensions,
         snake_count: usize,
-        behaviors: Option<Vec<(f64, f64, f64, f64)>>,
+        behaviors: Option<Vec<(f32, f32, f32, f32)>>,
     ) -> Self {
         let snakes = if let Some(behaviors) = behaviors {
             (0..snake_count)
@@ -678,31 +699,49 @@ pub fn load_global_history(run_dir: &std::path::Path) -> (GlobalTrainingHistory,
         let mut paths: Vec<_> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "json"))
+            .filter(|p| {
+                // Accept both .json and .json.gz files
+                p.extension()
+                    .map_or(false, |ext| ext == "json" || ext == "gz")
+            })
             .collect();
 
         paths.sort();
 
         for path in paths {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str::<TrainingSession>(&content) {
-                    global_history.accumulated_time_secs += session.total_time_secs;
+            // Try to load as gzip first, then as plain JSON
+            let session_result = if is_gzipped(&path) {
+                load_json_gz::<TrainingSession>(&path)
+            } else {
+                std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<TrainingSession>(&content).ok())
+                    .map(|s| Ok(s))
+                    .unwrap_or_else(|| {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Failed to parse session",
+                        ))
+                    })
+            };
 
-                    for record in session.records {
-                        if record.generation > max_gen {
-                            max_gen = record.generation;
-                        }
-                        global_history.records.push(record);
+            if let Ok(session) = session_result {
+                global_history.accumulated_time_secs += session.total_time_secs;
+
+                for record in session.records {
+                    if record.generation > max_gen {
+                        max_gen = record.generation;
                     }
+                    global_history.history_log.push(record);
                 }
             }
         }
     }
 
-    global_history.records.sort_by_key(|r| r.generation);
+    global_history.history_log.sort_by_key(|r| r.generation);
 
     global_history.all_time_high_score = global_history
-        .records
+        .history_log
         .iter()
         .map(|r| r.generation_high_score)
         .max()
@@ -717,16 +756,165 @@ pub fn save_training_session(
     _game_stats: &GameStats,
     session_duration_secs: u64,
 ) -> std::io::Result<()> {
+    // Save only current session records, not the entire history
     let session = TrainingSession {
         total_time_secs: session_duration_secs,
-        records: history.records.clone(),
+        records: history.current_session.clone(),
     };
 
-    let json = serde_json::to_string_pretty(&session)?;
-    std::fs::write(session_path, json)?;
+    // Save as gzip-compressed JSON
+    save_json_gz(session_path, &session)?;
 
     println!("💾 Session saved to: {}", session_path.display());
     Ok(())
+}
+
+// ============================================================================
+// GZIP COMPRESSION HELPERS
+// ============================================================================
+
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+
+/// Save JSON to a gzip-compressed file (.json.gz)
+pub fn save_json_gz<T: Serialize>(path: &std::path::Path, data: &T) -> std::io::Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut writer = std::io::BufWriter::new(encoder);
+    serde_json::to_writer(&mut writer, data)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Load JSON from a gzip-compressed file (.json.gz) or uncompressed (.json)
+/// Automatically detects format based on file extension
+pub fn load_json_gz<T: for<'de> Deserialize<'de>>(path: &std::path::Path) -> std::io::Result<T> {
+    let content = std::fs::read(path)?;
+
+    // Try gzip first if extension is .gz
+    if path.extension().map_or(false, |ext| ext == "gz") {
+        let decoder = GzDecoder::new(&content[..]);
+        let reader = std::io::BufReader::new(decoder);
+        return Ok(serde_json::from_reader(reader)?);
+    }
+
+    // Otherwise try plain JSON
+    Ok(serde_json::from_slice(&content)?)
+}
+
+/// Check if a path has gzip compression
+pub fn is_gzipped(path: &std::path::Path) -> bool {
+    path.extension().map_or(false, |ext| ext == "gz")
+}
+
+/// Sanitize old run data: deduplicate records and compress
+/// This fixes the "Matrioska" effect where each session saved all previous data
+/// Called at startup if old .json files are detected
+pub fn sanitize_run_data(run_dir: &std::path::Path) -> std::io::Result<u64> {
+    let sessions_dir = run_dir.join("sessions");
+    if !sessions_dir.exists() {
+        return Ok(0);
+    }
+
+    // Find all .json files (non-gzipped)
+    let mut old_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut compressed_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut migrated_exists = false;
+
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+            if ext == "json" {
+                old_files.push(path.clone());
+            } else if ext == "gz" {
+                compressed_files.push(path.clone());
+            }
+            if path
+                .file_name()
+                .map_or(false, |n| n == "history_migrated.json.gz")
+            {
+                migrated_exists = true;
+            }
+        }
+    }
+
+    // If already migrated or no old files, skip
+    if migrated_exists || old_files.is_empty() {
+        return Ok(0);
+    }
+
+    println!(
+        "🔧 Sanitizing run data: found {} old .json files",
+        old_files.len()
+    );
+
+    // Calculate total size before
+    let mut total_size_before: u64 = 0;
+    for f in &old_files {
+        total_size_before += f.metadata().map(|m| m.len()).unwrap_or(0);
+    }
+
+    // Load all records from all old files
+    let mut all_records: Vec<GenerationRecord> = Vec::new();
+    for path in &old_files {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(session) = serde_json::from_str::<TrainingSession>(&content) {
+                all_records.extend(session.records);
+            }
+        }
+    }
+
+    // Deduplicate: keep only the latest record for each generation
+    all_records.sort_by_key(|r| r.generation);
+    all_records.dedup_by_key(|r| r.generation);
+    all_records.sort_by_key(|r| r.generation);
+
+    // Create backup directory
+    let backup_dir = sessions_dir.join("backup");
+    if !backup_dir.exists() {
+        std::fs::create_dir_all(&backup_dir)?;
+    }
+
+    // Move old files to backup
+    for old_file in &old_files {
+        if let Some(name) = old_file.file_name() {
+            let backup_path = backup_dir.join(name);
+            std::fs::rename(old_file, backup_path)?;
+        }
+    }
+
+    // Calculate total size after (backup files)
+    let mut total_size_after: u64 = 0;
+    if let Ok(entries) = std::fs::read_dir(&backup_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            total_size_after += entry.path().metadata().map(|m| m.len()).unwrap_or(0);
+        }
+    }
+
+    // Save consolidated history as gzip
+    let migrated_path = sessions_dir.join("history_migrated.json.gz");
+    save_json_gz(&migrated_path, &all_records)?;
+
+    // Calculate new file size
+    let new_size = migrated_path.metadata().map(|m| m.len()).unwrap_or(0);
+    total_size_after += new_size;
+
+    let saved = if total_size_before > total_size_after {
+        total_size_before - total_size_after
+    } else {
+        0
+    };
+
+    println!(
+        "✅ Sanitization complete: {} records consolidated, saved {} bytes",
+        all_records.len(),
+        saved
+    );
+
+    Ok(saved)
 }
 
 use rand::Rng;

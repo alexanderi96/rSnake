@@ -13,6 +13,7 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v7"] }
 clap = { version = "4.5", features = ["derive"] }
 toml = "0.8"
+flate2 = "1.0"
 
 # Profiling (opzionale)
 pprof = { version = "0.13", features = ["flamegraph", "protobuf-codec"], optional = true }

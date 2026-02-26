@@ -27,9 +27,9 @@ pub struct GenerationState {
     /// Total frames in this generation
     pub total_frames: u64,
     /// Best fitness this generation
-    pub best_fitness: f64,
+    pub best_fitness: f32,
     /// Average fitness this generation
-    pub avg_fitness: f64,
+    pub avg_fitness: f32,
 }
 
 impl GenerationState {
@@ -55,9 +55,9 @@ impl GenerationState {
     }
 
     /// Get elapsed time for this generation
-    pub fn elapsed_secs(&self) -> f64 {
+    pub fn elapsed_secs(&self) -> f32 {
         self.start_time
-            .map(|t| t.elapsed().as_secs_f64())
+            .map(|t| t.elapsed().as_secs_f32())
             .unwrap_or(0.0)
     }
 
@@ -67,13 +67,13 @@ impl GenerationState {
             return;
         }
 
-        let total_fitness: f64 = self.population.iter().map(|i| i.fitness).sum();
-        self.avg_fitness = total_fitness / self.population.len() as f64;
+        let total_fitness: f32 = self.population.iter().map(|i| i.fitness).sum();
+        self.avg_fitness = total_fitness / self.population.len() as f32;
         self.best_fitness = self
             .population
             .iter()
             .map(|i| i.fitness)
-            .fold(0.0, f64::max);
+            .fold(0.0_f32, f32::max);
     }
 }
 
@@ -214,13 +214,13 @@ impl EvolutionManager {
 pub struct GenerationRecord {
     pub generation: u32,
     pub timestamp: u64,
-    pub avg_fitness: f64,
-    pub best_fitness: f64,
+    pub avg_fitness: f32,
+    pub best_fitness: f32,
     pub alive_count: usize,
     pub population_size: usize,
-    pub elapsed_secs: f64,
+    pub elapsed_secs: f32,
     pub total_frames: u64,
-    pub archive_coverage: f64,
+    pub archive_coverage: f32,
     pub archive_filled: usize,
     pub insertions: usize,
     #[serde(default)]

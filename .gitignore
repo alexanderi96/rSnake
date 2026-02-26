@@ -1,4 +1,5 @@
 /target
 .tmp
 *.svg
-/runs
+/runs*
+dhat-heap.json

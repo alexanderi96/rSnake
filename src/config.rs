@@ -11,11 +11,11 @@ pub struct Hyperparameters {
     pub population_size: usize,
 
     /// Probabilità (0.0 - 1.0) che un gene subisca una variazione casuale
-    pub mutation_rate: f64,
+    pub mutation_rate: f32,
     /// Entità massima della variazione applicata a un gene mutato
-    pub mutation_strength: f64,
+    pub mutation_strength: f32,
     /// Probabilità (0.0 - 1.0) di combinare due genitori (crossover) invece di clonarne uno
-    pub crossover_rate: f64,
+    pub crossover_rate: f32,
 
     /// Frame di sopravvivenza garantiti dopo aver mangiato una mela (o allo spawn)
     pub base_steps_without_food: u32,

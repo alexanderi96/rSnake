@@ -31,9 +31,9 @@ pub const GENOME_SIZE: usize = (INPUT_SIZE * HIDDEN_SIZE)
 /// RGB Color representation for genetic inheritance
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct GenomeColor {
-    pub r: f64,
-    pub g: f64,
-    pub b: f64,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
 }
 
 impl GenomeColor {
@@ -42,14 +42,14 @@ impl GenomeColor {
         use rand::Rng;
         let mut rng = rand::thread_rng();
         Self {
-            r: rng.gen::<f64>(),
-            g: rng.gen::<f64>(),
-            b: rng.gen::<f64>(),
+            r: rng.gen::<f32>(),
+            g: rng.gen::<f32>(),
+            b: rng.gen::<f32>(),
         }
     }
 
     /// Interpolate between two colors (for crossover)
-    pub fn lerp(&self, other: &GenomeColor, t: f64) -> Self {
+    pub fn lerp(&self, other: &GenomeColor, t: f32) -> Self {
         Self {
             r: self.r + (other.r - self.r) * t,
             g: self.g + (other.g - self.g) * t,
@@ -58,25 +58,20 @@ impl GenomeColor {
     }
 
     /// Apply small random variation (jitter) for mutation
-    pub fn mutate(&self, strength: f64) -> Self {
+    pub fn mutate(&self, strength: f32) -> Self {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
-        let mut jitter = |val: f64| -> f64 {
-            let delta = (rng.gen::<f64>() * 2.0 - 1.0) * strength;
-            (val + delta).clamp(0.0, 1.0)
-        };
-
         Self {
-            r: jitter(self.r),
-            g: jitter(self.g),
-            b: jitter(self.b),
+            r: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.r).clamp(0.0, 1.0),
+            g: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.g).clamp(0.0, 1.0),
+            b: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.b).clamp(0.0, 1.0),
         }
     }
 
     /// Convert to Bevy Color
     pub fn to_bevy_color(&self) -> bevy::prelude::Color {
-        bevy::prelude::Color::rgb(self.r as f32, self.g as f32, self.b as f32)
+        bevy::prelude::Color::rgb(self.r, self.g, self.b)
     }
 }
 
@@ -107,8 +102,8 @@ impl Default for Action {
 /// Weights are indexed directly via byte offsets to avoid redundant allocations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Brain {
-    /// Genome: flat vector of all weights and biases
-    pub genome: Vec<f64>,
+    /// Genome: flat vector of all weights and biases (f32 for memory efficiency)
+    pub genome: Vec<f32>,
 }
 
 impl Brain {
@@ -117,15 +112,15 @@ impl Brain {
         let mut rng = rand::thread_rng();
         use rand::Rng;
 
-        let genome: Vec<f64> = (0..GENOME_SIZE)
-            .map(|_| rng.gen::<f64>() * 2.0 - 1.0) // Xavier-like initialization
+        let genome: Vec<f32> = (0..GENOME_SIZE)
+            .map(|_| rng.gen::<f32>() * 2.0 - 1.0) // Xavier-like initialization
             .collect();
 
         Self { genome }
     }
 
     /// Create a brain from a flat genome vector
-    pub fn from_genome(genome: &[f64]) -> Self {
+    pub fn from_genome(genome: &[f32]) -> Self {
         assert_eq!(
             genome.len(),
             GENOME_SIZE,
@@ -140,12 +135,12 @@ impl Brain {
     }
 
     /// Get the genome reference
-    pub fn get_genome(&self) -> &[f64] {
+    pub fn get_genome(&self) -> &[f32] {
         &self.genome
     }
 
     /// Forward pass returning raw output values (for debugging/analysis)
-    pub fn forward(&self, input: &[f32; STATE_SIZE]) -> [f64; OUTPUT_SIZE] {
+    pub fn forward(&self, input: &[f32; STATE_SIZE]) -> [f32; OUTPUT_SIZE] {
         let g = &self.genome;
 
         // Offsets (must match GENOME_SIZE layout comments)
@@ -157,17 +152,17 @@ impl Brain {
         let bo_off = who_off + HIDDEN2_SIZE * OUTPUT_SIZE;
 
         // Layer 1: INPUT → HIDDEN1 (ReLU)
-        let mut hidden1 = [0.0f64; HIDDEN_SIZE];
+        let mut hidden1 = [0.0f32; HIDDEN_SIZE];
         for h in 0..HIDDEN_SIZE {
             let mut sum = g[bh1_off + h];
             for i in 0..INPUT_SIZE {
-                sum += g[wih_off + h * INPUT_SIZE + i] * input[i] as f64;
+                sum += g[wih_off + h * INPUT_SIZE + i] * input[i];
             }
             hidden1[h] = relu(sum);
         }
 
         // Layer 2: HIDDEN1 → HIDDEN2 (ReLU)
-        let mut hidden2 = [0.0f64; HIDDEN2_SIZE];
+        let mut hidden2 = [0.0f32; HIDDEN2_SIZE];
         for h in 0..HIDDEN2_SIZE {
             let mut sum = g[bh2_off + h];
             for i in 0..HIDDEN_SIZE {
@@ -214,16 +209,16 @@ impl Brain {
     }
 
     /// Create a mutated copy of this brain
-    pub fn mutate(&self, mutation_rate: f64, mutation_strength: f64) -> Self {
+    pub fn mutate(&self, mutation_rate: f32, mutation_strength: f32) -> Self {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
-        let new_genome: Vec<f64> = self
+        let new_genome: Vec<f32> = self
             .genome
             .iter()
             .map(|&w| {
-                if rng.gen::<f64>() < mutation_rate {
-                    let mutation = rng.gen::<f64>() * 2.0 - 1.0;
+                if rng.gen::<f32>() < mutation_rate {
+                    let mutation = rng.gen::<f32>() * 2.0 - 1.0;
                     w + mutation * mutation_strength
                 } else {
                     w
@@ -239,11 +234,11 @@ impl Brain {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
-        let new_genome: Vec<f64> = self
+        let new_genome: Vec<f32> = self
             .genome
             .iter()
             .zip(other.genome.iter())
-            .map(|(&a, &b)| if rng.gen::<f64>() < 0.5 { a } else { b })
+            .map(|(&a, &b)| if rng.gen::<f32>() < 0.5 { a } else { b })
             .collect();
 
         Self::from_genome(&new_genome)
@@ -252,7 +247,7 @@ impl Brain {
 
 /// ReLU activation function
 #[inline]
-fn relu(x: f64) -> f64 {
+fn relu(x: f32) -> f32 {
     if x > 0.0 {
         x
     } else {
@@ -272,13 +267,13 @@ pub struct Individual {
     /// Archive color (from parent cell fitness: blue→green gradient)
     pub archive_color: GenomeColor,
     /// Fitness score (apples * 1000 + frames)
-    pub fitness: f64,
+    pub fitness: f32,
     /// Behavioral descriptor 1: Path directness (how efficiently snake reaches food)
     #[serde(rename = "congestion")]
-    pub path_directness: f64,
+    pub path_directness: f32,
     /// Behavioral descriptor 2: Body avoidance (how well snake navigates around itself)
     #[serde(rename = "agility")]
-    pub body_avoidance: f64,
+    pub body_avoidance: f32,
     /// Frames survived
     pub frames_survived: u32,
     /// Apples eaten
@@ -306,7 +301,7 @@ impl Individual {
 
     /// Create an individual from a genome (used in evolution)
     #[allow(dead_code)]
-    pub fn from_genome(id: usize, genome: &[f64]) -> Self {
+    pub fn from_genome(id: usize, genome: &[f32]) -> Self {
         Self {
             id,
             brain: Brain::from_genome(genome),
@@ -324,7 +319,7 @@ impl Individual {
     /// Create an individual from a genome with archive color (from parent cell fitness)
     pub fn from_genome_with_archive_color(
         id: usize,
-        genome: &[f64],
+        genome: &[f32],
         color: GenomeColor,
         archive_color: GenomeColor,
     ) -> Self {

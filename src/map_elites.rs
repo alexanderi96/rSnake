@@ -6,8 +6,10 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::brain::Individual;
+use crate::snake::{load_json_gz, save_json_gz};
 
 /// Number of bins for each behavioral descriptor dimension
 pub const GRID_RESOLUTION: usize = 20;
@@ -66,7 +68,7 @@ pub struct MapElitesArchive {
     pub total_insertions: u64,
     pub successful_insertions: u64,
     /// Best fitness ever seen
-    pub best_fitness: f64,
+    pub best_fitness: f32,
     /// Generation counter
     pub generation: u32,
     /// Name of first behavioral descriptor (X-axis)
@@ -108,9 +110,9 @@ impl MapElitesArchive {
 
     /// Discretize a behavioral descriptor value into a grid bin
     /// Value should be in [0.0, 1.0]
-    fn discretize(&self, value: f64) -> usize {
+    fn discretize(&self, value: f32) -> usize {
         let clamped = value.clamp(0.0, 1.0);
-        let bin = (clamped * (self.resolution - 1) as f64).round() as usize;
+        let bin = (clamped * (self.resolution - 1) as f32).round() as usize;
         bin.min(self.resolution - 1)
     }
 
@@ -159,16 +161,16 @@ impl MapElitesArchive {
     }
 
     /// Get the coverage ratio (filled / total)
-    pub fn coverage(&self) -> f64 {
-        self.grid.len() as f64 / self.capacity() as f64
+    pub fn coverage(&self) -> f32 {
+        self.grid.len() as f32 / self.capacity() as f32
     }
 
     /// Generate a new population by selecting and varying elites
     pub fn generate_population(
         &self,
         population_size: usize,
-        mutation_rate: f64,
-        mutation_strength: f64,
+        mutation_rate: f32,
+        mutation_strength: f32,
     ) -> Vec<Individual> {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -187,16 +189,16 @@ impl MapElitesArchive {
         let elites: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
 
         // Build fitness-weighted index using sqrt to preserve diversity
-        let weights: Vec<f64> = elites
+        let weights: Vec<f32> = elites
             .iter()
             .map(|(_, ind)| ind.fitness.max(1.0).powf(0.5))
             .collect();
-        let total_weight: f64 = weights.iter().sum();
-        let normalized_weights: Vec<f64> = weights.iter().map(|w| w / total_weight).collect();
+        let total_weight: f32 = weights.iter().sum();
+        let normalized_weights: Vec<f32> = weights.iter().map(|w| w / total_weight).collect();
 
         // Weighted selection closure
         let weighted_select = |rng: &mut rand::rngs::ThreadRng| -> usize {
-            let r: f64 = rng.gen();
+            let r: f32 = rng.gen();
             let mut cumulative = 0.0;
             for (i, &w) in normalized_weights.iter().enumerate() {
                 cumulative += w;
@@ -208,7 +210,7 @@ impl MapElitesArchive {
         };
 
         // Color mutation strength (smaller than brain mutation)
-        const COLOR_MUTATION_STRENGTH: f64 = 0.05;
+        const COLOR_MUTATION_STRENGTH: f32 = 0.05;
 
         for id in 0..population_size {
             // Select elite using fitness-weighted selection
@@ -222,11 +224,11 @@ impl MapElitesArchive {
             let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
 
             // Calculate archive_color from parent cell fitness
-            let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0) as f32;
+            let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
             let archive_color = crate::brain::GenomeColor {
                 r: 0.1,
-                g: normalized as f64,
-                b: (1.0 - normalized) as f64,
+                g: normalized,
+                b: 1.0 - normalized,
             };
 
             let mut individual = Individual::from_genome_with_archive_color(
@@ -247,9 +249,9 @@ impl MapElitesArchive {
     pub fn generate_population_with_crossover(
         &self,
         population_size: usize,
-        mutation_rate: f64,
-        mutation_strength: f64,
-        crossover_rate: f64,
+        mutation_rate: f32,
+        mutation_strength: f32,
+        crossover_rate: f32,
     ) -> Vec<Individual> {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -265,16 +267,16 @@ impl MapElitesArchive {
         let elites: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
 
         // Build fitness-weighted index using sqrt to preserve diversity
-        let weights: Vec<f64> = elites
+        let weights: Vec<f32> = elites
             .iter()
             .map(|(_, ind)| ind.fitness.max(1.0).powf(0.5))
             .collect();
-        let total_weight: f64 = weights.iter().sum();
-        let normalized_weights: Vec<f64> = weights.iter().map(|w| w / total_weight).collect();
+        let total_weight: f32 = weights.iter().sum();
+        let normalized_weights: Vec<f32> = weights.iter().map(|w| w / total_weight).collect();
 
         // Weighted selection closure
         let weighted_select = |rng: &mut rand::rngs::ThreadRng| -> usize {
-            let r: f64 = rng.gen();
+            let r: f32 = rng.gen();
             let mut cumulative = 0.0;
             for (i, &w) in normalized_weights.iter().enumerate() {
                 cumulative += w;
@@ -286,10 +288,10 @@ impl MapElitesArchive {
         };
 
         // Color mutation strength (smaller than brain mutation)
-        const COLOR_MUTATION_STRENGTH: f64 = 0.05;
+        const COLOR_MUTATION_STRENGTH: f32 = 0.05;
 
         for id in 0..population_size {
-            let individual = if rng.gen::<f64>() < crossover_rate && elites.len() >= 2 {
+            let individual = if rng.gen::<f32>() < crossover_rate && elites.len() >= 2 {
                 // Crossover between two fitness-weighted selected elites
                 let idx1 = weighted_select(&mut rng);
                 let idx2 = weighted_select(&mut rng);
@@ -301,17 +303,16 @@ impl MapElitesArchive {
                 let mutated_brain = child_brain.mutate(mutation_rate, mutation_strength);
 
                 // Color inheritance: blend from parents + mutation
-                let blend_factor = rng.gen::<f64>();
+                let blend_factor = rng.gen::<f32>();
                 let child_color = parent1.color.lerp(&parent2.color, blend_factor);
                 let mutated_color = child_color.mutate(COLOR_MUTATION_STRENGTH);
 
                 // Archive color from parent1's cell fitness
-                let normalized =
-                    (parent1.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0) as f32;
+                let normalized = (parent1.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
                 let archive_color = crate::brain::GenomeColor {
                     r: 0.1,
-                    g: normalized as f64,
-                    b: (1.0 - normalized) as f64,
+                    g: normalized,
+                    b: 1.0 - normalized,
                 };
 
                 let mut ind = Individual::from_genome_with_archive_color(
@@ -332,12 +333,11 @@ impl MapElitesArchive {
                 let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
 
                 // Archive color from parent's cell fitness
-                let normalized =
-                    (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0) as f32;
+                let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
                 let archive_color = crate::brain::GenomeColor {
                     r: 0.1,
-                    g: normalized as f64,
-                    b: (1.0 - normalized) as f64,
+                    g: normalized,
+                    b: 1.0 - normalized,
                 };
 
                 let mut ind = Individual::from_genome_with_archive_color(
@@ -372,17 +372,28 @@ impl MapElitesArchive {
         insertions
     }
 
-    /// Save archive to file
+    /// Save archive to file (gzip compressed)
     pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        let path_obj = Path::new(path);
+
+        // Use gzip compression
+        save_json_gz(path_obj, self)?;
         Ok(())
     }
 
-    /// Load archive from file
+    /// Load archive from file (supports both .json and .json.gz)
     pub fn load(path: &str) -> std::io::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let archive: MapElitesArchive = serde_json::from_str(&json)?;
+        let path_obj = Path::new(path);
+
+        // Try loading with gzip support
+        let archive: MapElitesArchive = if path_obj.extension().map_or(false, |ext| ext == "gz") {
+            load_json_gz(path_obj)?
+        } else {
+            // Try plain JSON first
+            let content = std::fs::read_to_string(path)?;
+            serde_json::from_str(&content)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+        };
 
         // Verify genome size compatibility with current brain architecture
         if let Some(ind) = archive.grid.values().next() {
@@ -502,9 +513,9 @@ mod tests {
         // Add some elites
         for i in 0..5 {
             let mut individual = Individual::new_random(i);
-            individual.path_directness = i as f64 / 10.0;
-            individual.body_avoidance = i as f64 / 10.0;
-            individual.fitness = (i * 100) as f64;
+            individual.path_directness = i as f32 / 10.0;
+            individual.body_avoidance = i as f32 / 10.0;
+            individual.fitness = (i * 100) as f32;
             archive.insert(individual);
         }
 

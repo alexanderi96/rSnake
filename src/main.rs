@@ -48,11 +48,11 @@ pub struct CliArgs {
     #[arg(long)]
     pub population_size: Option<usize>,
     #[arg(long)]
-    pub mutation_rate: Option<f64>,
+    pub mutation_rate: Option<f32>,
     #[arg(long)]
-    pub mutation_strength: Option<f64>,
+    pub mutation_strength: Option<f32>,
     #[arg(long)]
-    pub crossover_rate: Option<f64>,
+    pub crossover_rate: Option<f32>,
     #[arg(long)]
     pub base_steps_without_food: Option<u32>,
     #[arg(long)]
@@ -355,7 +355,7 @@ fn setup(
 
     // Extract behavioral values
     let best_fitness = evo_manager.generation_state.best_fitness.max(1.0);
-    let behaviors: Vec<(f64, f64, f64, f64)> = individuals
+    let behaviors: Vec<(f32, f32, f32, f32)> = individuals
         .iter()
         .map(|i| (i.path_directness, i.body_avoidance, i.fitness, best_fitness))
         .collect();
@@ -536,8 +536,8 @@ fn apply_moves_serial(
             snake.steps_without_food += 1;
             snake.frames_survived += 1;
             snake.visited_cells.insert((new_head.x, new_head.y));
-            let body_len = snake.snake.len() as f64;
-            let visited = snake.visited_cells.len().max(1) as f64;
+            let body_len = snake.snake.len() as f32;
+            let visited = snake.visited_cells.len().max(1) as f32;
             snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
         }
 
@@ -548,8 +548,8 @@ fn apply_moves_serial(
             snake.body_set.insert(new_head);
             if ate_food {
                 if snake.food_spawn_distance > 0 {
-                    let ratio = (snake.food_spawn_distance as f64
-                        / snake.steps_without_food as f64)
+                    let ratio = (snake.food_spawn_distance as f32
+                        / snake.steps_without_food as f32)
                         .clamp(0.0, 1.0);
                     snake.path_directness_sum += ratio;
                 }
@@ -650,10 +650,11 @@ fn end_generation(
         global_history.all_time_high_score = gen_high_score;
     }
 
-    global_history.records.push(record.clone());
+    global_history.push(record.clone());
 
-    if global_history.records.len() > 10_000 {
-        global_history.records.drain(0..5_000);
+    // Limit current session records to prevent memory growth
+    if global_history.current_session.len() > 10_000 {
+        global_history.current_session.drain(0..5_000);
     }
 
     println!(

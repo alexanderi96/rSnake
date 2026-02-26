@@ -3593,6 +3593,7 @@ dependencies = [
  "chrono",
  "clap",
  "dhat",
+ "flate2",
  "pprof",
  "rand",
  "rayon",
