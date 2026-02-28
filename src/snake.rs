@@ -687,7 +687,7 @@ pub fn get_or_create_run_dir(force_new: bool) -> PathBuf {
 
 pub fn new_session_path(run_dir: &std::path::Path) -> PathBuf {
     let uuid = Uuid::now_v7();
-    run_dir.join("sessions").join(format!("{}.json", uuid))
+    run_dir.join("sessions").join(format!("{}.json.gz", uuid))
 }
 
 pub fn load_global_history(run_dir: &std::path::Path) -> (GlobalTrainingHistory, u32) {
@@ -710,20 +710,7 @@ pub fn load_global_history(run_dir: &std::path::Path) -> (GlobalTrainingHistory,
 
         for path in paths {
             // Try to load as gzip first, then as plain JSON
-            let session_result = if is_gzipped(&path) {
-                load_json_gz::<TrainingSession>(&path)
-            } else {
-                std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|content| serde_json::from_str::<TrainingSession>(&content).ok())
-                    .map(|s| Ok(s))
-                    .unwrap_or_else(|| {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Failed to parse session",
-                        ))
-                    })
-            };
+            let session_result = load_json_gz::<TrainingSession>(&path);
 
             if let Ok(session) = session_result {
                 global_history.accumulated_time_secs += session.total_time_secs;
@@ -792,14 +779,16 @@ pub fn save_json_gz<T: Serialize>(path: &std::path::Path, data: &T) -> std::io::
 pub fn load_json_gz<T: for<'de> Deserialize<'de>>(path: &std::path::Path) -> std::io::Result<T> {
     let content = std::fs::read(path)?;
 
-    // Try gzip first if extension is .gz
-    if path.extension().map_or(false, |ext| ext == "gz") {
+    // Detect gzip via magic bytes (0x1f 0x8b), ignoring extension
+    let is_gzip = content.len() >= 2 && content[0] == 0x1f && content[1] == 0x8b;
+
+    if is_gzip {
         let decoder = GzDecoder::new(&content[..]);
         let reader = std::io::BufReader::new(decoder);
         return Ok(serde_json::from_reader(reader)?);
     }
 
-    // Otherwise try plain JSON
+    // Otherwise treat as plain JSON
     Ok(serde_json::from_slice(&content)?)
 }
 

@@ -173,8 +173,11 @@ impl EvolutionManager {
     /// Save the archive to disk
     /// Uses false to retrieve the current (latest) run directory
     pub fn save_archive(&self) {
-        let path = crate::snake::get_or_create_run_dir(false).join("archive.json");
-        if let Err(e) = self.archive.save(path.to_str().unwrap_or("archive.json")) {
+        let path = crate::snake::get_or_create_run_dir(false).join("archive.json.gz");
+        if let Err(e) = self
+            .archive
+            .save(path.to_str().unwrap_or("archive.json.gz"))
+        {
             eprintln!("⚠️ Error saving archive: {}", e);
         } else {
             println!("💾 Archive saved to: {}", path.display());
@@ -184,10 +187,10 @@ impl EvolutionManager {
     /// Load the archive from a specific directory
     /// Updated to accept the Path from main.rs setup
     pub fn load_archive(&mut self, run_dir: &std::path::Path) {
-        let path = run_dir.join("archive.json");
+        let path = run_dir.join("archive.json.gz");
 
         if path.exists() {
-            match MapElitesArchive::load(path.to_str().unwrap_or("archive.json")) {
+            match MapElitesArchive::load(path.to_str().unwrap_or("archive.json.gz")) {
                 Ok(archive) => {
                     self.archive = archive;
                     println!(

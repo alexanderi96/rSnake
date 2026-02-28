@@ -1,7 +1,7 @@
 # Hyperparameters for MAP-Elites Snake Training
 # Load with: cargo run -- --config config.toml
 
-population_size =  4096 #24576 #8192 #4096           # Snakes per generation (non più limitato ai core)
+population_size =  8192 #24576 #8192 #4096           # Snakes per generation (non più limitato ai core)
 mutation_rate = 0.05
 mutation_strength = 0.3
 crossover_rate = 0.3
