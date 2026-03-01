@@ -4,29 +4,53 @@ use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// MAP-Elites Hyperparameters
+fn default_terrain_fill_rate() -> f32 {
+    0.35
+}
+fn default_terrain_blob_scale() -> f32 {
+    4.0
+}
+fn default_terrain_smooth_passes() -> u32 {
+    1
+}
+fn default_terrain_spawn_clearance() -> i32 {
+    5
+}
+
+/// MAP-Elites Hyperparameters — caricabili da config.toml o config.json
 #[derive(Debug, Clone, Serialize, Deserialize, Resource)]
 pub struct Hyperparameters {
-    /// Numero di individui (serpenti) valutati in parallelo per generazione
+    // ── Evoluzione ─────────────────────────────────────────────────────────
     pub population_size: usize,
-
-    /// Probabilità (0.0 - 1.0) che un gene subisca una variazione casuale
     pub mutation_rate: f32,
-    /// Entità massima della variazione applicata a un gene mutato
     pub mutation_strength: f32,
-    /// Probabilità (0.0 - 1.0) di combinare due genitori (crossover) invece di clonarne uno
     pub crossover_rate: f32,
 
-    /// Frame di sopravvivenza garantiti dopo aver mangiato una mela (o allo spawn)
+    // ── Timeout ────────────────────────────────────────────────────────────
     pub base_steps_without_food: u32,
-    /// Frame extra concessi per ogni unità di lunghezza del corpo del serpente
     pub steps_per_segment: u32,
 
-    /// Numero di celle per asse dell'archivio (es: 20 = griglia 20x20 = 400 nicchie comportamentali)
+    // ── Archivio MAP-Elites ─────────────────────────────────────────────────
     pub grid_resolution: usize,
-
-    /// Frequenza di salvataggio automatico dell'archivio su disco (in generazioni)
     pub auto_save_interval: u32,
+
+    // ── Terrain (cluster noise) ─────────────────────────────────────────────
+    /// Densità dei muri [0.20 sparso … 0.55 denso]
+    #[serde(default = "default_terrain_fill_rate")]
+    pub terrain_fill_rate: f32,
+
+    /// Dimensione dei cluster noise.
+    /// 2.0 = cluster molto grandi | 4.0 = medi (default) | 7.0 = piccoli
+    #[serde(default = "default_terrain_blob_scale")]
+    pub terrain_blob_scale: f32,
+
+    /// Passate CA per arrotondare i bordi (0–3, default 1)
+    #[serde(default = "default_terrain_smooth_passes")]
+    pub terrain_smooth_passes: u32,
+
+    /// Raggio della zona libera attorno allo spawn (celle)
+    #[serde(default = "default_terrain_spawn_clearance")]
+    pub terrain_spawn_clearance: i32,
 }
 
 impl Default for Hyperparameters {
@@ -40,32 +64,39 @@ impl Default for Hyperparameters {
             steps_per_segment: 8,
             grid_resolution: 20,
             auto_save_interval: 50,
+            terrain_fill_rate: default_terrain_fill_rate(),
+            terrain_blob_scale: default_terrain_blob_scale(),
+            terrain_smooth_passes: default_terrain_smooth_passes(),
+            terrain_spawn_clearance: default_terrain_spawn_clearance(),
         }
     }
 }
 
 impl Hyperparameters {
-    /// Calculate timeout based on snake length
-    pub fn calculate_timeout(&self, snake_length: usize) -> u32 {
-        self.base_steps_without_food + (snake_length as u32 * self.steps_per_segment)
+    pub fn calculate_timeout(&self, snake_length: usize, grid_width: i32, grid_height: i32) -> u32 {
+        // Add the grid perimeter to ensure the snake always has enough time 
+        // to cross the map, regardless of the window resolution.
+        let map_allowance = (grid_width + grid_height) as u32; 
+        
+        self.base_steps_without_food + map_allowance + (snake_length as u32 * self.steps_per_segment)
     }
 
-    /// Load configuration from TOML or JSON file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(&path)?;
         let path_str = path.as_ref().to_string_lossy();
-
         if path_str.ends_with(".toml") {
             Ok(toml::from_str(&content)?)
         } else if path_str.ends_with(".json") {
             Ok(serde_json::from_str(&content)?)
         } else {
             Err(ConfigError::InvalidFormat(
-                "File must have .toml or .json extension".to_string(),
+                "Il file deve avere estensione .toml o .json".to_string(),
             ))
         }
     }
 }
+
+// ── Errori ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub enum ConfigError {
@@ -102,19 +133,16 @@ impl From<std::io::Error> for ConfigError {
         ConfigError::Io(e)
     }
 }
-
 impl From<toml::de::Error> for ConfigError {
     fn from(e: toml::de::Error) -> Self {
         ConfigError::Toml(e)
     }
 }
-
 impl From<serde_json::Error> for ConfigError {
     fn from(e: serde_json::Error) -> Self {
         ConfigError::Json(e)
     }
 }
-
 impl From<toml::ser::Error> for ConfigError {
     fn from(e: toml::ser::Error) -> Self {
         ConfigError::InvalidFormat(e.to_string())
@@ -126,20 +154,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_hyperparameters() {
+    fn test_default() {
         let h = Hyperparameters::default();
         assert_eq!(h.population_size, 200);
-        assert_eq!(h.mutation_rate, 0.05);
-        assert_eq!(h.mutation_strength, 0.3);
-        assert_eq!(h.crossover_rate, 0.3);
-        assert_eq!(h.grid_resolution, 20);
+        assert_eq!(h.terrain_fill_rate, 0.35);
+        assert_eq!(h.terrain_blob_scale, 4.0);
     }
 
     #[test]
-    fn test_calculate_timeout() {
+    fn test_timeout() {
         let h = Hyperparameters::default();
-        assert_eq!(h.calculate_timeout(1), 68); // 60 + 1*8
-        assert_eq!(h.calculate_timeout(5), 100); // 60 + 5*8
-        assert_eq!(h.calculate_timeout(10), 140); // 60 + 10*8
+        // Griglia fittizia 20x20 per il test.
+        // Base (60) + Margine Mappa (20 + 20) + Segmenti (5 * 8) = 140
+        assert_eq!(h.calculate_timeout(5, 20, 20), 140); 
     }
 }

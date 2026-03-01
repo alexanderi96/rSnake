@@ -682,6 +682,7 @@ pub fn on_window_resize_apply(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mesh_cache: Res<MeshCache>,
     _gen_seed: Option<Res<crate::snake::GenerationSeed>>,
+    config: Option<Res<crate::config::Hyperparameters>>,
     mut commands: Commands,
 ) {
     // Ignore all resizes during Wayland/Hyprland startup window placement
@@ -733,8 +734,13 @@ pub fn on_window_resize_apply(
     cell_map.grid_height = new_height;
     cell_map.rebuilding = true; // Skip next render frame, entities not yet in World
 
-    // Regenerate seed for new grid
-    let new_seed = crate::snake::GenerationSeed::new_for_grid(&grid);
+    // Regenerate seed for new grid, preserving user config if available
+    let new_seed = if let Some(ref cfg) = config {
+        crate::snake::GenerationSeed::new_for_grid_with_config(&grid, cfg)
+    } else {
+        crate::snake::GenerationSeed::new_for_grid(&grid)
+    };
+    grid_map.apply_terrain(&new_seed.terrain); // apply terrain to resized map
     let total_snakes = game.snakes.len();
     for snake in game.snakes.iter_mut() {
         snake.reset_with_seed(&grid, total_snakes, &new_seed, 0.0, 0.0, 0.0, 1.0);
@@ -752,6 +758,7 @@ pub fn on_window_resize_apply(
 pub fn render_system(
     mut commands: Commands,
     game: Res<GameState>,
+    grid_map: Res<GridMap>, // terrain walls
     windows: Query<&Window>,
     _mesh_cache: Res<MeshCache>,
     _materials: ResMut<Assets<ColorMaterial>>, // Unused - palette pre-allocates all materials
@@ -819,9 +826,24 @@ pub fn render_system(
         .map(|ind| ind.fitness)
         .collect();
 
+    // === PHASE 0: Render terrain walls ===
+    // Terrain is static for the whole generation; insert into cell_map with a fixed color.
+const WALL_COLOR: Color = Color::rgb(0.50, 0.22, 0.15);
+    cell_map.cells.clear();
+    for y in 0..grid_map.height {
+        for x in 0..grid_map.width {
+            let idx = (y * grid_map.width + x) as usize;
+            if grid_map.terrain[idx] {
+                cell_map
+                    .cells
+                    .entry((x, y))
+                    .or_insert((WALL_COLOR, f32::INFINITY));
+            }
+        }
+    }
+
     // === PHASE 1: Build cell color map ===
     // For each occupied cell, keep only the color of the highest-fitness snake
-    cell_map.cells.clear();
     for snake in game.snakes.iter() {
         if snake.is_game_over {
             continue;

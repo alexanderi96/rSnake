@@ -55,19 +55,23 @@ pub struct GenerationSeed {
     pub spawn_pos: Position,
     pub spawn_dir: Direction,
     pub food_sequence: Vec<Position>, // pre-generata, lunga FOOD_SEQ_LEN
+    pub terrain: Vec<bool>,
 }
 
 pub const FOOD_SEQ_LEN: usize = 1000;
 
 impl GenerationSeed {
-    pub fn new_for_grid(grid: &GridDimensions) -> Self {
+    pub fn new_for_grid_with_config(
+        grid: &GridDimensions,
+        config: &crate::config::Hyperparameters,
+    ) -> Self {
         use rand::rngs::SmallRng;
         use rand::{Rng, SeedableRng};
 
         let seed: u64 = rand::thread_rng().gen();
         let mut rng = SmallRng::seed_from_u64(seed);
 
-        let margin = 3;
+        let margin = 4i32;
         let spawn_pos = Position {
             x: rng.gen_range(margin..(grid.width - margin)),
             y: rng.gen_range(margin..(grid.height - margin)),
@@ -79,24 +83,64 @@ impl GenerationSeed {
             _ => Direction::Right,
         };
 
-        let food_sequence: Vec<Position> = (0..FOOD_SEQ_LEN)
-            .map(|_| Position {
-                x: rng.gen_range(0..grid.width),
-                y: rng.gen_range(0..grid.height),
-            })
-            .collect();
+        let terrain = crate::terrain::generate(
+            seed,
+            grid.width,
+            grid.height,
+            config.terrain_fill_rate,
+            config.terrain_blob_scale,
+            config.terrain_smooth_passes,
+            spawn_pos,
+            config.terrain_spawn_clearance,
+        );
+
+        let food_sequence = build_food_sequence(&mut rng, grid, &terrain);
 
         Self {
             seed,
             spawn_pos,
             spawn_dir,
             food_sequence,
+            terrain,
         }
+    }
+
+    pub fn new_for_grid(grid: &GridDimensions) -> Self {
+        Self::new_for_grid_with_config(grid, &crate::config::Hyperparameters::default())
     }
 
     pub fn food_at(&self, index: usize) -> Position {
         self.food_sequence[index % FOOD_SEQ_LEN]
     }
+}
+
+fn build_food_sequence(
+    rng: &mut impl rand::RngCore,
+    grid: &GridDimensions,
+    terrain: &[bool],
+) -> Vec<Position> {
+    use rand::Rng;
+    let mut seq = Vec::with_capacity(FOOD_SEQ_LEN);
+    let mut attempts = 0usize;
+    while seq.len() < FOOD_SEQ_LEN && attempts < FOOD_SEQ_LEN * 20 {
+        attempts += 1;
+        let pos = Position {
+            x: rng.gen_range(1..(grid.width - 1)),
+            y: rng.gen_range(1..(grid.height - 1)),
+        };
+        let idx = (pos.y * grid.width + pos.x) as usize;
+        if idx < terrain.len() && !terrain[idx] {
+            seq.push(pos);
+        }
+    }
+    let centre = Position {
+        x: grid.width / 2,
+        y: grid.height / 2,
+    };
+    while seq.len() < FOOD_SEQ_LEN {
+        seq.push(centre);
+    }
+    seq
 }
 
 /// Configurazione rendering
@@ -155,6 +199,8 @@ pub struct GridMap {
     pub width: i32,
     pub height: i32,
     pub data: Vec<u8>,
+    /// Static terrain walls generated from seed (true = wall)
+    pub terrain: Vec<bool>,
 }
 
 impl GridMap {
@@ -164,11 +210,19 @@ impl GridMap {
             width,
             height,
             data: vec![0; size],
+            terrain: vec![false; size],
         }
     }
 
     pub fn clear(&mut self) {
         self.data.fill(0);
+        // NOTE: terrain is NOT cleared here — it persists for the whole generation
+    }
+
+    /// Copy terrain from a generated terrain slice into the map
+    pub fn apply_terrain(&mut self, terrain: &[bool]) {
+        debug_assert_eq!(terrain.len(), self.terrain.len());
+        self.terrain.copy_from_slice(terrain);
     }
 
     pub fn set(&mut self, x: i32, y: i32, value: u8) {
@@ -184,12 +238,19 @@ impl GridMap {
             return true;
         }
         let idx = (y * self.width + x) as usize;
+        if self.terrain[idx] {
+            return true;
+        }
         let cell = self.data[idx];
         cell != 0 && cell != (self_snake_id + 1) as u8
     }
 
+    /// Check collision against terrain walls only (no snake bodies)
     pub fn is_wall_collision(&self, x: i32, y: i32) -> bool {
-        x < 0 || x >= self.width || y < 0 || y >= self.height
+        if x < 0 || x >= self.width || y < 0 || y >= self.height {
+            return true;
+        }
+        self.terrain[(y * self.width + x) as usize]
     }
 }
 

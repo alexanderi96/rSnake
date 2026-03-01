@@ -1,12 +1,48 @@
-# Hyperparameters for MAP-Elites Snake Training
-# Load with: cargo run -- --config config.toml
+# MAP-Elites Snake — Configurazione
+# Avvio: cargo run --release -- --config config.toml
 
-population_size =  8192 #24576 #8192 #4096           # Snakes per generation (non più limitato ai core)
-mutation_rate = 0.05
-mutation_strength = 0.3
-crossover_rate = 0.3
-max_frames = 2000
-base_steps_without_food = 60
-steps_per_segment = 8
-grid_resolution = 20
+# ── Evoluzione ─────────────────────────────────────────────────────────────────
+
+# Serpenti per generazione.
+# L'archivio ha grid_resolution² = 400 nicchie (con res=20).
+# Sopra i 2000-4000 individui i ritorni diminuiscono: la probabilità di trovare
+# qualcosa di meglio dell'elite corrente non cresce linearmente.
+# 8192 ha senso su macchine con molti core; abbassa a 2048 se è lento.
+population_size = 8192
+
+mutation_rate     = 0.05   # P(mutazione per gene) — OK
+mutation_strength = 0.3    # entità della mutazione — OK
+crossover_rate    = 0.3    # P(crossover tra due elites) — OK
+
+# ── Timeout ────────────────────────────────────────────────────────────────────
+# Nota: max_frames NON è un parametro riconosciuto dalla struct Hyperparameters.
+# Il timeout effettivo per episodio è: base_steps_without_food + length * steps_per_segment
+# Con length media ~5: 60 + 5*8 = 100 frame per boccone, limite dinamico.
+# Se vuoi un cap assoluto, va aggiunto al codice (campo max_episode_frames).
+
+base_steps_without_food = 60   # frame dopo spawn o dopo aver mangiato
+steps_per_segment       = 8    # frame extra per ogni segmento di corpo
+
+# ── Archivio MAP-Elites ────────────────────────────────────────────────────────
+
+# 20×20 = 400 nicchie. Aumenta a 30 se population_size è alto (più diversità).
+grid_resolution    = 20
 auto_save_interval = 50
+
+# ── Terrain (cluster noise) ────────────────────────────────────────────────────
+# Generato una volta per generazione via fBm value noise.
+# Nessun maze, rooms, barriers: solo cluster organici.
+
+# Percentuale di celle che diventano muro.
+# 0.20 = aperto  |  0.35 = bilanciato (consigliato)  |  0.55 = denso
+terrain_fill_rate = 0.2
+
+# Dimensione dei cluster:
+# 2.0 = grandi isole  |  4.0 = medi (default)  |  7.0 = tanti piccoli ostacoli
+terrain_blob_scale = 4.0
+
+# Passate CA di rifinitura bordi: 0 = grezzi, 1 = consigliato, 3 = molto lisci
+terrain_smooth_passes = 1
+
+# Raggio (celle) della zona libera garantita attorno allo spawn
+terrain_spawn_clearance = 5

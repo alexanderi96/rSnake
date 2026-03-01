@@ -13,6 +13,7 @@ mod map_elites;
 mod profiling;
 
 mod snake;
+mod terrain;
 mod ui;
 
 use bevy::app::AppExit;
@@ -57,6 +58,10 @@ pub struct CliArgs {
     pub base_steps_without_food: Option<u32>,
     #[arg(long)]
     pub steps_per_segment: Option<u32>,
+    #[arg(long)]
+    pub terrain_blob_scale: Option<f32>,
+    #[arg(long)]
+    pub terrain_fill_rate: Option<f32>,
 
     /// Forza l'inizio di una nuova run (nuova cartella) ignorando quelle esistenti
     #[arg(long, default_value_t = false)]
@@ -100,6 +105,12 @@ fn build_hyperparameters(args: &CliArgs) -> Hyperparameters {
     }
     if let Some(v) = args.steps_per_segment {
         config.steps_per_segment = v;
+    }
+    if let Some(v) = args.terrain_fill_rate {
+        config.terrain_fill_rate = v;
+    }
+    if let Some(v) = args.terrain_blob_scale {
+        config.terrain_blob_scale = v;
     }
 
     config
@@ -283,7 +294,6 @@ fn setup(
     commands.insert_resource(GraphPanelState::default());
     commands.insert_resource(HeatmapPanelState::default());
     commands.insert_resource(RenderConfig::default());
-    commands.insert_resource(GridMap::new(grid_width, grid_height));
 
     let snake_count = hyperparams.population_size;
     let parallel_config = ParallelConfig::new(snake_count);
@@ -323,9 +333,23 @@ fn setup(
         height: grid_height,
     };
 
-    // Create shared generation seed
-    let gen_seed = GenerationSeed::new_for_grid(&grid);
+    // Create shared generation seed and apply terrain to grid map
+    let mut grid_map = GridMap::new(grid_width, grid_height);
+    let gen_seed = GenerationSeed::new_for_grid_with_config(&grid, &hyperparams);
+    grid_map.apply_terrain(&gen_seed.terrain);
+    commands.insert_resource(grid_map);
     commands.insert_resource(gen_seed.clone());
+
+    let wall_count = gen_seed.terrain.iter().filter(|&&w| w).count();
+    let total = gen_seed.terrain.len();
+    println!(
+        "🗺  Terrain: fill={:.0}% blob_scale={:.1} walls={}/{} ({:.1}%)",
+        hyperparams.terrain_fill_rate * 100.0,
+        hyperparams.terrain_blob_scale,
+        wall_count,
+        total,
+        wall_count as f32 / total as f32 * 100.0,
+    );
 
     let mut evo_manager = EvolutionManager::new(hyperparams.clone());
 
@@ -530,8 +554,7 @@ fn apply_moves_serial(
                 grid_map.is_wall_collision(new_head.x, new_head.y)
             };
 
-        let is_timeout = snake.steps_without_food > config.calculate_timeout(snake.snake.len());
-
+        let is_timeout = snake.steps_without_food > config.calculate_timeout(snake.snake.len(), grid.width, grid.height);
         if !is_collision && !is_timeout {
             snake.steps_without_food += 1;
             snake.frames_survived += 1;
@@ -556,7 +579,7 @@ fn apply_moves_serial(
                 snake.score += 1;
                 game_stats.total_food_eaten += 1;
                 snake.food_time_sum += snake.steps_without_food as u64;
-                snake.timeout_budget_sum += config.calculate_timeout(snake.snake.len()) as u64;
+                snake.timeout_budget_sum += config.calculate_timeout(snake.snake.len(), grid.width, grid.height) as u64;
                 if snake.score > new_high_score {
                     new_high_score = snake.score;
                 }
@@ -580,8 +603,9 @@ fn apply_moves_serial(
         game_stats.total_games_played += game.snakes.len() as u64;
         end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
 
-        let new_seed = GenerationSeed::new_for_grid(&grid);
-        *gen_seed = new_seed.clone();
+        let new_seed = GenerationSeed::new_for_grid_with_config(&grid, &config);
+        grid_map.apply_terrain(&new_seed.terrain);
+        *gen_seed = new_seed;
 
         let total_snakes = game.snakes.len();
         let individuals = evo_manager.get_population();
