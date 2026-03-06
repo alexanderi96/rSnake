@@ -4,7 +4,6 @@
 
 #![recursion_limit = "256"]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 mod brain;
@@ -261,13 +260,15 @@ fn setup(
             .id();
         cell_entities.push(entity);
     }
+    let cell_size = (grid_width * grid_height) as usize;
     commands.insert_resource(CellRenderMap {
-        cells: HashMap::new(),
+        cells: vec![None; cell_size],
+        prev_colors: vec![None; cell_size],
         entities: cell_entities,
         grid_width,
         grid_height,
         rebuilding: false,
-        prev_occupied: std::collections::HashSet::new(),
+        terrain_dirty: true,
     });
 
     // Create fixed material palette (512 colors)
@@ -286,9 +287,17 @@ fn setup(
             }
         }
     }
+    let mut lookup = vec![0usize; 512];
+    for (i, &[r, g, b]) in palette_colors.iter().enumerate() {
+        let ri = (r as usize * 7 + 127) / 255;
+        let gi = (g as usize * 7 + 127) / 255;
+        let bi = (b as usize * 7 + 127) / 255;
+        lookup[ri * 64 + gi * 8 + bi] = i;
+    }
     commands.insert_resource(MaterialPalette {
         handles: palette_handles,
         colors: palette_colors,
+        lookup,
     });
 
     commands.insert_resource(CollisionSettings::default());
@@ -493,6 +502,7 @@ fn apply_moves_serial(
     collision_settings: Res<CollisionSettings>,
     pause_state: Res<PauseState>,
     mut game_stats: ResMut<GameStats>,
+    mut cell_map: ResMut<CellRenderMap>,
 ) {
     #[cfg(feature = "tracy")]
     let _span = tracing::info_span!("apply_moves_serial").entered();
@@ -590,7 +600,12 @@ fn apply_moves_serial(
                     new_high_score = snake.score;
                 }
 
-                let new_food = gen_seed.food_at(snake.score as usize);
+                let new_food = gen_seed.food_at_free(
+                    snake.score as usize,
+                    &snake.body_set,
+                    &grid_map.terrain,
+                    grid.width,
+                );
                 let new_manhattan =
                     (new_food.x - new_head.x).abs() + (new_food.y - new_head.y).abs();
                 snake.food_spawn_distance = new_manhattan as u32;
@@ -611,6 +626,7 @@ fn apply_moves_serial(
 
         let new_seed = GenerationSeed::new_for_grid_with_config(&grid, &config);
         grid_map.apply_terrain(&new_seed.terrain);
+        cell_map.terrain_dirty = true;
         *gen_seed = new_seed;
 
         let total_snakes = game.snakes.len();

@@ -4,12 +4,19 @@
 //! represents a unique behavioral niche. The algorithm illuminates the
 //! behavioral space by discovering diverse, high-quality solutions.
 
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::path::Path;
 
 use crate::brain::Individual;
 use crate::snake::{load_json_gz, save_json_gz};
+
+thread_local! {
+    static MAP_RNG: std::cell::RefCell<SmallRng> =
+        std::cell::RefCell::new(SmallRng::from_entropy());
+}
 
 /// Number of bins for each behavioral descriptor dimension
 pub const GRID_RESOLUTION: usize = 20;
@@ -173,7 +180,6 @@ impl MapElitesArchive {
         mutation_strength: f32,
     ) -> Vec<Individual> {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
 
         let mut population = Vec::with_capacity(population_size);
 
@@ -197,7 +203,7 @@ impl MapElitesArchive {
         let normalized_weights: Vec<f32> = weights.iter().map(|w| w / total_weight).collect();
 
         // Weighted selection closure
-        let weighted_select = |rng: &mut rand::rngs::ThreadRng| -> usize {
+        let weighted_select = |rng: &mut SmallRng| -> usize {
             let r: f32 = rng.gen();
             let mut cumulative = 0.0;
             for (i, &w) in normalized_weights.iter().enumerate() {
@@ -212,35 +218,38 @@ impl MapElitesArchive {
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f32 = 0.05;
 
-        for id in 0..population_size {
-            // Select elite using fitness-weighted selection
-            let idx = weighted_select(&mut rng);
-            let (_cell, parent) = elites[idx];
+        MAP_RNG.with(|rng_cell| {
+            let mut rng = rng_cell.borrow_mut();
+            for id in 0..population_size {
+                // Select elite using fitness-weighted selection
+                let idx = weighted_select(&mut rng);
+                let (_cell, parent) = elites[idx];
 
-            // Create a mutated offspring
-            let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
+                // Create a mutated offspring
+                let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
 
-            // Mutate color with small jitter
-            let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
+                // Mutate color with small jitter
+                let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
 
-            // Calculate archive_color from parent cell fitness
-            let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
-            let archive_color = crate::brain::GenomeColor {
-                r: 0.1,
-                g: normalized,
-                b: 1.0 - normalized,
-            };
+                // Calculate archive_color from parent cell fitness
+                let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
+                let archive_color = crate::brain::GenomeColor {
+                    r: 0.1,
+                    g: normalized,
+                    b: 1.0 - normalized,
+                };
 
-            let mut individual = Individual::from_genome_with_archive_color(
-                id,
-                mutated_brain.get_genome(),
-                mutated_color,
-                archive_color,
-            );
-            individual.is_alive = true;
+                let mut individual = Individual::from_genome_with_archive_color(
+                    id,
+                    mutated_brain.get_genome(),
+                    mutated_color,
+                    archive_color,
+                );
+                individual.is_alive = true;
 
-            population.push(individual);
-        }
+                population.push(individual);
+            }
+        });
 
         population
     }
@@ -254,7 +263,6 @@ impl MapElitesArchive {
         crossover_rate: f32,
     ) -> Vec<Individual> {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
 
         let mut population = Vec::with_capacity(population_size);
 
@@ -275,7 +283,7 @@ impl MapElitesArchive {
         let normalized_weights: Vec<f32> = weights.iter().map(|w| w / total_weight).collect();
 
         // Weighted selection closure
-        let weighted_select = |rng: &mut rand::rngs::ThreadRng| -> usize {
+        let weighted_select = |rng: &mut SmallRng| -> usize {
             let r: f32 = rng.gen();
             let mut cumulative = 0.0;
             for (i, &w) in normalized_weights.iter().enumerate() {
@@ -290,68 +298,71 @@ impl MapElitesArchive {
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f32 = 0.05;
 
-        for id in 0..population_size {
-            let individual = if rng.gen::<f32>() < crossover_rate && elites.len() >= 2 {
-                // Crossover between two fitness-weighted selected elites
-                let idx1 = weighted_select(&mut rng);
-                let idx2 = weighted_select(&mut rng);
-                let (_cell1, parent1) = elites[idx1];
-                let (_cell2, parent2) = elites[idx2];
+        MAP_RNG.with(|rng_cell| {
+            let mut rng = rng_cell.borrow_mut();
+            for id in 0..population_size {
+                let individual = if rng.gen::<f32>() < crossover_rate && elites.len() >= 2 {
+                    // Crossover between two fitness-weighted selected elites
+                    let idx1 = weighted_select(&mut rng);
+                    let idx2 = weighted_select(&mut rng);
+                    let (_cell1, parent1) = elites[idx1];
+                    let (_cell2, parent2) = elites[idx2];
 
-                // Brain crossover
-                let child_brain = parent1.brain.crossover(&parent2.brain);
-                let mutated_brain = child_brain.mutate(mutation_rate, mutation_strength);
+                    // Brain crossover
+                    let child_brain = parent1.brain.crossover(&parent2.brain);
+                    let mutated_brain = child_brain.mutate(mutation_rate, mutation_strength);
 
-                // Color inheritance: blend from parents + mutation
-                let blend_factor = rng.gen::<f32>();
-                let child_color = parent1.color.lerp(&parent2.color, blend_factor);
-                let mutated_color = child_color.mutate(COLOR_MUTATION_STRENGTH);
+                    // Color inheritance: blend from parents + mutation
+                    let blend_factor = rng.gen::<f32>();
+                    let child_color = parent1.color.lerp(&parent2.color, blend_factor);
+                    let mutated_color = child_color.mutate(COLOR_MUTATION_STRENGTH);
 
-                // Archive color from parent1's cell fitness
-                let normalized = (parent1.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
-                let archive_color = crate::brain::GenomeColor {
-                    r: 0.1,
-                    g: normalized,
-                    b: 1.0 - normalized,
+                    // Archive color from parent1's cell fitness
+                    let normalized = (parent1.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
+                    let archive_color = crate::brain::GenomeColor {
+                        r: 0.1,
+                        g: normalized,
+                        b: 1.0 - normalized,
+                    };
+
+                    let mut ind = Individual::from_genome_with_archive_color(
+                        id,
+                        mutated_brain.get_genome(),
+                        mutated_color,
+                        archive_color,
+                    );
+                    ind.is_alive = true;
+                    ind
+                } else {
+                    // Just mutation with fitness-weighted selection
+                    let idx = weighted_select(&mut rng);
+                    let (_cell, parent) = elites[idx];
+                    let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
+
+                    // Mutate color with small jitter
+                    let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
+
+                    // Archive color from parent's cell fitness
+                    let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
+                    let archive_color = crate::brain::GenomeColor {
+                        r: 0.1,
+                        g: normalized,
+                        b: 1.0 - normalized,
+                    };
+
+                    let mut ind = Individual::from_genome_with_archive_color(
+                        id,
+                        mutated_brain.get_genome(),
+                        mutated_color,
+                        archive_color,
+                    );
+                    ind.is_alive = true;
+                    ind
                 };
 
-                let mut ind = Individual::from_genome_with_archive_color(
-                    id,
-                    mutated_brain.get_genome(),
-                    mutated_color,
-                    archive_color,
-                );
-                ind.is_alive = true;
-                ind
-            } else {
-                // Just mutation with fitness-weighted selection
-                let idx = weighted_select(&mut rng);
-                let (_cell, parent) = elites[idx];
-                let mutated_brain = parent.brain.mutate(mutation_rate, mutation_strength);
-
-                // Mutate color with small jitter
-                let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
-
-                // Archive color from parent's cell fitness
-                let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
-                let archive_color = crate::brain::GenomeColor {
-                    r: 0.1,
-                    g: normalized,
-                    b: 1.0 - normalized,
-                };
-
-                let mut ind = Individual::from_genome_with_archive_color(
-                    id,
-                    mutated_brain.get_genome(),
-                    mutated_color,
-                    archive_color,
-                );
-                ind.is_alive = true;
-                ind
-            };
-
-            population.push(individual);
-        }
+                population.push(individual);
+            }
+        });
 
         population
     }

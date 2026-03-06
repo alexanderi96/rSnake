@@ -4,7 +4,7 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::WindowMode;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::evolution::EvolutionManager;
 use crate::snake::{
@@ -150,7 +150,10 @@ pub struct MaterialCache {
 #[derive(Resource)]
 pub struct MaterialPalette {
     pub handles: Vec<Handle<ColorMaterial>>,
+    #[allow(dead_code)]
     pub colors: Vec<[u8; 3]>,
+    /// O(1) lookup table: 8×8×8 = 512 entries, index = ri*64 + gi*8 + bi
+    pub lookup: Vec<usize>,
 }
 
 /// Cell-based render map: one entity per grid cell, pre-spawned.
@@ -158,33 +161,37 @@ pub struct MaterialPalette {
 /// Entity index = y * grid_width + x
 #[derive(Resource)]
 pub struct CellRenderMap {
-    /// For each occupied cell: (color, fitness_of_best_snake_here)
-    /// Rebuilt from scratch every frame before rendering
-    pub cells: HashMap<(i32, i32), (Color, f32)>,
+    /// For each cell: Option<(color, fitness_of_best_snake_here)>
+    /// Indexed by y * grid_width + x. Rebuilt from scratch every frame before rendering.
+    pub cells: Vec<Option<(Color, f32)>>,
+    /// Quantized color from previous frame for delta tracking (skip unchanged cells)
+    pub prev_colors: Vec<Option<[u8; 3]>>,
     /// Pre-spawned Bevy entities — one per grid cell, indexed y*w+x
     pub entities: Vec<Entity>,
     pub grid_width: i32,
     pub grid_height: i32,
     /// True for exactly 1 frame after entity respawn (Bevy deferred commands not yet applied)
     pub rebuilding: bool,
-    /// Previous frame's occupied cells for delta tracking (Fix 5)
-    pub prev_occupied: HashSet<(i32, i32)>,
+    /// True only when terrain changes (new generation or resize) — avoids re-inserting walls every frame
+    pub terrain_dirty: bool,
 }
 
 impl CellRenderMap {
     pub fn new(grid_width: i32, grid_height: i32) -> Self {
+        let size = (grid_width * grid_height) as usize;
         Self {
-            cells: HashMap::new(),
+            cells: vec![None; size],
+            prev_colors: vec![None; size],
             entities: Vec::new(),
             grid_width,
             grid_height,
             rebuilding: false,
-            prev_occupied: HashSet::new(),
+            terrain_dirty: true,
         }
     }
 
-    /// Get entity index for grid position (x, y)
-    pub fn entity_index(&self, x: i32, y: i32) -> Option<usize> {
+    /// Get flat index for grid position (x, y), with bounds check
+    pub fn cell_index(&self, x: i32, y: i32) -> Option<usize> {
         if x < 0 || x >= self.grid_width || y < 0 || y >= self.grid_height {
             return None;
         }
@@ -727,11 +734,12 @@ pub fn on_window_resize_apply(
         new_entities.push(entity);
     }
     cell_map.entities = new_entities;
-    cell_map.cells.clear();
-    cell_map.prev_occupied.clear();
+    cell_map.cells = vec![None; (new_width * new_height) as usize];
+    cell_map.prev_colors = vec![None; (new_width * new_height) as usize];
     cell_map.grid_width = new_width;
     cell_map.grid_height = new_height;
     cell_map.rebuilding = true; // Skip next render frame, entities not yet in World
+    cell_map.terrain_dirty = true;
 
     // Regenerate seed for new grid, preserving user config if available
     let new_seed = if let Some(ref cfg) = config {
@@ -825,18 +833,34 @@ pub fn render_system(
         .map(|ind| ind.fitness)
         .collect();
 
-    // === PHASE 0: Render terrain walls ===
-    // Terrain is static for the whole generation; insert into cell_map with a fixed color.
+    // === PHASE 0: Render terrain walls (only when terrain changes) ===
     const WALL_COLOR: Color = Color::rgb(0.50, 0.22, 0.15);
-    cell_map.cells.clear();
-    for y in 0..grid_map.height {
-        for x in 0..grid_map.width {
-            let idx = (y * grid_map.width + x) as usize;
-            if grid_map.terrain[idx] {
-                cell_map
-                    .cells
-                    .entry((x, y))
-                    .or_insert((WALL_COLOR, f32::INFINITY));
+
+    // Clear dynamic cells (snakes) but preserve terrain via dirty flag
+    cell_map.cells.fill(None);
+
+    if cell_map.terrain_dirty {
+        for y in 0..grid_map.height {
+            for x in 0..grid_map.width {
+                let idx = (y * grid_map.width + x) as usize;
+                if grid_map.terrain[idx] {
+                    if let Some(cidx) = cell_map.cell_index(x, y) {
+                        cell_map.cells[cidx] = Some((WALL_COLOR, f32::INFINITY));
+                    }
+                }
+            }
+        }
+        cell_map.terrain_dirty = false;
+    } else {
+        // Re-insert terrain walls from grid_map (they were cleared by fill(None))
+        for y in 0..grid_map.height {
+            for x in 0..grid_map.width {
+                let idx = (y * grid_map.width + x) as usize;
+                if grid_map.terrain[idx] {
+                    if let Some(cidx) = cell_map.cell_index(x, y) {
+                        cell_map.cells[cidx] = Some((WALL_COLOR, f32::INFINITY));
+                    }
+                }
             }
         }
     }
@@ -850,7 +874,9 @@ pub fn render_system(
         let snake_fitness = fitness_map.get(snake.id).copied().unwrap_or(0.0);
 
         for (seg_idx, pos) in snake.snake.iter().enumerate() {
-            let key = (pos.x, pos.y);
+            let Some(cidx) = cell_map.cell_index(pos.x, pos.y) else {
+                continue;
+            };
             // Head is always white; body uses the snake's behavioral color
             let color = if seg_idx == 0 {
                 Color::rgb(1.0, 1.0, 1.0)
@@ -858,81 +884,70 @@ pub fn render_system(
                 snake.color
             };
             // Only update if this snake has higher fitness than the current winner
-            let entry = cell_map
-                .cells
-                .entry(key)
-                .or_insert((color, f32::NEG_INFINITY));
-            if snake_fitness > entry.1 {
-                *entry = (color, snake_fitness);
+            match cell_map.cells[cidx] {
+                Some((_, existing_fitness)) if snake_fitness <= existing_fitness => {}
+                _ => {
+                    cell_map.cells[cidx] = Some((color, snake_fitness));
+                }
             }
         }
     }
 
-    // === PHASE 2: Update cell entities ===
-    // Helper function to find nearest palette color
-    fn nearest_palette_color(color: Color, palette: &MaterialPalette) -> Handle<ColorMaterial> {
+    // === PHASE 2: Update cell entities with delta color tracking ===
+    #[inline]
+    fn quantize_to_palette_index(color: Color, palette: &MaterialPalette) -> usize {
+        let r = (color.r() * 255.0) as usize;
+        let g = (color.g() * 255.0) as usize;
+        let b = (color.b() * 255.0) as usize;
+        let ri = (r * 7 + 127) / 255;
+        let gi = (g * 7 + 127) / 255;
+        let bi = (b * 7 + 127) / 255;
+        palette.lookup[ri * 64 + gi * 8 + bi]
+    }
+
+    let cell_count = cell_map.cells.len();
+    let gw = cell_map.grid_width;
+    for idx in 0..cell_count {
+        let cell = cell_map.cells[idx];
+        let Some((color, _)) = cell else {
+            // Cell now empty: hide only if it was visible last frame
+            if cell_map.prev_colors[idx].is_some() {
+                if let Some(&entity) = cell_map.entities.get(idx) {
+                    commands.entity(entity).insert(Visibility::Hidden);
+                }
+                cell_map.prev_colors[idx] = None;
+            }
+            continue;
+        };
+
         let r = (color.r() * 255.0) as u8;
         let g = (color.g() * 255.0) as u8;
         let b = (color.b() * 255.0) as u8;
-        let idx = palette
-            .colors
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, c)| {
-                let dr = r as i32 - c[0] as i32;
-                let dg = g as i32 - c[1] as i32;
-                let db = b as i32 - c[2] as i32;
-                dr * dr + dg * dg + db * db
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        palette.handles[idx].clone()
-    }
+        let color_key = [r, g, b];
 
-    // Show/update occupied cells (only changed cells need updates)
-    for (&(x, y), &(color, _)) in cell_map.cells.iter() {
-        let Some(idx) = cell_map.entity_index(x, y) else {
+        // Emit command ONLY if the color changed from previous frame
+        if cell_map.prev_colors[idx] == Some(color_key) {
             continue;
-        };
+        }
+
+        let x = (idx as i32) % gw;
+        let y = (idx as i32) / gw;
         let Some(&entity) = cell_map.entities.get(idx) else {
             continue;
         };
 
-        let material = nearest_palette_color(color, &mat_palette);
+        let pal_idx = quantize_to_palette_index(color, &mat_palette);
+        let material = mat_palette.handles[pal_idx].clone();
         let transform = Transform::from_xyz(
             offset_x + x as f32 * BLOCK_SIZE,
             offset_y - y as f32 * BLOCK_SIZE,
-            0.0, // z=0 puts cells behind food (food is at z=1.0)
+            0.0,
         );
         commands
             .entity(entity)
             .insert((material, transform, Visibility::Visible));
+        cell_map.prev_colors[idx] = Some(color_key);
     }
-
-    // Hide only cells that WERE occupied last frame but are NOT now (delta tracking)
-    // This reduces Bevy commands from ~1881 to only the delta
-    let newly_empty: Vec<(i32, i32)> = cell_map
-        .prev_occupied
-        .iter()
-        .filter(|pos| !cell_map.cells.contains_key(pos))
-        .copied()
-        .collect();
-
-    for (x, y) in newly_empty {
-        let Some(idx) = cell_map.entity_index(x, y) else {
-            continue;
-        };
-        let Some(&entity) = cell_map.entities.get(idx) else {
-            continue;
-        };
-        commands.entity(entity).insert(Visibility::Hidden);
-    }
-
-    // Update prev_occupied for next frame
-    // Note: collect keys first to avoid borrow conflict
-    let current_keys: Vec<(i32, i32)> = cell_map.cells.keys().cloned().collect();
-    cell_map.prev_occupied.clear();
-    cell_map.prev_occupied.extend(current_keys);
 
     // === PHASE 3: Update food entities ===
     for snake in game.snakes.iter() {

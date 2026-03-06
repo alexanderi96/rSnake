@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
@@ -111,6 +112,27 @@ impl GenerationSeed {
 
     pub fn food_at(&self, index: usize) -> Position {
         self.food_sequence[index % FOOD_SEQ_LEN]
+    }
+
+    /// Ritorna la prima posizione libera a partire da `start_index` nella sequenza,
+    /// escludendo celle occupate dal corpo del serpente e dal terrain.
+    /// Deterministica: stessi argomenti → stesso risultato.
+    pub fn food_at_free(
+        &self,
+        start_index: usize,
+        body_set: &std::collections::HashSet<Position>,
+        terrain: &[bool],
+        width: i32,
+    ) -> Position {
+        for i in 0..FOOD_SEQ_LEN {
+            let pos = self.food_sequence[(start_index + i) % FOOD_SEQ_LEN];
+            let idx = (pos.y * width + pos.x) as usize;
+            if !body_set.contains(&pos) && idx < terrain.len() && !terrain[idx] {
+                return pos;
+            }
+        }
+        // Fallback: tutta la sequenza è occupata (impossibile con serpenti normali)
+        self.food_sequence[start_index % FOOD_SEQ_LEN]
     }
 }
 
@@ -970,5 +992,3 @@ pub fn sanitize_run_data(run_dir: &std::path::Path) -> std::io::Result<u64> {
 
     Ok(saved)
 }
-
-use rand::Rng;
