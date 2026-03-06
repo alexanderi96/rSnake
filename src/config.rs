@@ -74,11 +74,13 @@ impl Default for Hyperparameters {
 
 impl Hyperparameters {
     pub fn calculate_timeout(&self, snake_length: usize, grid_width: i32, grid_height: i32) -> u32 {
-        // Add the grid perimeter to ensure the snake always has enough time 
+        // Add the grid perimeter to ensure the snake always has enough time
         // to cross the map, regardless of the window resolution.
-        let map_allowance = (grid_width + grid_height) as u32; 
-        
-        self.base_steps_without_food + map_allowance + (snake_length as u32 * self.steps_per_segment)
+        let map_allowance = (grid_width + grid_height) as u32;
+
+        self.base_steps_without_food
+            + map_allowance
+            + (snake_length as u32 * self.steps_per_segment)
     }
 
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
@@ -166,6 +168,6 @@ mod tests {
         let h = Hyperparameters::default();
         // Griglia fittizia 20x20 per il test.
         // Base (60) + Margine Mappa (20 + 20) + Segmenti (5 * 8) = 140
-        assert_eq!(h.calculate_timeout(5, 20, 20), 140); 
+        assert_eq!(h.calculate_timeout(5, 20, 20), 140);
     }
 }

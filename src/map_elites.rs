@@ -398,11 +398,7 @@ impl MapElitesArchive {
         // Verify genome size compatibility with current brain architecture
         if let Some(ind) = archive.grid.values().next() {
             if ind.brain.genome.len() != crate::brain::GENOME_SIZE {
-                eprintln!(
-                    "⚠️  Archive incompatible: genome size {} != {}. Starting fresh.",
-                    ind.brain.genome.len(),
-                    crate::brain::GENOME_SIZE
-                );
+                eprintln!("⚠️  GENOME MISMATCH: archive has {} params, current brain has {}. Old archive discarded.", ind.brain.genome.len(), crate::brain::GENOME_SIZE);
                 return Ok(MapElitesArchive::new(archive.resolution));
             }
         }

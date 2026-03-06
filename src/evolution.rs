@@ -198,6 +198,10 @@ impl EvolutionManager {
                         self.archive.filled_cells(),
                         path.display()
                     );
+                    // Log if archive was discarded due to incompatibility
+                    if self.archive.filled_cells() == 0 {
+                        eprintln!("⚠️  Archive file existed but is empty — restarting from zero due to incompatibility.");
+                    }
                 }
                 Err(e) => {
                     eprintln!("⚠️ Error loading archive from {}: {}", path.display(), e);

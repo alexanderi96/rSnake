@@ -3,9 +3,16 @@
 //! This module provides a simple neural network that can be instantiated from
 //! a flat genome vector (weights + biases). No external ML crates required.
 
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 
 use crate::snake::STATE_SIZE;
+
+thread_local! {
+    static THREAD_RNG: std::cell::RefCell<SmallRng> =
+        std::cell::RefCell::new(SmallRng::from_entropy());
+}
 
 /// Network architecture constants
 pub const INPUT_SIZE: usize = STATE_SIZE; // 34 inputs (17 current + 17 previous frame)
@@ -28,6 +35,14 @@ pub const GENOME_SIZE: usize = (INPUT_SIZE * HIDDEN_SIZE)
     + (HIDDEN2_SIZE * OUTPUT_SIZE)
     + OUTPUT_SIZE;
 
+// Genome offset constants for fast indexing
+const WIH_OFF: usize = 0;
+const BH1_OFF: usize = WIH_OFF + INPUT_SIZE * HIDDEN_SIZE;
+const WH1H2_OFF: usize = BH1_OFF + HIDDEN_SIZE;
+const BH2_OFF: usize = WH1H2_OFF + HIDDEN_SIZE * HIDDEN2_SIZE;
+const WHO_OFF: usize = BH2_OFF + HIDDEN2_SIZE;
+const BO_OFF: usize = WHO_OFF + HIDDEN2_SIZE * OUTPUT_SIZE;
+
 /// RGB Color representation for genetic inheritance
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct GenomeColor {
@@ -40,12 +55,14 @@ impl GenomeColor {
     /// Create a random color
     pub fn random() -> Self {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
-        Self {
-            r: rng.gen::<f32>(),
-            g: rng.gen::<f32>(),
-            b: rng.gen::<f32>(),
-        }
+        THREAD_RNG.with(|rng_cell| {
+            let mut rng = rng_cell.borrow_mut();
+            Self {
+                r: rng.gen::<f32>(),
+                g: rng.gen::<f32>(),
+                b: rng.gen::<f32>(),
+            }
+        })
     }
 
     /// Interpolate between two colors (for crossover)
@@ -60,13 +77,14 @@ impl GenomeColor {
     /// Apply small random variation (jitter) for mutation
     pub fn mutate(&self, strength: f32) -> Self {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
-
-        Self {
-            r: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.r).clamp(0.0, 1.0),
-            g: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.g).clamp(0.0, 1.0),
-            b: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.b).clamp(0.0, 1.0),
-        }
+        THREAD_RNG.with(|rng_cell| {
+            let mut rng = rng_cell.borrow_mut();
+            Self {
+                r: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.r).clamp(0.0, 1.0),
+                g: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.g).clamp(0.0, 1.0),
+                b: ((rng.gen::<f32>() * 2.0 - 1.0) * strength + self.b).clamp(0.0, 1.0),
+            }
+        })
     }
 
     /// Convert to Bevy Color
@@ -109,12 +127,14 @@ pub struct Brain {
 impl Brain {
     /// Create a new brain with random weights
     pub fn new_random() -> Self {
-        let mut rng = rand::thread_rng();
         use rand::Rng;
 
-        let genome: Vec<f32> = (0..GENOME_SIZE)
-            .map(|_| rng.gen::<f32>() * 2.0 - 1.0) // Xavier-like initialization
-            .collect();
+        let genome: Vec<f32> = THREAD_RNG.with(|rng_cell| {
+            let mut rng = rng_cell.borrow_mut();
+            (0..GENOME_SIZE)
+                .map(|_| rng.gen::<f32>() * 2.0 - 1.0) // Xavier-like initialization
+                .collect()
+        });
 
         Self { genome }
     }
@@ -143,20 +163,15 @@ impl Brain {
     pub fn forward(&self, input: &[f32; STATE_SIZE]) -> [f32; OUTPUT_SIZE] {
         let g = &self.genome;
 
-        // Offsets (must match GENOME_SIZE layout comments)
-        let wih_off = 0;
-        let bh1_off = wih_off + INPUT_SIZE * HIDDEN_SIZE;
-        let wh1h2_off = bh1_off + HIDDEN_SIZE;
-        let bh2_off = wh1h2_off + HIDDEN_SIZE * HIDDEN2_SIZE;
-        let who_off = bh2_off + HIDDEN2_SIZE;
-        let bo_off = who_off + HIDDEN2_SIZE * OUTPUT_SIZE;
+        // Use const offsets for O(1) indexing
+        debug_assert_eq!(BO_OFF + OUTPUT_SIZE, GENOME_SIZE);
 
         // Layer 1: INPUT → HIDDEN1 (ReLU)
         let mut hidden1 = [0.0f32; HIDDEN_SIZE];
         for h in 0..HIDDEN_SIZE {
-            let mut sum = g[bh1_off + h];
+            let mut sum = g[BH1_OFF + h];
             for i in 0..INPUT_SIZE {
-                sum += g[wih_off + h * INPUT_SIZE + i] * input[i];
+                sum += g[WIH_OFF + h * INPUT_SIZE + i] * input[i];
             }
             hidden1[h] = relu(sum);
         }
@@ -164,9 +179,9 @@ impl Brain {
         // Layer 2: HIDDEN1 → HIDDEN2 (ReLU)
         let mut hidden2 = [0.0f32; HIDDEN2_SIZE];
         for h in 0..HIDDEN2_SIZE {
-            let mut sum = g[bh2_off + h];
+            let mut sum = g[BH2_OFF + h];
             for i in 0..HIDDEN_SIZE {
-                sum += g[wh1h2_off + h * HIDDEN_SIZE + i] * hidden1[i];
+                sum += g[WH1H2_OFF + h * HIDDEN_SIZE + i] * hidden1[i];
             }
             hidden2[h] = relu(sum);
         }
@@ -174,9 +189,9 @@ impl Brain {
         // Output layer: HIDDEN2 → OUTPUT (linear, we use argmax)
         let mut output = [0.0; OUTPUT_SIZE];
         for o in 0..OUTPUT_SIZE {
-            let mut sum = g[bo_off + o];
+            let mut sum = g[BO_OFF + o];
             for h in 0..HIDDEN2_SIZE {
-                sum += g[who_off + o * HIDDEN2_SIZE + h] * hidden2[h];
+                sum += g[WHO_OFF + o * HIDDEN2_SIZE + h] * hidden2[h];
             }
             output[o] = sum;
         }
@@ -209,37 +224,41 @@ impl Brain {
     }
 
     /// Create a mutated copy of this brain
+    #[must_use]
     pub fn mutate(&self, mutation_rate: f32, mutation_strength: f32) -> Self {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
 
-        let new_genome: Vec<f32> = self
-            .genome
-            .iter()
-            .map(|&w| {
-                if rng.gen::<f32>() < mutation_rate {
-                    let mutation = rng.gen::<f32>() * 2.0 - 1.0;
-                    w + mutation * mutation_strength
-                } else {
-                    w
-                }
-            })
-            .collect();
+        let new_genome: Vec<f32> = THREAD_RNG.with(|rng_cell| {
+            let mut rng = rng_cell.borrow_mut();
+            self.genome
+                .iter()
+                .map(|&w| {
+                    if rng.gen::<f32>() < mutation_rate {
+                        let mutation = rng.gen::<f32>() * 2.0 - 1.0;
+                        w + mutation * mutation_strength
+                    } else {
+                        w
+                    }
+                })
+                .collect()
+        });
 
         Self::from_genome(&new_genome)
     }
 
     /// Crossover between two brains
+    #[must_use]
     pub fn crossover(&self, other: &Brain) -> Self {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
 
-        let new_genome: Vec<f32> = self
-            .genome
-            .iter()
-            .zip(other.genome.iter())
-            .map(|(&a, &b)| if rng.gen::<f32>() < 0.5 { a } else { b })
-            .collect();
+        let new_genome: Vec<f32> = THREAD_RNG.with(|rng_cell| {
+            let mut rng = rng_cell.borrow_mut();
+            self.genome
+                .iter()
+                .zip(other.genome.iter())
+                .map(|(&a, &b)| if rng.gen::<f32>() < 0.5 { a } else { b })
+                .collect()
+        });
 
         Self::from_genome(&new_genome)
     }
@@ -317,6 +336,7 @@ impl Individual {
     }
 
     /// Create an individual from a genome with archive color (from parent cell fitness)
+    #[must_use]
     pub fn from_genome_with_archive_color(
         id: usize,
         genome: &[f32],

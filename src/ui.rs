@@ -681,7 +681,6 @@ pub fn on_window_resize_apply(
     mut cell_map: ResMut<CellRenderMap>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mesh_cache: Res<MeshCache>,
-    _gen_seed: Option<Res<crate::snake::GenerationSeed>>,
     config: Option<Res<crate::config::Hyperparameters>>,
     mut commands: Commands,
 ) {
@@ -828,7 +827,7 @@ pub fn render_system(
 
     // === PHASE 0: Render terrain walls ===
     // Terrain is static for the whole generation; insert into cell_map with a fixed color.
-const WALL_COLOR: Color = Color::rgb(0.50, 0.22, 0.15);
+    const WALL_COLOR: Color = Color::rgb(0.50, 0.22, 0.15);
     cell_map.cells.clear();
     for y in 0..grid_map.height {
         for x in 0..grid_map.width {
@@ -1524,13 +1523,29 @@ pub fn draw_graph_in_panel(
 
                 let h_max = get_height(point.max);
                 let h_avg = get_height(point.avg);
-                let _h_min = get_height(point.min);
+                let h_min = get_height(point.min);
 
                 let display_width = if exact_bar_width > 2.0 {
                     exact_bar_width - 1.0
                 } else {
                     exact_bar_width
                 };
+
+                // Min bar (orange, at the back)
+                if h_min > 0.0 {
+                    parent.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x_pos),
+                            bottom: Val::Px(margin_bottom),
+                            width: Val::Px(display_width),
+                            height: Val::Px(h_min),
+                            ..default()
+                        },
+                        background_color: Color::rgba(1.0, 0.5, 0.0, 0.3).into(),
+                        ..default()
+                    });
+                }
 
                 if h_max > 0.0 {
                     parent.spawn(NodeBundle {

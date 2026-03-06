@@ -5,6 +5,7 @@
 #![recursion_limit = "256"]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 mod brain;
 mod config;
@@ -117,7 +118,7 @@ fn build_hyperparameters(args: &CliArgs) -> Hyperparameters {
 }
 
 #[derive(Resource)]
-struct Population(pub Vec<brain::Brain>);
+struct Population(pub Vec<Arc<brain::Brain>>);
 
 /// Intermediate results from parallel brain forward pass
 /// Stores (action, current_17_state) for each snake, indexed by snake id
@@ -372,9 +373,12 @@ fn setup(
 
     evo_manager.start_generation();
 
-    // Create population brains
+    // Create population brains (using Arc to avoid copying 10MB per generation)
     let individuals = evo_manager.get_population();
-    let brains: Vec<_> = individuals.iter().map(|i| i.brain.clone()).collect();
+    let brains: Vec<_> = individuals
+        .iter()
+        .map(|i| Arc::new(i.brain.clone()))
+        .collect();
     commands.insert_resource(Population(brains));
 
     // Extract behavioral values
@@ -458,7 +462,7 @@ fn compute_moves_parallel(
             }
 
             let brain = match population.0.get(snake.id) {
-                Some(b) => b,
+                Some(b) => b.as_ref(),
                 None => return,
             };
 
@@ -554,7 +558,8 @@ fn apply_moves_serial(
                 grid_map.is_wall_collision(new_head.x, new_head.y)
             };
 
-        let is_timeout = snake.steps_without_food > config.calculate_timeout(snake.snake.len(), grid.width, grid.height);
+        let is_timeout = snake.steps_without_food
+            > config.calculate_timeout(snake.snake.len(), grid.width, grid.height);
         if !is_collision && !is_timeout {
             snake.steps_without_food += 1;
             snake.frames_survived += 1;
@@ -579,7 +584,8 @@ fn apply_moves_serial(
                 snake.score += 1;
                 game_stats.total_food_eaten += 1;
                 snake.food_time_sum += snake.steps_without_food as u64;
-                snake.timeout_budget_sum += config.calculate_timeout(snake.snake.len(), grid.width, grid.height) as u64;
+                snake.timeout_budget_sum +=
+                    config.calculate_timeout(snake.snake.len(), grid.width, grid.height) as u64;
                 if snake.score > new_high_score {
                     new_high_score = snake.score;
                 }
@@ -641,7 +647,7 @@ fn apply_moves_serial(
         let new_pop = evo_manager.get_population();
         population.0.clear();
         for ind in new_pop.iter() {
-            population.0.push(ind.brain.clone());
+            population.0.push(Arc::new(ind.brain.clone()));
         }
 
         game.total_iterations += 1;

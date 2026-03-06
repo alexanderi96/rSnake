@@ -514,8 +514,12 @@ impl SnakeInstance {
         // Bonus per efficienza (maggiore se ha mangiato più mele)
         let efficiency_bonus = (self.score as f32) * efficiency * 500.0;
 
-        // Premio extra per sopravvivenza
-        let survival_reward = self.frames_survived as f32 * 0.01;
+        // Premio extra per sopravvivenza (logaritmico per evitare dominanza)
+        let survival_reward = if self.score > 0 {
+            (self.frames_survived as f32).ln().max(0.0) * 5.0
+        } else {
+            (self.frames_survived as f32 * 0.1).min(5.0)
+        };
 
         base_reward + efficiency_bonus + survival_reward
     }

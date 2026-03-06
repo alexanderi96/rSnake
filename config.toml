@@ -35,7 +35,7 @@ auto_save_interval = 50
 
 # Percentuale di celle che diventano muro.
 # 0.20 = aperto  |  0.35 = bilanciato (consigliato)  |  0.55 = denso
-terrain_fill_rate = 0.2
+terrain_fill_rate = 0.00
 
 # Dimensione dei cluster:
 # 2.0 = grandi isole  |  4.0 = medi (default)  |  7.0 = tanti piccoli ostacoli
