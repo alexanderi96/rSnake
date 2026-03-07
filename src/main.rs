@@ -161,6 +161,7 @@ fn main() {
         .add_systems(Startup, ui::spawn_stats_ui.after(setup))
         // Two-phase parallel simulation: compute moves (parallel) then apply (serial)
         .insert_resource(ComputedMoves::default())
+        .insert_resource(snake::SimStepsPerFrame::default())
         .add_systems(
             Update,
             (
@@ -442,6 +443,35 @@ fn setup(
 }
 
 /// PHASE 1: Parallel brain forward pass
+fn compute_moves_fn(
+    snakes: &[crate::snake::SnakeInstance],
+    grid_map: &GridMap,
+    grid: &GridDimensions,
+    population: &Population,
+) -> Vec<Option<(Action, [f32; BASE_STATE_SIZE])>> {
+    use rayon::prelude::*;
+    let mut results = vec![None; snakes.len()];
+    results
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(idx, result)| {
+            let snake = &snakes[idx];
+            if snake.is_game_over {
+                return;
+            }
+            let brain = match population.0.get(snake.id) {
+                Some(b) => b.as_ref(),
+                None => return,
+            };
+            let current_17 = get_current_17_state(snake, grid_map, grid);
+            let mut state_34 = [0.0f32; STATE_SIZE];
+            state_34[..17].copy_from_slice(&current_17);
+            state_34[17..].copy_from_slice(&snake.previous_state);
+            *result = Some((brain.predict(&state_34), current_17));
+        });
+    results
+}
+
 fn compute_moves_parallel(
     game: Res<GameState>,
     grid_map: Res<GridMap>,
@@ -457,34 +487,7 @@ fn compute_moves_parallel(
         return;
     }
 
-    let snake_count = game.snakes.len();
-    let mut results = vec![None; snake_count];
-
-    use rayon::prelude::*;
-    results
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(idx, result)| {
-            let snake = &game.snakes[idx];
-            if snake.is_game_over {
-                return;
-            }
-
-            let brain = match population.0.get(snake.id) {
-                Some(b) => b.as_ref(),
-                None => return,
-            };
-
-            let current_17 = get_current_17_state(snake, &grid_map, &grid);
-            let mut state_34 = [0.0f32; STATE_SIZE];
-            state_34[..17].copy_from_slice(&current_17);
-            state_34[17..].copy_from_slice(&snake.previous_state);
-
-            let action = brain.predict(&state_34);
-            *result = Some((action, current_17));
-        });
-
-    computed.0 = results;
+    computed.0 = compute_moves_fn(&game.snakes, &grid_map, &grid, &population);
 }
 
 /// PHASE 2: Serial state application
@@ -493,7 +496,7 @@ fn apply_moves_serial(
     mut game: ResMut<GameState>,
     mut grid_map: ResMut<GridMap>,
     grid: Res<GridDimensions>,
-    computed: Res<ComputedMoves>,
+    mut computed: ResMut<ComputedMoves>,
     config: Res<Hyperparameters>,
     mut evo_manager: ResMut<EvolutionManager>,
     mut global_history: ResMut<GlobalTrainingHistory>,
@@ -503,6 +506,7 @@ fn apply_moves_serial(
     pause_state: Res<PauseState>,
     mut game_stats: ResMut<GameStats>,
     mut cell_map: ResMut<CellRenderMap>,
+    sim_steps: Res<snake::SimStepsPerFrame>,
 ) {
     #[cfg(feature = "tracy")]
     let _span = tracing::info_span!("apply_moves_serial").entered();
@@ -511,163 +515,175 @@ fn apply_moves_serial(
         return;
     }
 
-    // Rebuild grid_map (serial)
-    grid_map.clear();
-    for (idx, snake) in game.snakes.iter().enumerate() {
-        if !snake.is_game_over {
-            let cell_val = ((idx + 1) as u16).min(255) as u8;
-            for pos in snake.snake.iter() {
-                grid_map.set(pos.x, pos.y, cell_val);
-            }
-        }
-    }
+    let steps = sim_steps.0;
+    let mut current_moves = std::mem::take(&mut computed.0);
 
-    let mut new_high_score = game.high_score;
-
-    for (idx, result) in computed.0.iter().enumerate() {
-        let Some((action, current_17)) = result else {
-            continue;
-        };
-        let snake = &mut game.snakes[idx];
-        if snake.is_game_over {
-            continue;
+    for step_idx in 0..steps {
+        if step_idx > 0 {
+            current_moves = compute_moves_fn(&game.snakes, &grid_map, &grid, &population);
         }
 
-        snake.previous_state = *current_17;
-
-        match action {
-            Action::Left => {
-                snake.direction = snake.direction.turn_left();
-                snake.turn_count += 1;
+        // Rebuild grid_map (serial)
+        grid_map.clear();
+        for (idx, snake) in game.snakes.iter().enumerate() {
+            if !snake.is_game_over {
+                let cell_val = ((idx + 1) as u16).min(255) as u8;
+                for pos in snake.snake.iter() {
+                    grid_map.set(pos.x, pos.y, cell_val);
+                }
             }
-            Action::Right => {
-                snake.direction = snake.direction.turn_right();
-                snake.turn_count += 1;
-            }
-            Action::Straight => {}
         }
 
-        let (dx, dy) = snake.direction.as_vec();
-        let old_head = snake.snake[0];
-        let new_head = Position {
-            x: old_head.x + dx,
-            y: old_head.y + dy,
-        };
+        let mut new_high_score = game.high_score;
 
-        let ate_food = new_head == snake.food;
+        for (idx, result) in current_moves.iter().enumerate() {
+            let Some((action, current_17)) = result else {
+                continue;
+            };
+            let snake = &mut game.snakes[idx];
+            if snake.is_game_over {
+                continue;
+            }
 
-        // Tail exception
-        let tail_pos = snake.snake.back().copied();
-        let is_self_collision =
-            snake.body_set.contains(&new_head) && (ate_food || Some(new_head) != tail_pos);
+            snake.previous_state = *current_17;
 
-        let is_collision = is_self_collision
-            || if collision_settings.snake_vs_snake {
-                grid_map.is_collision(new_head.x, new_head.y, snake.id)
-            } else {
-                grid_map.is_wall_collision(new_head.x, new_head.y)
+            match action {
+                Action::Left => {
+                    snake.direction = snake.direction.turn_left();
+                    snake.turn_count += 1;
+                }
+                Action::Right => {
+                    snake.direction = snake.direction.turn_right();
+                    snake.turn_count += 1;
+                }
+                Action::Straight => {}
+            }
+
+            let (dx, dy) = snake.direction.as_vec();
+            let old_head = snake.snake[0];
+            let new_head = Position {
+                x: old_head.x + dx,
+                y: old_head.y + dy,
             };
 
-        let is_timeout = snake.steps_without_food
-            > config.calculate_timeout(snake.snake.len(), grid.width, grid.height);
-        if !is_collision && !is_timeout {
-            snake.steps_without_food += 1;
-            snake.frames_survived += 1;
-            snake.visited_cells.insert((new_head.x, new_head.y));
-            let body_len = snake.snake.len() as f32;
-            let visited = snake.visited_cells.len().max(1) as f32;
-            snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
-        }
+            let ate_food = new_head == snake.food;
 
-        if is_collision || is_timeout {
-            snake.is_game_over = true;
-        } else {
-            snake.snake.push_front(new_head);
-            snake.body_set.insert(new_head);
-            if ate_food {
-                if snake.food_spawn_distance > 0 {
-                    let ratio = (snake.food_spawn_distance as f32
-                        / snake.steps_without_food as f32)
-                        .clamp(0.0, 1.0);
-                    snake.path_directness_sum += ratio;
-                }
-                snake.score += 1;
-                game_stats.total_food_eaten += 1;
-                snake.food_time_sum += snake.steps_without_food as u64;
-                snake.timeout_budget_sum +=
-                    config.calculate_timeout(snake.snake.len(), grid.width, grid.height) as u64;
-                if snake.score > new_high_score {
-                    new_high_score = snake.score;
-                }
+            // Tail exception
+            let tail_pos = snake.snake.back().copied();
+            let is_self_collision =
+                snake.body_set.contains(&new_head) && (ate_food || Some(new_head) != tail_pos);
 
-                let new_food = gen_seed.food_at_free(
-                    snake.score as usize,
-                    &snake.body_set,
-                    &grid_map.terrain,
-                    grid.width,
-                );
-                let new_manhattan =
-                    (new_food.x - new_head.x).abs() + (new_food.y - new_head.y).abs();
-                snake.food_spawn_distance = new_manhattan as u32;
-                snake.food = new_food;
-                snake.steps_without_food = 0;
+            let is_collision = is_self_collision
+                || if collision_settings.snake_vs_snake {
+                    grid_map.is_collision(new_head.x, new_head.y, snake.id)
+                } else {
+                    grid_map.is_wall_collision(new_head.x, new_head.y)
+                };
+
+            let is_timeout = snake.steps_without_food
+                > config.calculate_timeout(snake.snake.len(), grid.width, grid.height);
+            if !is_collision && !is_timeout {
+                snake.steps_without_food += 1;
+                snake.frames_survived += 1;
+                snake.visited_cells.insert((new_head.x, new_head.y));
+                let body_len = snake.snake.len() as f32;
+                let visited = snake.visited_cells.len().max(1) as f32;
+                snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
+            }
+
+            if is_collision || is_timeout {
+                snake.is_game_over = true;
             } else {
-                let tail = *snake.snake.back().unwrap();
-                snake.body_set.remove(&tail);
-                snake.snake.pop_back();
+                snake.snake.push_front(new_head);
+                snake.body_set.insert(new_head);
+                if ate_food {
+                    if snake.food_spawn_distance > 0 {
+                        let ratio = (snake.food_spawn_distance as f32
+                            / snake.steps_without_food as f32)
+                            .clamp(0.0, 1.0);
+                        snake.path_directness_sum += ratio;
+                    }
+                    snake.score += 1;
+                    game_stats.total_food_eaten += 1;
+                    snake.food_time_sum += snake.steps_without_food as u64;
+                    snake.timeout_budget_sum +=
+                        config.calculate_timeout(snake.snake.len(), grid.width, grid.height) as u64;
+                    if snake.score > new_high_score {
+                        new_high_score = snake.score;
+                    }
+
+                    let new_food = gen_seed.food_at_free(
+                        snake.score as usize,
+                        &snake.body_set,
+                        &grid_map.terrain,
+                        grid.width,
+                    );
+                    let new_manhattan =
+                        (new_food.x - new_head.x).abs() + (new_food.y - new_head.y).abs();
+                    snake.food_spawn_distance = new_manhattan as u32;
+                    snake.food = new_food;
+                    snake.steps_without_food = 0;
+                } else {
+                    let tail = *snake.snake.back().unwrap();
+                    snake.body_set.remove(&tail);
+                    snake.snake.pop_back();
+                }
             }
         }
-    }
-    game.high_score = new_high_score;
+        game.high_score = new_high_score;
 
-    if game.alive_count() == 0 {
-        game_stats.total_games_played += game.snakes.len() as u64;
-        end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
+        if game.alive_count() == 0 {
+            game_stats.total_games_played += game.snakes.len() as u64;
+            end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
 
-        let new_seed = GenerationSeed::new_for_grid_with_config(&grid, &config);
-        grid_map.apply_terrain(&new_seed.terrain);
-        cell_map.terrain_dirty = true;
-        *gen_seed = new_seed;
+            let new_seed = GenerationSeed::new_for_grid_with_config(&grid, &config);
+            grid_map.apply_terrain(&new_seed.terrain);
+            cell_map.terrain_dirty = true;
+            *gen_seed = new_seed;
 
-        let total_snakes = game.snakes.len();
-        let individuals = evo_manager.get_population();
-        let best_fitness = evo_manager.archive.best_fitness.max(1.0);
+            let total_snakes = game.snakes.len();
+            let individuals = evo_manager.get_population();
+            let best_fitness = evo_manager.archive.best_fitness.max(1.0);
 
-        for (i, snake) in game.snakes.iter_mut().enumerate() {
-            let (courage, agility, fitness, best) = individuals
-                .get(i)
-                .map(|ind| {
-                    (
-                        ind.path_directness,
-                        ind.body_avoidance,
-                        ind.fitness,
-                        best_fitness,
-                    )
-                })
-                .unwrap_or((0.0, 0.0, 0.0, 1.0));
+            for (i, snake) in game.snakes.iter_mut().enumerate() {
+                let (courage, agility, fitness, best) = individuals
+                    .get(i)
+                    .map(|ind| {
+                        (
+                            ind.path_directness,
+                            ind.body_avoidance,
+                            ind.fitness,
+                            best_fitness,
+                        )
+                    })
+                    .unwrap_or((0.0, 0.0, 0.0, 1.0));
 
-            snake.reset_with_seed(
-                &grid,
-                total_snakes,
-                &gen_seed,
-                courage,
-                agility,
-                fitness,
-                best,
-            );
-            if let Some(ind) = individuals.get(i) {
-                snake.color = ind.archive_color.to_bevy_color();
+                snake.reset_with_seed(
+                    &grid,
+                    total_snakes,
+                    &gen_seed,
+                    courage,
+                    agility,
+                    fitness,
+                    best,
+                );
+                if let Some(ind) = individuals.get(i) {
+                    snake.color = ind.archive_color.to_bevy_color();
+                }
             }
-        }
 
-        let new_pop = evo_manager.get_population();
-        population.0.clear();
-        for ind in new_pop.iter() {
-            population.0.push(Arc::new(ind.brain.clone()));
-        }
+            let new_pop = evo_manager.get_population();
+            population.0.clear();
+            for ind in new_pop.iter() {
+                population.0.push(Arc::new(ind.brain.clone()));
+            }
 
-        game.total_iterations += 1;
+            game.total_iterations += 1;
+            // Continue loop with new snakes - no break needed
+        }
     }
+
+    computed.0 = Vec::new();
 }
 
 fn end_generation(

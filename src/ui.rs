@@ -339,7 +339,7 @@ pub fn spawn_stats_ui(mut commands: Commands, _game: Res<GameState>) {
 
     commands.spawn((
         TextBundle::from_section(
-            "[R]Render:ON  [G]Graph  [B]Board  [F]Fullscreen  [C]Collision:OFF  [ESC]Exit",
+            "[R]Render  [G]Graph  [B]Board  [P]Pause  [F]Full  [C]Collision  [[]Steps-  []]Steps+  [ESC]Exit",
             TextStyle {
                 font_size: 14.0,
                 color: Color::GRAY,
@@ -391,6 +391,7 @@ pub fn update_stats_ui(
     global_history: Res<GlobalTrainingHistory>,
     mut ui_timer: ResMut<UiUpdateTimer>,
     time: Res<Time>,
+    sim_steps: Res<crate::snake::SimStepsPerFrame>,
 ) {
     // Limit UI updates to ~10Hz
     ui_timer.0.tick(time.delta());
@@ -470,7 +471,7 @@ pub fn update_stats_ui(
             game_stats.total_food_eaten,
             game_stats.total_games_played
         );
-        st_text.sections[3].value = format!("  FPS: {:.0}", _stats.fps);
+        st_text.sections[3].value = format!("FPS:{:4.0} | Steps:{:3}", _stats.fps, sim_steps.0);
     }
 
     if let Ok(mut cmd_text) = commands_query.get_single_mut() {
@@ -511,6 +512,7 @@ pub fn handle_input(
     mut pause_state: ResMut<PauseState>,
     // AGGIUNTA: Recuperiamo la directory della run corrente
     run_dir: Res<crate::snake::RunDirectory>,
+    mut sim_steps: ResMut<crate::snake::SimStepsPerFrame>,
 ) {
     use crate::snake::{new_session_path, save_training_session}; // Rimosso get_or_create_run_dir non più necessario qui
     use std::time::Instant;
@@ -648,6 +650,15 @@ pub fn handle_input(
             graph_state.visible = true;
             graph_state.needs_redraw = true;
         }
+    }
+
+    if keyboard_input.just_pressed(KeyCode::BracketRight) {
+        sim_steps.0 = (sim_steps.0 + 1).min(200);
+        println!("Steps/frame: {}", sim_steps.0);
+    }
+    if keyboard_input.just_pressed(KeyCode::BracketLeft) {
+        sim_steps.0 = sim_steps.0.saturating_sub(1).max(1);
+        println!("Steps/frame: {}", sim_steps.0);
     }
 }
 

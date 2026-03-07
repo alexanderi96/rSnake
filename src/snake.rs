@@ -25,6 +25,16 @@ pub fn init_parallel_threads() -> usize {
     threads
 }
 
+/// Numero di step di simulazione per frame Bevy (default 1, range 1-200)
+#[derive(Resource, Clone, Debug)]
+pub struct SimStepsPerFrame(pub u32);
+
+impl Default for SimStepsPerFrame {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
 /// Configurazione parallelism - snake_count separato dai core CPU
 #[derive(Resource, Clone)]
 #[allow(dead_code)]
@@ -681,7 +691,7 @@ pub fn get_current_17_state(
                 let diff_y = (contact_y - head.y) as f32;
                 let euclidean_dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
 
-                if euclidean_dist <= 1.0 {
+                if euclidean_dist <= 1.415 {
                     current_state[i] = 1.0;
                 } else {
                     current_state[i] = (-decay_rate * euclidean_dist).exp();
@@ -707,7 +717,7 @@ pub fn get_current_17_state(
         let dir_len = ((dx * dx + dy * dy) as f32).sqrt();
         let dir_vec = (dx as f32 / dir_len, dy as f32 / dir_len);
         let dot_product = target_vec.0 * dir_vec.0 + target_vec.1 * dir_vec.1;
-        current_state[8 + i] = dot_product.max(0.0);
+        current_state[8 + i] = dot_product;
     }
 
     let target_euclidean_dist = target_dist;
