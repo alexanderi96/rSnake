@@ -93,7 +93,7 @@ fn spawn_header(parent: &mut ChildBuilder) {
             ));
 
             header.spawn(TextBundle::from_section(
-                "[1]Sim [2]Inspect | [S]ensors [W]eights [A]ctivations | [N]ext [P]rev [H]ide",
+                "[1]Sim [2]Inspect | [S]ensors [W]eights [A]ctivations | [N]/→ Next [←] Prev [H]ide",
                 TextStyle {
                     font_size: 11.0,
                     color: Color::GRAY,

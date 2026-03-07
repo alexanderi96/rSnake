@@ -234,7 +234,7 @@ impl Plugin for UiPlugin {
         .add_systems(
             Update,
             (
-                handle_input,
+                handle_input.run_if(in_state(crate::brain_inspector::AppState::SimulationView)),
                 on_window_resize_collect,
                 on_window_resize_apply.after(on_window_resize_collect),
                 render_system.after(on_window_resize_apply),
@@ -781,6 +781,8 @@ pub fn render_system(
     mut stats: ResMut<TrainingStats>,
     mut cell_map: ResMut<CellRenderMap>,
     evo_manager: Res<EvolutionManager>,
+    app_state: Res<State<crate::brain_inspector::AppState>>,
+    inspected_agent: Res<crate::brain_inspector::InspectedAgent>,
 ) {
     #[cfg(feature = "tracy")]
     let _span = tracing::info_span!("render_system").entered();
@@ -839,11 +841,23 @@ pub fn render_system(
         .map(|ind| ind.fitness)
         .collect();
 
+    let is_inspector_view =
+        app_state.get() == &crate::brain_inspector::AppState::BrainInspectorView;
+    let selected_snake_id = inspected_agent.snake_idx;
+
     // === PHASE 0: Render terrain walls (only when terrain changes) ===
     const WALL_COLOR: Color = Color::rgb(0.50, 0.22, 0.15);
+    // Dimmed wall color for inspector view (semi-transparent effect via darker color)
+    const WALL_COLOR_DIM: Color = Color::rgb(0.12, 0.06, 0.04);
 
     // Clear dynamic cells (snakes) but preserve terrain via dirty flag
     cell_map.cells.fill(None);
+
+    let terrain_wall_color = if is_inspector_view {
+        WALL_COLOR_DIM
+    } else {
+        WALL_COLOR
+    };
 
     if cell_map.terrain_dirty {
         for y in 0..grid_map.height {
@@ -851,7 +865,7 @@ pub fn render_system(
                 let idx = (y * grid_map.width + x) as usize;
                 if grid_map.terrain[idx] {
                     if let Some(cidx) = cell_map.cell_index(x, y) {
-                        cell_map.cells[cidx] = Some((WALL_COLOR, f32::INFINITY));
+                        cell_map.cells[cidx] = Some((terrain_wall_color, f32::INFINITY));
                     }
                 }
             }
@@ -864,7 +878,7 @@ pub fn render_system(
                 let idx = (y * grid_map.width + x) as usize;
                 if grid_map.terrain[idx] {
                     if let Some(cidx) = cell_map.cell_index(x, y) {
-                        cell_map.cells[cidx] = Some((WALL_COLOR, f32::INFINITY));
+                        cell_map.cells[cidx] = Some((terrain_wall_color, f32::INFINITY));
                     }
                 }
             }
@@ -872,23 +886,36 @@ pub fn render_system(
     }
 
     // === PHASE 1: Build cell color map ===
-    // For each occupied cell, keep only the color of the highest-fitness snake
+    // For each occupied cell, keep only the color of the highest-fitness snake.
+    // In inspector view: selected snake at full brightness, others dimmed to ~15%.
     for snake in game.snakes.iter() {
         if snake.is_game_over {
             continue;
         }
         let snake_fitness = fitness_map.get(snake.id).copied().unwrap_or(0.0);
 
+        let is_selected = is_inspector_view && selected_snake_id == Some(snake.id);
+        let dim_factor = if is_inspector_view && !is_selected {
+            0.12 // ~12% brightness for non-selected snakes
+        } else {
+            1.0
+        };
+
         for (seg_idx, pos) in snake.snake.iter().enumerate() {
             let Some(cidx) = cell_map.cell_index(pos.x, pos.y) else {
                 continue;
             };
-            // Head is always white; body uses the snake's behavioral color
-            let color = if seg_idx == 0 {
+            // Head is always white (or dimmed); body uses the snake's behavioral color
+            let base_color = if seg_idx == 0 {
                 Color::rgb(1.0, 1.0, 1.0)
             } else {
                 snake.color
             };
+            let color = Color::rgb(
+                base_color.r() * dim_factor,
+                base_color.g() * dim_factor,
+                base_color.b() * dim_factor,
+            );
             // Only update if this snake has higher fitness than the current winner
             match cell_map.cells[cidx] {
                 Some((_, existing_fitness)) if snake_fitness <= existing_fitness => {}
@@ -956,12 +983,16 @@ pub fn render_system(
     }
 
     // === PHASE 3: Update food entities ===
+    // In inspector view: only show food for the selected snake.
     for snake in game.snakes.iter() {
         let Some(&food_entity) = food_pool.entities.get(snake.id) else {
             continue;
         };
 
-        if snake.is_game_over {
+        let hide_food =
+            snake.is_game_over || (is_inspector_view && selected_snake_id != Some(snake.id));
+
+        if hide_food {
             commands.entity(food_entity).insert(Visibility::Hidden);
             continue;
         }

@@ -112,6 +112,9 @@ impl Plugin for BrainInspectorPlugin {
             .add_systems(OnEnter(AppState::BrainInspectorView), enter_inspector_view)
             .add_systems(OnExit(AppState::BrainInspectorView), exit_inspector_view)
             .add_systems(OnEnter(AppState::SimulationView), enter_simulation_view)
+            // Force terrain redraw on view switch so wall colors update immediately
+            .add_systems(OnEnter(AppState::BrainInspectorView), mark_terrain_dirty)
+            .add_systems(OnEnter(AppState::SimulationView), mark_terrain_dirty)
             // Inspector update systems (only in BrainInspectorView)
             .add_systems(
                 Update,
@@ -202,8 +205,7 @@ fn inspector_controls_system(
         navigate_to_next_agent(&mut inspected_agent, &mut inspector_state, &game_state);
     }
 
-    if keyboard_input.just_pressed(KeyCode::ArrowLeft) || keyboard_input.just_pressed(KeyCode::KeyP)
-    {
+    if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
         navigate_to_prev_agent(&mut inspected_agent, &mut inspector_state, &game_state);
     }
 
@@ -319,6 +321,13 @@ fn navigate_to_prev_agent(
 // ============================================================================
 // STATE TRANSITION SYSTEMS
 // ============================================================================
+
+/// Force terrain redraw on view switch so wall/background colors update immediately
+fn mark_terrain_dirty(mut cell_map: ResMut<crate::ui::CellRenderMap>) {
+    cell_map.terrain_dirty = true;
+    // Also clear prev_colors so all cells are re-evaluated next frame
+    cell_map.prev_colors.fill(None);
+}
 
 /// Called when entering Brain Inspector view
 fn enter_inspector_view(
