@@ -198,10 +198,8 @@ fn inspector_controls_system(
         select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 9);
     }
 
-    // Next/Previous agent navigation
-    if keyboard_input.just_pressed(KeyCode::ArrowRight)
-        || keyboard_input.just_pressed(KeyCode::KeyN)
-    {
+    // Next/Previous agent navigation (arrow keys only)
+    if keyboard_input.just_pressed(KeyCode::ArrowRight) {
         navigate_to_next_agent(&mut inspected_agent, &mut inspector_state, &game_state);
     }
 

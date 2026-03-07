@@ -93,7 +93,7 @@ fn spawn_header(parent: &mut ChildBuilder) {
             ));
 
             header.spawn(TextBundle::from_section(
-                "[1]Sim [2]Inspect | [S]ensors [W]eights [A]ctivations | [N]/→ Next [←] Prev [H]ide",
+                "[1]Sim [2]Inspect | [S]ensors [W]eights [A]ctivations | [→] Next [←] Prev [H]ide",
                 TextStyle {
                     font_size: 11.0,
                     color: Color::GRAY,
@@ -581,22 +581,30 @@ fn spawn_activations_tab(parent: &mut ChildBuilder, inspected: &InspectedAgent) 
 // VISIBILITY SYSTEM
 // ============================================================================
 
-/// Update inspector UI visibility based on state
+/// Update inspector UI visibility based on state.
+/// Handles [H] toggle: despawn when hidden, respawn when shown again.
 pub fn update_inspector_visibility(
     mut commands: Commands,
     inspector_state: Res<BrainInspectorState>,
     current_state: Res<State<crate::brain_inspector::AppState>>,
     ui_query: Query<Entity, With<BrainInspectorUi>>,
 ) {
-    let should_be_visible = inspector_state.panel_visible
-        && current_state.get() == &crate::brain_inspector::AppState::BrainInspectorView;
+    // Only relevant in BrainInspectorView
+    if current_state.get() != &crate::brain_inspector::AppState::BrainInspectorView {
+        return;
+    }
+
+    // Only act when inspector_state actually changed (avoids work every frame)
+    if !inspector_state.is_changed() {
+        return;
+    }
 
     let ui_exists = !ui_query.is_empty();
 
-    if should_be_visible && !ui_exists {
-        // UI should spawn - will be handled by enter_inspector_view
-    } else if !should_be_visible && ui_exists {
-        // Hide UI
+    if inspector_state.panel_visible && !ui_exists {
+        // Respawn panel (e.g. after [H] toggled it back on)
+        spawn_inspector_ui(commands, inspector_state);
+    } else if !inspector_state.panel_visible && ui_exists {
         for entity in ui_query.iter() {
             commands.entity(entity).despawn_recursive();
         }

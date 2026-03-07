@@ -180,10 +180,10 @@ fn main() {
         .add_systems(
             Update,
             (
-                brain_inspector::ui::spawn_inspector_ui,
                 brain_inspector::ui::update_inspector_content,
                 brain_inspector::ui::update_inspector_visibility,
-            ),
+            )
+                .run_if(in_state(brain_inspector::AppState::BrainInspectorView)),
         )
         .run();
 }
