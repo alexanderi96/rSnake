@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 mod brain;
+mod brain_inspector;
 mod config;
 mod evolution;
 mod map_elites;
@@ -26,6 +27,9 @@ use bevy::sprite::MaterialMesh2dBundle;
 use clap::Parser;
 
 use brain::Action;
+use brain_inspector::{
+    BrainInspectorPlugin, BrainLoaderPlugin, InspectorGizmoPlugin, SimulationCamera,
+};
 use config::Hyperparameters;
 use evolution::EvolutionManager;
 use snake::{
@@ -157,6 +161,9 @@ fn main() {
         .insert_resource(hyperparams)
         .add_plugins(SnakePlugin)
         .add_plugins(UiPlugin)
+        .add_plugins(BrainInspectorPlugin)
+        .add_plugins(InspectorGizmoPlugin)
+        .add_plugins(BrainLoaderPlugin)
         .add_systems(Startup, setup)
         .add_systems(Startup, ui::spawn_stats_ui.after(setup))
         // Two-phase parallel simulation: compute moves (parallel) then apply (serial)
@@ -168,6 +175,14 @@ fn main() {
                 compute_moves_parallel,
                 apply_moves_serial.after(compute_moves_parallel),
                 log_diagnostics_periodic,
+            ),
+        )
+        .add_systems(
+            Update,
+            (
+                brain_inspector::ui::spawn_inspector_ui,
+                brain_inspector::ui::update_inspector_content,
+                brain_inspector::ui::update_inspector_visibility,
             ),
         )
         .run();
@@ -225,7 +240,7 @@ fn setup(
     hyperparams: Res<Hyperparameters>,
     args: Res<CliArgs>,
 ) {
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn((Camera2dBundle::default(), SimulationCamera));
 
     let window = windows.single();
     let (grid_width, grid_height) =
