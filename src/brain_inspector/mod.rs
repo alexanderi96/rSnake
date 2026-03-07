@@ -15,18 +15,6 @@ use bevy::prelude::*;
 use crate::snake::{GameState, GridDimensions, GridMap, SnakeInstance};
 
 // ============================================================================
-// STATE MANAGEMENT
-// ============================================================================
-
-/// Application states for view switching
-#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum AppState {
-    #[default]
-    SimulationView,
-    BrainInspectorView,
-}
-
-// ============================================================================
 // RESOURCES
 // ============================================================================
 
@@ -78,10 +66,6 @@ pub enum InspectorTab {
 #[derive(Component)]
 pub struct BrainInspectorUi;
 
-/// Marker for the inspector camera (separate from simulation camera)
-#[derive(Component)]
-pub struct InspectorCamera;
-
 /// Marker for simulation camera
 #[derive(Component)]
 pub struct SimulationCamera;
@@ -98,29 +82,13 @@ pub struct BrainInspectorPlugin;
 
 impl Plugin for BrainInspectorPlugin {
     fn build(&self, app: &mut App) {
-        app.init_state::<AppState>()
-            .insert_resource(InspectedAgent::default())
+        // Resources always available (no state-based filtering)
+        app.insert_resource(InspectedAgent::default())
             .insert_resource(BrainInspectorState::default())
-            // View switching always available
-            .add_systems(Update, view_switch_system)
-            // Inspector controls only in BrainInspectorView
-            .add_systems(
-                Update,
-                inspector_controls_system.run_if(in_state(AppState::BrainInspectorView)),
-            )
-            // State enter/exit systems
-            .add_systems(OnEnter(AppState::BrainInspectorView), enter_inspector_view)
-            .add_systems(OnExit(AppState::BrainInspectorView), exit_inspector_view)
-            .add_systems(OnEnter(AppState::SimulationView), enter_simulation_view)
-            // Force terrain redraw on view switch so wall colors update immediately
-            .add_systems(OnEnter(AppState::BrainInspectorView), mark_terrain_dirty)
-            .add_systems(OnEnter(AppState::SimulationView), mark_terrain_dirty)
-            // Inspector update systems (only in BrainInspectorView)
-            .add_systems(
-                Update,
-                (handle_agent_death_and_switch, update_sensor_cache)
-                    .run_if(in_state(AppState::BrainInspectorView)),
-            );
+            // Input handling - unified, no state restrictions
+            .add_systems(Update, inspector_input_system)
+            // Always run sensor cache and death handling
+            .add_systems(Update, (handle_agent_death_and_switch, update_sensor_cache));
     }
 }
 
@@ -128,35 +96,55 @@ impl Plugin for BrainInspectorPlugin {
 // INPUT SYSTEMS
 // ============================================================================
 
-/// View switching system - always available
-fn view_switch_system(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    current_state: Res<State<AppState>>,
-    mut next_state: ResMut<NextState<AppState>>,
-) {
-    // View switching with number keys (always active)
-    if keyboard_input.just_pressed(KeyCode::Digit1) {
-        if current_state.get() != &AppState::SimulationView {
-            println!("[VIEW] Switching to Simulation View");
-            next_state.set(AppState::SimulationView);
-        }
-    }
-
-    if keyboard_input.just_pressed(KeyCode::Digit2) {
-        if current_state.get() != &AppState::BrainInspectorView {
-            println!("[VIEW] Switching to Brain Inspector View");
-            next_state.set(AppState::BrainInspectorView);
-        }
-    }
-}
-
-/// Inspector controls - only active in BrainInspectorView
-fn inspector_controls_system(
+/// Unified input system - handles all keybindings in single view
+/// Panel toggles: [I] Inspector, [L] Leaderboard, [K] Keybindings
+/// Note: [G] Graph and [B] Heatmap are handled in handle_input (ui.rs) with complex state
+fn inspector_input_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut inspector_state: ResMut<BrainInspectorState>,
     game_state: Res<GameState>,
     mut inspected_agent: ResMut<InspectedAgent>,
+    mut panel_visibility: ResMut<crate::ui::PanelVisibility>,
 ) {
+    // === PANEL TOGGLES ===
+    // [I] Toggle Inspector Panel
+    if keyboard_input.just_pressed(KeyCode::KeyI) {
+        panel_visibility.inspector = !panel_visibility.inspector;
+        println!(
+            "[PANEL] Inspector: {}",
+            if panel_visibility.inspector {
+                "ON"
+            } else {
+                "OFF"
+            }
+        );
+    }
+    // [L] Toggle Leaderboard Panel
+    if keyboard_input.just_pressed(KeyCode::KeyL) {
+        panel_visibility.leaderboard = !panel_visibility.leaderboard;
+        println!(
+            "[PANEL] Leaderboard: {}",
+            if panel_visibility.leaderboard {
+                "ON"
+            } else {
+                "OFF"
+            }
+        );
+    }
+    // [K] Toggle Keybindings Panel
+    if keyboard_input.just_pressed(KeyCode::KeyK) {
+        panel_visibility.keybindings = !panel_visibility.keybindings;
+        println!(
+            "[PANEL] Keybindings: {}",
+            if panel_visibility.keybindings {
+                "ON"
+            } else {
+                "OFF"
+            }
+        );
+    }
+
+    // === INSPECTOR CONTROLS ===
     // Tab switching
     if keyboard_input.just_pressed(KeyCode::KeyS) {
         inspector_state.active_tab = InspectorTab::Sensors;
@@ -314,110 +302,6 @@ fn navigate_to_prev_agent(
     inspected_agent.snake_idx = Some(prev);
     inspector_state.follow_snake_id = Some(prev);
     println!("[INSPECTOR] Previous snake {} (DEAD)", prev);
-}
-
-// ============================================================================
-// STATE TRANSITION SYSTEMS
-// ============================================================================
-
-/// Force terrain redraw on view switch so wall/background colors update immediately
-fn mark_terrain_dirty(mut cell_map: ResMut<crate::ui::CellRenderMap>) {
-    cell_map.terrain_dirty = true;
-    // Also clear prev_colors so all cells are re-evaluated next frame
-    cell_map.prev_colors.fill(None);
-}
-
-/// Called when entering Brain Inspector view
-fn enter_inspector_view(
-    mut commands: Commands,
-    mut inspector_state: ResMut<BrainInspectorState>,
-    mut inspected_agent: ResMut<InspectedAgent>,
-    game_state: Res<GameState>,
-    sim_camera_query: Query<Entity, With<SimulationCamera>>,
-    window_query: Query<&Window>,
-) {
-    println!("Entering Brain Inspector View");
-
-    // Hide simulation camera
-    for entity in sim_camera_query.iter() {
-        commands.entity(entity).insert(Visibility::Hidden);
-    }
-
-    // Spawn inspector camera - static view like simulation (no following)
-    commands.spawn((
-        Camera2dBundle {
-            camera: Camera {
-                order: 1, // Render on top
-                ..default()
-            },
-            ..default()
-        },
-        InspectorCamera,
-    ));
-
-    // Auto-select the alive snake with highest score
-    let best_alive = game_state
-        .snakes
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| !s.is_game_over)
-        .max_by_key(|(_, s)| s.score);
-
-    if let Some((idx, snake)) = best_alive {
-        inspected_agent.snake_idx = Some(idx);
-        inspector_state.follow_snake_id = Some(idx);
-        println!("Auto-selected snake {} with score {}", idx, snake.score);
-    } else if !game_state.snakes.is_empty() {
-        // If all dead, select first one
-        inspected_agent.snake_idx = Some(0);
-        inspector_state.follow_snake_id = Some(0);
-    }
-
-    // Mark panel as needing spawn
-    inspector_state.panel_visible = true;
-
-    // Spawn the UI
-    ui::spawn_inspector_ui(commands, inspector_state.into());
-}
-
-/// Called when exiting Brain Inspector view
-fn exit_inspector_view(
-    mut commands: Commands,
-    inspector_ui_query: Query<Entity, With<BrainInspectorUi>>,
-    inspector_camera_query: Query<Entity, With<InspectorCamera>>,
-    mut sim_camera_query: Query<&mut Visibility, With<SimulationCamera>>,
-) {
-    println!("Exiting Brain Inspector View");
-
-    // Despawn all inspector UI
-    for entity in inspector_ui_query.iter() {
-        commands.entity(entity).despawn_recursive();
-    }
-
-    // Despawn inspector camera
-    for entity in inspector_camera_query.iter() {
-        commands.entity(entity).despawn();
-    }
-
-    // Show simulation camera
-    for mut visibility in sim_camera_query.iter_mut() {
-        *visibility = Visibility::Visible;
-    }
-}
-
-/// Called when entering Simulation view
-fn enter_simulation_view(
-    mut commands: Commands,
-    window_query: Query<&Window>,
-    sim_camera_query: Query<Entity, With<SimulationCamera>>,
-) {
-    println!("Entering Simulation View");
-
-    // Ensure simulation camera exists (in case it was despawned)
-    if sim_camera_query.is_empty() {
-        let _window = window_query.single();
-        commands.spawn((Camera2dBundle::default(), SimulationCamera));
-    }
 }
 
 // ============================================================================

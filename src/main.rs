@@ -27,9 +27,7 @@ use bevy::sprite::MaterialMesh2dBundle;
 use clap::Parser;
 
 use brain::Action;
-use brain_inspector::{
-    BrainInspectorPlugin, BrainLoaderPlugin, InspectorGizmoPlugin, SimulationCamera,
-};
+use brain_inspector::{BrainLoaderPlugin, InspectorGizmoPlugin, SimulationCamera};
 use config::Hyperparameters;
 use evolution::EvolutionManager;
 use snake::{
@@ -161,7 +159,6 @@ fn main() {
         .insert_resource(hyperparams)
         .add_plugins(SnakePlugin)
         .add_plugins(UiPlugin)
-        .add_plugins(BrainInspectorPlugin)
         .add_plugins(InspectorGizmoPlugin)
         .add_plugins(BrainLoaderPlugin)
         .add_systems(Startup, setup)
@@ -182,8 +179,7 @@ fn main() {
             (
                 brain_inspector::ui::update_inspector_content,
                 brain_inspector::ui::update_inspector_visibility,
-            )
-                .run_if(in_state(brain_inspector::AppState::BrainInspectorView)),
+            ),
         )
         .run();
 }

@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 
-use crate::brain_inspector::{AppState, InspectedAgent};
+use crate::brain_inspector::InspectedAgent;
 use crate::snake::{Direction, GameState, GridDimensions, GridMap, SnakeInstance, BLOCK_SIZE};
 
 // ============================================================================
@@ -52,7 +52,7 @@ pub fn draw_inspector_gizmos(
     inspected: Res<InspectedAgent>,
     game_state: Res<GameState>,
     grid: Res<GridDimensions>,
-    grid_map: Res<GridMap>,
+    _grid_map: Res<GridMap>,
     config: Res<InspectorGizmoConfig>,
     windows: Query<&Window>,
 ) {
@@ -103,7 +103,7 @@ pub fn draw_inspector_gizmos(
     );
 
     // Draw agent info label above head
-    let label_pos = head_world_pos + Vec3::new(0.0, BLOCK_SIZE * 1.5, 0.0);
+    let _label_pos = head_world_pos + Vec3::new(0.0, BLOCK_SIZE * 1.5, 0.0);
     // Note: Text rendering with gizmos is limited, we'll use the UI for detailed info
 
     // Draw selection highlight around the snake
@@ -284,9 +284,6 @@ pub struct InspectorGizmoPlugin;
 impl Plugin for InspectorGizmoPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(InspectorGizmoConfig::default())
-            .add_systems(
-                Update,
-                draw_inspector_gizmos.run_if(in_state(AppState::BrainInspectorView)),
-            );
+            .add_systems(Update, draw_inspector_gizmos);
     }
 }

@@ -1,287 +1,1703 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="it">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Snake AI - Bussola Relativa</title>
-    <style>
-        :root {
-            --bg-color: #0f172a; --panel-bg: #1e293b; --text-color: #e2e8f0;
-            --cell-bg: #334155; --wall-color: #000000; --head-color: #22c55e;
-            --body-color: #166534; --food-color: #3b82f6; --ray-color: rgba(239, 68, 68, 0.15);
-        }
-
-        body { margin: 0; padding: 20px; font-family: 'Segoe UI', Tahoma, sans-serif; background-color: var(--bg-color); color: var(--text-color); display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; box-sizing: border-box; }
-        .main-container { display: flex; gap: 30px; flex-wrap: wrap; justify-content: center; }
-        .panel { background-color: var(--panel-bg); padding: 25px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: flex; flex-direction: column; align-items: center; }
-
-        .grid { display: grid; grid-template-columns: repeat(11, 1fr); gap: 4px; background-color: var(--wall-color); padding: 4px; border-radius: 8px; border: 4px solid #475569; margin-bottom: 20px; }
-        .cell { width: 32px; height: 32px; background-color: var(--cell-bg); border-radius: 4px; position: relative; cursor: pointer; transition: background 0.2s; }
-        .cell:hover:not(.head):not(.body) { background-color: #475569; }
-
-        .cell.head { background-color: var(--head-color); box-shadow: 0 0 10px rgba(34, 197, 94, 0.6); z-index: 3; cursor: default; }
-        
-        /* Naso del serpente per indicare la direzione in cui guarda */
-        .cell.head::after { content: ''; position: absolute; width: 6px; height: 6px; background-color: #fff; border-radius: 50%; transform: translate(-50%, -50%); }
-        .cell.head.face-UP::after { top: 20%; left: 50%; }
-        .cell.head.face-DOWN::after { top: 80%; left: 50%; }
-        .cell.head.face-RIGHT::after { top: 50%; left: 80%; }
-        .cell.head.face-LEFT::after { top: 50%; left: 20%; }
-
-        .cell.body { background-color: var(--body-color); z-index: 2; cursor: default; }
-        .cell.food { background-color: var(--food-color); box-shadow: 0 0 12px var(--food-color); z-index: 2; }
-        .cell.ray { background-color: var(--ray-color); }
-
-        button { padding: 12px 24px; background-color: var(--head-color); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; transition: background-color 0.2s;}
-        button:hover { background-color: #16a34a; }
-
-        .sensors-container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
-        .sensor-card { background: #000; padding: 20px; border-radius: 12px; width: 260px; display: flex; flex-direction: column; align-items: center; }
-        .compass-container { width: 180px; height: 180px; position: relative; margin-bottom: 20px; }
-        svg { width: 100%; height: 100%; overflow: visible; }
-        .wedge { transition: opacity 0.2s ease-out, fill 0.2s ease-out; }
-        
-        .stats-list { width: 100%; }
-        .stat-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; font-weight: bold; }
-        .stat-bar-container { width: 50%; background: #333; border-radius: 4px; overflow: hidden; height: 14px; margin-top: 2px; }
-        .stat-bar { height: 100%; width: 0%; transition: width 0.2s ease-out; }
-        
-        .distance-box { margin-top: 15px; padding-top: 15px; border-top: 1px solid #334155; width: 100%; text-align: center; font-size: 14px; font-weight: bold; color: #3b82f6; }
-        h2 { margin: 0 0 15px 0; font-size: 1.3rem; text-align: center; color: #fff; }
-        h3 { margin: 0 0 15px 0; font-size: 1.1rem; text-align: center; color: #94a3b8; }
-    </style>
-</head>
-<body>
-
-    <div class="main-container">
-        <div class="panel">
-            <h2>Mondo Assoluto</h2>
-            <div id="grid" class="grid"></div>
-            <div style="font-size: 12px; color: #94a3b8; margin-bottom: 15px; text-align: center;">Clicca sulla griglia per posizionare il cibo</div>
-            <button onclick="generateScene()">Rigenera Serpente Casuale</button>
+    <head>
+        <meta charset="UTF-8" />
+        <title>Snake Brain Inspector</title>
+        <style>
+            @import url("https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700&display=swap");
+            :root {
+                --bg0: #070b0f;
+                --bg1: #0d1318;
+                --bg2: #111820;
+                --border: #1a2a1a;
+                --green: #00e87a;
+                --green-dim: #007a3a;
+                --orange: #ff6b35;
+                --blue: #38aeff;
+                --text: #b0c8b0;
+                --text-dim: #4a6a4a;
+                --font: "Share Tech Mono", "Courier New", monospace;
+                --title: "Orbitron", monospace;
+            }
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            body {
+                background: var(--bg0);
+                color: var(--text);
+                font-family: var(--font);
+                font-size: 11px;
+                height: 100vh;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            header {
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                padding: 6px 12px;
+                background: var(--bg1);
+                border-bottom: 1px solid var(--border);
+                flex-shrink: 0;
+            }
+            header h1 {
+                font-family: var(--title);
+                font-size: 13px;
+                color: var(--green);
+                letter-spacing: 2px;
+            }
+            .badge {
+                font-size: 9px;
+                padding: 2px 6px;
+                border: 1px solid var(--green-dim);
+                color: var(--green-dim);
+                letter-spacing: 1px;
+            }
+            .sep {
+                flex: 1;
+            }
+            .toolbar {
+                display: flex;
+                gap: 4px;
+                align-items: center;
+                padding: 5px 12px;
+                background: var(--bg1);
+                border-bottom: 1px solid var(--border);
+                flex-shrink: 0;
+                flex-wrap: wrap;
+            }
+            .tool-group {
+                display: flex;
+                gap: 2px;
+                border: 1px solid var(--border);
+                padding: 2px;
+            }
+            .tool-btn {
+                background: transparent;
+                border: none;
+                color: var(--text-dim);
+                font-family: var(--font);
+                font-size: 10px;
+                padding: 3px 8px;
+                cursor: pointer;
+                letter-spacing: 1px;
+                transition: all 0.1s;
+            }
+            .tool-btn:hover {
+                color: var(--text);
+                background: var(--bg2);
+            }
+            .tool-btn.t-head {
+                color: var(--bg0);
+                background: var(--green);
+            }
+            .tool-btn.t-food {
+                color: var(--bg0);
+                background: var(--blue);
+            }
+            .tool-btn.t-wall {
+                color: var(--bg0);
+                background: var(--orange);
+            }
+            .tool-btn.t-body {
+                color: var(--bg0);
+                background: var(--green-dim);
+            }
+            .tool-btn.t-era {
+                color: var(--bg0);
+                background: #444;
+            }
+            .dir-group {
+                display: grid;
+                grid-template-columns: repeat(3, 22px);
+                grid-template-rows: repeat(3, 16px);
+                gap: 1px;
+                margin-left: 4px;
+            }
+            .dir-btn {
+                background: var(--bg2);
+                border: 1px solid var(--border);
+                color: var(--text-dim);
+                font-size: 9px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.1s;
+            }
+            .dir-btn:hover {
+                border-color: var(--green-dim);
+                color: var(--text);
+            }
+            .dir-btn.sel {
+                background: var(--green);
+                color: var(--bg0);
+                border-color: var(--green);
+            }
+            .dir-center {
+                background: transparent;
+                border: none;
+            }
+            label {
+                font-size: 10px;
+                color: var(--text-dim);
+                margin: 0 4px;
+            }
+            select {
+                background: var(--bg2);
+                border: 1px solid var(--border);
+                color: var(--text);
+                font-family: var(--font);
+                font-size: 10px;
+                padding: 2px 4px;
+            }
+            .main {
+                display: grid;
+                grid-template-columns: auto 200px 1fr;
+                flex: 1;
+                overflow: hidden;
+            }
+            .grid-panel {
+                padding: 10px;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                border-right: 1px solid var(--border);
+                overflow: auto;
+            }
+            #gc {
+                cursor: crosshair;
+                image-rendering: pixelated;
+                display: block;
+            }
+            .state-panel {
+                padding: 8px;
+                border-right: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                overflow-y: auto;
+                overflow-x: hidden;
+            }
+            .ptitle {
+                font-family: var(--title);
+                font-size: 9px;
+                color: var(--green-dim);
+                letter-spacing: 2px;
+                padding-bottom: 3px;
+                border-bottom: 1px solid var(--border);
+                margin-bottom: 1px;
+                flex-shrink: 0;
+            }
+            .sr {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            .sl {
+                width: 64px;
+                font-size: 9px;
+                color: var(--text-dim);
+                flex-shrink: 0;
+                white-space: nowrap;
+                overflow: hidden;
+            }
+            .sbw {
+                flex: 1;
+                height: 8px;
+                background: var(--bg2);
+                position: relative;
+                border: 1px solid var(--border);
+            }
+            .sb {
+                position: absolute;
+                top: 0;
+                height: 100%;
+            }
+            .sv {
+                width: 36px;
+                text-align: right;
+                font-size: 9px;
+                color: var(--green);
+                flex-shrink: 0;
+            }
+            .div {
+                height: 1px;
+                background: var(--border);
+                margin: 2px 0;
+                flex-shrink: 0;
+            }
+            .cpw {
+                display: flex;
+                justify-content: center;
+                margin: 2px 0;
+                flex-shrink: 0;
+            }
+            .brain-panel {
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+            }
+            .brain-top {
+                padding: 8px;
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                flex-shrink: 0;
+            }
+            .blr {
+                display: flex;
+                gap: 6px;
+                align-items: center;
+                flex-wrap: wrap;
+            }
+            .blr button {
+                background: var(--bg2);
+                border: 1px solid var(--border);
+                color: var(--text);
+                font-family: var(--font);
+                font-size: 10px;
+                padding: 3px 10px;
+                cursor: pointer;
+                letter-spacing: 1px;
+            }
+            .blr button:hover {
+                border-color: var(--green-dim);
+                color: var(--green);
+            }
+            .bs {
+                font-size: 10px;
+                color: var(--text-dim);
+            }
+            .bs.ok {
+                color: var(--green);
+            }
+            .bs.err {
+                color: var(--orange);
+            }
+            .bs.loading {
+                color: var(--blue);
+            }
+            .nna {
+                flex: 1;
+                overflow: auto;
+                padding: 8px;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            .ar {
+                display: flex;
+                gap: 8px;
+            }
+            .ac {
+                flex: 1;
+                padding: 6px 4px;
+                background: var(--bg2);
+                border: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 3px;
+                transition: border-color 0.1s;
+            }
+            .ac.won {
+                border-color: var(--green);
+                box-shadow: 0 0 8px rgba(0, 232, 122, 0.2);
+            }
+            .an {
+                font-size: 9px;
+                letter-spacing: 1px;
+                color: var(--text-dim);
+            }
+            .av {
+                font-size: 13px;
+                color: var(--text);
+            }
+            .ac.won .av {
+                color: var(--green);
+            }
+            .abw {
+                width: 100%;
+                height: 4px;
+                background: var(--bg0);
+            }
+            .ab {
+                height: 100%;
+                background: var(--green-dim);
+                transition: width 0.1s;
+            }
+            .ac.won .ab {
+                background: var(--green);
+            }
+            .nll {
+                display: flex;
+                gap: 10px;
+                align-items: flex-start;
+            }
+            .nl {
+                display: flex;
+                flex-direction: column;
+                gap: 3px;
+                flex-shrink: 0;
+            }
+            .nlt {
+                font-size: 8px;
+                color: var(--text-dim);
+                letter-spacing: 1px;
+                text-align: center;
+                margin-bottom: 2px;
+            }
+            .ng {
+                display: grid;
+                gap: 1px;
+            }
+            .nc {
+                width: 10px;
+                height: 10px;
+                border-radius: 1px;
+                cursor: default;
+                position: relative;
+            }
+            .nc:hover::after {
+                content: attr(data-v);
+                position: absolute;
+                bottom: 12px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: var(--bg1);
+                border: 1px solid var(--border);
+                color: var(--text);
+                font-size: 8px;
+                padding: 1px 4px;
+                white-space: nowrap;
+                pointer-events: none;
+                z-index: 99;
+            }
+            .il {
+                display: flex;
+                flex-direction: column;
+                gap: 1px;
+            }
+            .ic {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            .id {
+                width: 10px;
+                height: 8px;
+                flex-shrink: 0;
+                border-radius: 1px;
+            }
+            .ilab {
+                font-size: 7.5px;
+                color: var(--text-dim);
+                white-space: nowrap;
+                width: 82px;
+                overflow: hidden;
+            }
+            .iv {
+                font-size: 7.5px;
+                color: var(--text-dim);
+                width: 30px;
+                text-align: right;
+            }
+            .nna-arr {
+                display: flex;
+                align-items: center;
+                padding-top: 28px;
+                color: var(--text-dim);
+                font-size: 14px;
+                flex-shrink: 0;
+            }
+            .jp {
+                background: var(--bg1);
+                border: 1px solid var(--border);
+                color: var(--green-dim);
+                font-family: var(--font);
+                font-size: 9px;
+                padding: 4px;
+                resize: none;
+                width: 100%;
+                height: 40px;
+            }
+            .jp:focus {
+                outline: none;
+                border-color: var(--green-dim);
+            }
+            .csr {
+                display: flex;
+                gap: 6px;
+                align-items: center;
+                flex-wrap: wrap;
+            }
+            .csr select {
+                max-width: 210px;
+            }
+            .si {
+                font-size: 9px;
+                color: var(--text-dim);
+                display: flex;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+            .si span b {
+                color: var(--green);
+            }
+            .toast {
+                position: fixed;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: #3a1010;
+                border: 1px solid var(--orange);
+                color: var(--orange);
+                font-size: 11px;
+                padding: 6px 14px;
+                pointer-events: none;
+                opacity: 0;
+                transition: opacity 0.3s;
+                z-index: 999;
+            }
+            .toast.show {
+                opacity: 1;
+            }
+            ::-webkit-scrollbar {
+                width: 4px;
+                height: 4px;
+            }
+            ::-webkit-scrollbar-track {
+                background: var(--bg0);
+            }
+            ::-webkit-scrollbar-thumb {
+                background: var(--border);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="toast" id="toast"></div>
+        <header>
+            <h1>SNAKE BRAIN INSPECTOR</h1>
+            <span class="badge">STATE_SIZE=17 · GENOME=12931</span>
+            <span class="badge" style="color: #38aeff; border-color: #38aeff"
+                >ReLU · diag≤1.415 · food∈[-1,1]</span
+            >
+            <span class="sep"></span>
+            <span
+                class="badge"
+                id="modeLabel"
+                style="color: var(--green); border-color: var(--green)"
+                >TOOL: HEAD</span
+            >
+        </header>
+        <div class="toolbar">
+            <div class="tool-group">
+                <button
+                    class="tool-btn t-head"
+                    id="btn-head"
+                    onclick="setTool('head')"
+                >
+                    HEAD
+                </button>
+                <button
+                    class="tool-btn"
+                    id="btn-food"
+                    onclick="setTool('food')"
+                >
+                    FOOD
+                </button>
+                <button
+                    class="tool-btn"
+                    id="btn-wall"
+                    onclick="setTool('wall')"
+                >
+                    WALL
+                </button>
+                <button
+                    class="tool-btn"
+                    id="btn-body"
+                    onclick="setTool('body')"
+                >
+                    BODY
+                </button>
+                <button
+                    class="tool-btn"
+                    id="btn-erase"
+                    onclick="setTool('erase')"
+                >
+                    ERASE
+                </button>
+            </div>
+            <div class="dir-group">
+                <button class="dir-btn" onclick="setDir(7)" id="d7">↖</button>
+                <button class="dir-btn sel" onclick="setDir(0)" id="d0">
+                    ↑
+                </button>
+                <button class="dir-btn" onclick="setDir(1)" id="d1">↗</button>
+                <button class="dir-btn" onclick="setDir(6)" id="d6">←</button>
+                <div class="dir-center"></div>
+                <button class="dir-btn" onclick="setDir(2)" id="d2">→</button>
+                <button class="dir-btn" onclick="setDir(5)" id="d5">↙</button>
+                <button class="dir-btn" onclick="setDir(4)" id="d4">↓</button>
+                <button class="dir-btn" onclick="setDir(3)" id="d3">↘</button>
+            </div>
+            <label>BODY:</label>
+            <select id="randLen">
+                <option value="3">3</option>
+                <option value="5" selected>5</option>
+                <option value="8">8</option>
+                <option value="12">12</option>
+                <option value="20">20</option>
+            </select>
+            <label>GRID:</label>
+            <select id="gridSize" onchange="resizeGrid()">
+                <option value="15">15×15</option>
+                <option value="20" selected>20×20</option>
+                <option value="25">25×25</option>
+                <option value="30">30×30</option>
+                <option value="40">40×40</option>
+            </select>
+            <label>CELL:</label>
+            <select id="cellSize" onchange="update()">
+                <option value="16">16px</option>
+                <option value="20" selected>20px</option>
+                <option value="24">24px</option>
+                <option value="28">28px</option>
+            </select>
+            <button
+                class="tool-btn"
+                onclick="randomSnake()"
+                style="
+                    margin-left: 8px;
+                    border: 1px solid var(--green-dim);
+                    color: var(--green);
+                "
+            >
+                🎲 RANDOM [R]
+            </button>
+            <button class="tool-btn" onclick="clearGrid()">CLEAR [C]</button>
+            <button class="tool-btn" onclick="loadExample()">EXAMPLE</button>
+            <span class="sep"></span>
+            <div class="si" id="si"><span>–</span></div>
         </div>
-
-        <div class="panel">
-            <h2>Sensori (Nord = Avanti)</h2>
-            <div class="sensors-container">
-                <div class="sensor-card">
-                    <h3>Radar Cibo</h3>
-                    <div class="compass-container"><svg viewBox="-70 -70 140 140" id="compass-food"></svg></div>
-                    <div class="stats-list" id="stats-food"></div>
-                    <div class="distance-box" id="distance-food">Distanza: -- passi</div>
+        <div class="main">
+            <div class="grid-panel"><canvas id="gc"></canvas></div>
+            <div class="state-panel">
+                <div class="ptitle">AGENT STATE [17]</div>
+                <div class="cpw">
+                    <canvas id="cc" width="178" height="178"></canvas>
                 </div>
-
-                <div class="sensor-card">
-                    <h3>Raycast Ostacoli</h3>
-                    <div class="compass-container"><svg viewBox="-70 -70 140 140" id="compass-danger"></svg></div>
-                    <div class="stats-list" id="stats-danger"></div>
+                <div class="ptitle">OBSTACLE RAYS [0-7]</div>
+                <div id="obsRows"></div>
+                <div class="div"></div>
+                <div class="ptitle">FOOD DIR [8-15]</div>
+                <div id="foodRows"></div>
+                <div class="div"></div>
+                <div class="ptitle">FOOD PROX [16]</div>
+                <div id="proxRow"></div>
+                <div class="div"></div>
+                <div
+                    style="
+                        font-size: 9px;
+                        color: var(--text-dim);
+                        line-height: 1.6;
+                    "
+                >
+                    Input 34 = state[0..17] t + state[17..34] t-1<br />
+                    (frame t-1 = zero nel simulatore)<br /><br />
+                    <b style="color: var(--green)">BODY tool:</b> click coda
+                    per<br />
+                    troncare, click vuoto adiacente<br />
+                    per estendere. [Del]=rimuovi coda
+                </div>
+            </div>
+            <div class="brain-panel">
+                <div class="brain-top">
+                    <div class="ptitle">
+                        BRAIN — 34→128(ReLU)→64(ReLU)→3(linear)
+                    </div>
+                    <div class="blr">
+                        <button onclick="document.getElementById('fi').click()">
+                            📂 LOAD JSON / GZ
+                        </button>
+                        <input
+                            type="file"
+                            id="fi"
+                            accept=".json,.json.gz,.gz"
+                            style="display: none"
+                            onchange="loadFile(event)"
+                        />
+                        <button onclick="pasteAndParse()">⌨ PASTE</button>
+                        <span class="bs" id="bs">no brain loaded</span>
+                    </div>
+                    <textarea
+                        class="jp"
+                        id="jp"
+                        placeholder="Incolla Individual{genome:[...]} oppure archive.json / archive.json.gz"
+                    ></textarea>
+                    <div class="csr" id="csr" style="display: none">
+                        <label>CELL:</label>
+                        <select id="csel" onchange="selectCell()"></select>
+                        <span
+                            style="font-size: 9px; color: var(--text-dim)"
+                            id="cfit"
+                        ></span>
+                    </div>
+                </div>
+                <div class="nna">
+                    <div class="ptitle">NEURAL NETWORK ACTIVATIONS</div>
+                    <div class="ar">
+                        <div class="ac" id="acL">
+                            <div class="an">LEFT</div>
+                            <div class="av" id="avL">—</div>
+                            <div class="abw">
+                                <div
+                                    class="ab"
+                                    id="abL"
+                                    style="width: 0%"
+                                ></div>
+                            </div>
+                        </div>
+                        <div class="ac" id="acS">
+                            <div class="an">STRAIGHT</div>
+                            <div class="av" id="avS">—</div>
+                            <div class="abw">
+                                <div
+                                    class="ab"
+                                    id="abS"
+                                    style="width: 0%"
+                                ></div>
+                            </div>
+                        </div>
+                        <div class="ac" id="acR">
+                            <div class="an">RIGHT</div>
+                            <div class="av" id="avR">—</div>
+                            <div class="abw">
+                                <div
+                                    class="ab"
+                                    id="abR"
+                                    style="width: 0%"
+                                ></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="nll">
+                        <div class="nl">
+                            <div class="nlt">INPUT<br />34</div>
+                            <div class="il" id="inpL"></div>
+                        </div>
+                        <div class="nna-arr">▶</div>
+                        <div class="nl">
+                            <div class="nlt">HIDDEN1<br />128</div>
+                            <div
+                                class="ng"
+                                id="h1g"
+                                style="grid-template-columns: repeat(16, 10px)"
+                            ></div>
+                        </div>
+                        <div class="nna-arr">▶</div>
+                        <div class="nl">
+                            <div class="nlt">HIDDEN2<br />64</div>
+                            <div
+                                class="ng"
+                                id="h2g"
+                                style="grid-template-columns: repeat(8, 10px)"
+                            ></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
+        <script>
+            // ── CONSTANTS ────────────────────────────────────────────────────────────────
+            // RAY_DIRS: world-space (x right, y DOWN), indexed 0..7 matching Rust:
+            // 0=N 1=NE 2=E 3=SE 4=S 5=SW 6=W 7=NW
+            const RD = [
+                [0, -1],
+                [1, -1],
+                [1, 0],
+                [1, 1],
+                [0, 1],
+                [-1, 1],
+                [-1, 0],
+                [-1, -1],
+            ];
+            const DARR = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
+            const DLBL = ["FWD", "F-R", "R", "B-R", "BCK", "B-L", "L", "F-L"];
+            const DECAY = 0.1,
+                DTHRESH = 1.415;
+            // Genome offsets — identical to Rust const offsets
+            const IN = 34,
+                H1 = 128,
+                H2 = 64,
+                OUT = 3;
+            const WIH = 0,
+                BH1 = IN * H1,
+                WH1H2 = BH1 + H1,
+                BH2 = WH1H2 + H1 * H2,
+                WHO = BH2 + H2,
+                BO = WHO + H2 * OUT,
+                GS = BO + OUT; // 12931
 
-    <script>
-        const gridSize = 11;
-        const center = Math.floor(gridSize / 2);
-        
-        let snake = [];
-        let foodPos = null;
-        
-        // Vettori di orientamento assoluti sulla griglia HTML (Y va verso il basso)
-        const absoluteDirs = [
-            { id: 'UP',    dx: 0,  dy: -1 }, // Guarda verso l'alto dello schermo
-            { id: 'RIGHT', dx: 1,  dy: 0  }, // Guarda verso destra
-            { id: 'DOWN',  dx: 0,  dy: 1  }, // Guarda verso il basso
-            { id: 'LEFT',  dx: -1, dy: 0  }  // Guarda verso sinistra
-        ];
+            // ── STATE ────────────────────────────────────────────────────────────────────
+            let N = 20,
+                headPos = null,
+                headDir = 0,
+                foodPos = null;
+            let walls = new Set();
+            // Body as ordered chain — index 0 = adjacent to head, last = tail
+            let BC = [],
+                BS = new Set();
+            let tool = "head",
+                drawing = false,
+                genome = null;
+            const gc = document.getElementById("gc"),
+                ctx = gc.getContext("2d");
+            const cc = document.getElementById("cc"),
+                cctx = cc.getContext("2d");
 
-        let f_vec = absoluteDirs[0]; // Vettore "Avanti" (Local North)
-        let r_vec = { dx: 1, dy: 0 }; // Vettore "Destra" (Local East)
+            // ── HELPERS ──────────────────────────────────────────────────────────────────
+            const K = (x, y) => x + "," + y;
+            const inB = (x, y) => x >= 0 && y >= 0 && x < N && y < N;
+            function isOcc(x, y) {
+                return !inB(x, y) || walls.has(K(x, y)) || BS.has(K(x, y));
+            }
+            function cardAdj(a, b) {
+                const dx = Math.abs(a.x - b.x),
+                    dy = Math.abs(a.y - b.y);
+                return (dx === 1 && dy === 0) || (dx === 0 && dy === 1);
+            }
+            const CS = () =>
+                parseInt(document.getElementById("cellSize").value);
+            const getDO = () => headDir; // dir offset = headDir index directly
 
-        // Etichette relative al serpente. N = Sempre la direzione in cui guarda.
-        const localDirs = [
-            { name: 'E',  lx: 1,  ly: 0  }, // Destra
-            { name: 'NE', lx: 1,  ly: 1  }, // Avanti-Destra
-            { name: 'N',  lx: 0,  ly: 1  }, // Avanti
-            { name: 'NW', lx: -1, ly: 1  }, // Avanti-Sinistra
-            { name: 'W',  lx: -1, ly: 0  }, // Sinistra
-            { name: 'SW', lx: -1, ly: -1 }, // Indietro-Sinistra
-            { name: 'S',  lx: 0,  ly: -1 }, // Indietro
-            { name: 'SE', lx: 1,  ly: -1 }  // Indietro-Destra
-        ];
-
-        const gridEl = document.getElementById('grid');
-        const wedgesFood = []; const wedgesDanger = [];
-        const svgRotations = [0, 315, 270, 225, 180, 135, 90, 45]; 
-
-        function initCompass(element, arrayStr, baseColor) {
-            const svgNS = "http://www.w3.org/2000/svg";
-            localDirs.forEach((dir, i) => {
-                const r = 50; const a1 = -22.5 * Math.PI / 180; const a2 = 22.5 * Math.PI / 180;
-                const path = document.createElementNS(svgNS, "path");
-                path.setAttribute("d", `M 0 0 L ${r*Math.cos(a1)} ${r*Math.sin(a1)} A ${r} ${r} 0 0 1 ${r*Math.cos(a2)} ${r*Math.sin(a2)} Z`);
-                path.setAttribute("transform", `rotate(${svgRotations[i]})`);
-                path.setAttribute("fill", baseColor);
-                path.setAttribute("stroke", "#1e293b"); path.setAttribute("opacity", "0.05");
-                element.appendChild(path); arrayStr.push(path);
-
-                const text = document.createElementNS(svgNS, "text");
-                text.setAttribute("x", 62 * Math.cos(svgRotations[i] * Math.PI / 180));
-                text.setAttribute("y", 62 * Math.sin(svgRotations[i] * Math.PI / 180));
-                text.setAttribute("text-anchor", "middle"); text.setAttribute("dominant-baseline", "middle");
-                text.setAttribute("fill", "#64748b"); text.setAttribute("font-size", "11px"); text.setAttribute("font-weight", "bold");
-                text.textContent = dir.name;
-                element.appendChild(text);
-            });
-        }
-
-        initCompass(document.getElementById('compass-food'), wedgesFood, "#3b82f6");
-        initCompass(document.getElementById('compass-danger'), wedgesDanger, "#ef4444");
-
-        for (let y = 0; y < gridSize; y++) {
-            for (let x = 0; x < gridSize; x++) {
-                const cell = document.createElement('div');
-                cell.className = 'cell';
-                cell.addEventListener('click', () => {
-                    if (snake.some(s => s.x === x && s.y === y)) return;
-                    foodPos = {x, y}; updateGridVisuals(); calculateFood();
+            // ── TOOL / DIR ────────────────────────────────────────────────────────────────
+            function setTool(t) {
+                tool = t;
+                const cls = {
+                    head: "t-head",
+                    food: "t-food",
+                    wall: "t-wall",
+                    body: "t-body",
+                    erase: "t-era",
+                };
+                ["head", "food", "wall", "body", "erase"].forEach((x) => {
+                    document.getElementById("btn-" + x).className =
+                        "tool-btn" + (x === t ? " " + cls[x] : "");
                 });
-                gridEl.appendChild(cell);
+                document.getElementById("modeLabel").textContent =
+                    "TOOL: " + t.toUpperCase();
             }
-        }
-
-        function generateScene() {
-            // Scegli direzione di sguardo a caso
-            f_vec = absoluteDirs[Math.floor(Math.random() * 4)];
-            // Calcola il vettore Destra matematicamente: se fwd=(0,-1), right=(1,0)
-            r_vec = { dx: -f_vec.dy, dy: f_vec.dx }; 
-
-            snake = [{ x: center, y: center }]; // Testa
-            
-            // Il primo blocco del corpo nasce SEMPRE alle spalle (Sud relativo)
-            let neckX = center - f_vec.dx;
-            let neckY = center - f_vec.dy; 
-            snake.push({ x: neckX, y: neckY });
-
-            let curr = snake[1];
-            const length = 4 + Math.floor(Math.random() * 6);
-
-            for (let i = 0; i < length; i++) {
-                const neighbors = [
-                    {x: curr.x + 1, y: curr.y}, {x: curr.x - 1, y: curr.y},
-                    {x: curr.x, y: curr.y + 1}, {x: curr.x, y: curr.y - 1}
-                ].filter(n => n.x >= 0 && n.x < gridSize && n.y >= 0 && n.y < gridSize && !snake.some(s => s.x === n.x && s.y === n.y));
-                if (neighbors.length === 0) break;
-                curr = neighbors[Math.floor(Math.random() * neighbors.length)];
-                snake.push(curr);
+            function setDir(d) {
+                headDir = d;
+                for (let i = 0; i < 8; i++)
+                    document.getElementById("d" + i).className =
+                        "dir-btn" + (i === d ? " sel" : "");
+                update();
             }
 
-            if (foodPos && snake.some(s => s.x === foodPos.x && s.y === foodPos.y)) foodPos = null;
-
-            updateGridVisuals();
-            calculateDanger();
-            calculateFood();
-        }
-
-        function updateGridVisuals() {
-            Array.from(gridEl.children).forEach(c => c.className = 'cell');
-
-            // Raycast visivi sulla griglia assoluta
-            localDirs.forEach(dir => {
-                // Converte le coordinate locali in direzioni assolute sulla griglia HTML
-                let w_dx = dir.lx * r_vec.dx + dir.ly * f_vec.dx;
-                let w_dy = dir.lx * r_vec.dy + dir.ly * f_vec.dy;
-                let cx = center, cy = center;
-                while(true) {
-                    cx += w_dx; cy += w_dy;
-                    if (cx < 0 || cx >= gridSize || cy < 0 || cy >= gridSize) break;
-                    if (snake.some(s => s.x === cx && s.y === cy)) break;
-                    gridEl.children[cy * gridSize + cx].classList.add('ray');
+            // ── BODY CHAIN ────────────────────────────────────────────────────────────────
+            function clearBody() {
+                BC = [];
+                BS.clear();
+            }
+            function headFwd() {
+                return RD[headDir];
+            }
+            function canAppend(cell) {
+                if (!headPos) return false;
+                const k = K(cell.x, cell.y);
+                if (walls.has(k)) return false;
+                if (headPos.x === cell.x && headPos.y === cell.y) return false;
+                if (BS.has(k)) return false;
+                if (foodPos && foodPos.x === cell.x && foodPos.y === cell.y)
+                    return false;
+                const anchor = BC.length === 0 ? headPos : BC[BC.length - 1];
+                if (!cardAdj(anchor, cell)) return false;
+                // first segment cannot go in front of head
+                if (BC.length === 0) {
+                    const [fdx, fdy] = headFwd();
+                    if (
+                        cell.x === headPos.x + fdx &&
+                        cell.y === headPos.y + fdy
+                    )
+                        return false;
                 }
-            });
-
-            for (let i = 1; i < snake.length; i++) gridEl.children[snake[i].y * gridSize + snake[i].x].classList.add('body');
-            
-            let headCell = gridEl.children[center * gridSize + center];
-            headCell.classList.add('head');
-            headCell.classList.add(`face-${f_vec.id}`);
-
-            if (foodPos) gridEl.children[foodPos.y * gridSize + foodPos.x].classList.add('food');
-        }
-
-        // --- CALCOLI RELATIVI (NORD = AVANTI) ---
-        function calculateFood() {
-            const stats = document.getElementById('stats-food');
-            if (!foodPos) {
-                stats.innerHTML = '<div style="text-align:center; color:#64748b; font-size:12px;">Nessun obiettivo</div>';
-                document.getElementById('distance-food').textContent = `Distanza: -- passi`;
-                wedgesFood.forEach(w => { w.setAttribute("opacity", "0.05"); w.setAttribute("fill", "#3b82f6"); });
-                return;
+                return true;
+            }
+            function appendSeg(cell) {
+                BC.push({ x: cell.x, y: cell.y });
+                BS.add(K(cell.x, cell.y));
+            }
+            function removeTail() {
+                if (!BC.length) return;
+                const l = BC.pop();
+                BS.delete(K(l.x, l.y));
+            }
+            // Truncate chain from index i onward (inclusive)
+            function truncateFrom(i) {
+                const rem = BC.splice(i);
+                rem.forEach((s) => BS.delete(K(s.x, s.y)));
             }
 
-            // Vettore assoluto (testa -> cibo)
-            const adx = foodPos.x - center;
-            const ady = foodPos.y - center;
-            let dist = Math.sqrt(adx*adx + ady*ady);
-
-            // PROIEZIONE: Convertiamo le coordinate assolute in coordinate locali (Nord = Avanti)
-            const local_x = adx * r_vec.dx + ady * r_vec.dy;
-            const local_y = adx * f_vec.dx + ady * f_vec.dy;
-
-            let percentages = new Array(8).fill(0);
-            if (local_x !== 0 || local_y !== 0) {
-                // local_y cresce in avanti, local_x cresce a destra
-                let theta = Math.atan2(local_y, local_x) * 180 / Math.PI;
-                if (theta < 0) theta += 360;
-                let exactIndex = theta / 45;
-                let lowerIndex = Math.floor(exactIndex);
-                percentages[lowerIndex % 8] = 1 - (exactIndex - lowerIndex);
-                percentages[(lowerIndex + 1) % 8] = exactIndex - lowerIndex;
-            }
-
-            stats.innerHTML = '';
-            document.getElementById('distance-food').textContent = `Distanza: ${dist.toFixed(2)} passi`;
-            percentages.forEach((val, i) => {
-                wedgesFood[i].setAttribute("opacity", val > 0 ? Math.max(0.3, val) : 0.05);
-                wedgesFood[i].setAttribute("fill", `rgba(59, 130, 246, ${0.4 + val*0.6})`);
-                if (val > 0.001) {
-                    const r = document.createElement('div'); r.className = 'stat-row'; r.style.color = '#60a5fa';
-                    r.innerHTML = `<span style="width:25px">${localDirs[i].name}</span><div class="stat-bar-container"><div class="stat-bar" style="background:#3b82f6; width:${(val*100).toFixed(1)}%"></div></div><span style="width:45px; text-align:right">${(val*100).toFixed(1)}%</span>`;
-                    stats.appendChild(r);
+            // ── RANDOM SNAKE ──────────────────────────────────────────────────────────────
+            function randomSnake() {
+                clearGrid();
+                const mg = 4,
+                    tries = 80;
+                const cards = [0, 2, 4, 6];
+                for (let t = 0; t < tries; t++) {
+                    const hx = mg + Math.floor(Math.random() * (N - mg * 2));
+                    const hy = mg + Math.floor(Math.random() * (N - mg * 2));
+                    headPos = { x: hx, y: hy };
+                    headDir = cards[Math.floor(Math.random() * 4)];
+                    setDir(headDir);
+                    clearBody();
+                    const wantLen = parseInt(
+                        document.getElementById("randLen").value,
+                    );
+                    const [fdx, fdy] = headFwd();
+                    const sbx = hx - fdx,
+                        sby = hy - fdy;
+                    if (!inB(sbx, sby)) continue;
+                    let cur = { x: sbx, y: sby };
+                    appendSeg(cur);
+                    const dirs = [
+                        [0, -1],
+                        [1, 0],
+                        [0, 1],
+                        [-1, 0],
+                    ];
+                    for (let i = 1; i < wantLen; i++) {
+                        // Fisher-Yates shuffle
+                        for (let j = 3; j > 0; j--) {
+                            const r = Math.floor(Math.random() * (j + 1));
+                            [dirs[j], dirs[r]] = [dirs[r], dirs[j]];
+                        }
+                        let ok = false;
+                        for (const [dx, dy] of dirs) {
+                            const nx = cur.x + dx,
+                                ny = cur.y + dy;
+                            if (
+                                !inB(nx, ny) ||
+                                BS.has(K(nx, ny)) ||
+                                (nx === hx && ny === hy)
+                            )
+                                continue;
+                            cur = { x: nx, y: ny };
+                            appendSeg(cur);
+                            ok = true;
+                            break;
+                        }
+                        if (!ok) break;
+                    }
+                    // place food
+                    let fp = false;
+                    for (let f = 0; f < 300 && !fp; f++) {
+                        const fx = 1 + Math.floor(Math.random() * (N - 2)),
+                            fy = 1 + Math.floor(Math.random() * (N - 2));
+                        if (
+                            !isOcc(fx, fy) &&
+                            !(headPos.x === fx && headPos.y === fy)
+                        ) {
+                            foodPos = { x: fx, y: fy };
+                            fp = true;
+                        }
+                    }
+                    break;
                 }
-            });
-        }
+                update();
+            }
 
-        function calculateDanger() {
-            const stats = document.getElementById('stats-danger');
-            stats.innerHTML = '';
+            // ── DRAW GRID ─────────────────────────────────────────────────────────────────
+            function drawGrid() {
+                const cs = CS();
+                gc.width = N * cs;
+                gc.height = N * cs;
+                ctx.fillStyle = "#0a1018";
+                ctx.fillRect(0, 0, gc.width, gc.height);
+                ctx.strokeStyle = "#131f13";
+                ctx.lineWidth = 0.5;
+                for (let i = 0; i <= N; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(i * cs, 0);
+                    ctx.lineTo(i * cs, N * cs);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(0, i * cs);
+                    ctx.lineTo(N * cs, i * cs);
+                    ctx.stroke();
+                }
+                // walls
+                ctx.fillStyle = "#8b3a1a";
+                walls.forEach((k) => {
+                    const [x, y] = k.split(",").map(Number);
+                    ctx.fillRect(x * cs + 1, y * cs + 1, cs - 2, cs - 2);
+                });
+                // raycasts (under everything)
+                if (headPos) drawRaycasts(cs);
+                // body chain with gradient
+                BC.forEach((seg, i) => {
+                    const t = BC.length > 1 ? i / (BC.length - 1) : 0;
+                    const g = Math.round(38 + (1 - t) * 92);
+                    ctx.fillStyle = `rgb(0,${g},20)`;
+                    ctx.fillRect(
+                        seg.x * cs + 2,
+                        seg.y * cs + 2,
+                        cs - 4,
+                        cs - 4,
+                    );
+                    if (cs >= 18) {
+                        ctx.fillStyle = `rgba(0,232,122,${0.25 + (1 - t) * 0.3})`;
+                        ctx.font = `${Math.max(6, Math.floor(cs * 0.28))}px monospace`;
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText(
+                            i + 1,
+                            seg.x * cs + cs / 2,
+                            seg.y * cs + cs / 2,
+                        );
+                    }
+                });
+                // food
+                if (foodPos) {
+                    const fx = foodPos.x * cs + cs / 2,
+                        fy = foodPos.y * cs + cs / 2;
+                    const gr = ctx.createRadialGradient(
+                        fx,
+                        fy,
+                        0,
+                        fx,
+                        fy,
+                        cs * 0.42,
+                    );
+                    gr.addColorStop(0, "#38aeff");
+                    gr.addColorStop(1, "rgba(56,174,255,0)");
+                    ctx.fillStyle = gr;
+                    ctx.beginPath();
+                    ctx.arc(fx, fy, cs * 0.42, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = "#38aeff";
+                    ctx.beginPath();
+                    ctx.arc(fx, fy, cs * 0.22, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                // head
+                if (headPos) drawHead(cs);
+                // body-tool hints: show valid next cells in green
+                if (tool === "body" && headPos) {
+                    const anchor =
+                        BC.length === 0 ? headPos : BC[BC.length - 1];
+                    [
+                        [0, -1],
+                        [1, 0],
+                        [0, 1],
+                        [-1, 0],
+                    ].forEach(([dx, dy]) => {
+                        const nx = anchor.x + dx,
+                            ny = anchor.y + dy;
+                        if (canAppend({ x: nx, y: ny })) {
+                            ctx.fillStyle = "rgba(0,120,50,.25)";
+                            ctx.fillRect(nx * cs, ny * cs, cs, cs);
+                            ctx.strokeStyle = "rgba(0,120,50,.6)";
+                            ctx.lineWidth = 1;
+                            ctx.setLineDash([]);
+                            ctx.strokeRect(
+                                nx * cs + 0.5,
+                                ny * cs + 0.5,
+                                cs - 1,
+                                cs - 1,
+                            );
+                        }
+                    });
+                }
+            }
+            function drawHead(cs) {
+                const { x, y } = headPos,
+                    cx = x * cs + cs / 2,
+                    cy = y * cs + cs / 2;
+                const gr = ctx.createRadialGradient(
+                    cx,
+                    cy,
+                    0,
+                    cx,
+                    cy,
+                    cs * 0.8,
+                );
+                gr.addColorStop(0, "rgba(0,232,122,.28)");
+                gr.addColorStop(1, "rgba(0,232,122,0)");
+                ctx.fillStyle = gr;
+                ctx.beginPath();
+                ctx.arc(cx, cy, cs * 0.8, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = "#00e87a";
+                ctx.fillRect(x * cs + 2, y * cs + 2, cs - 4, cs - 4);
+                const [dx, dy] = RD[headDir],
+                    al = cs * 0.3,
+                    ang = Math.atan2(dy, dx);
+                ctx.strokeStyle = "#070b0f";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(cx - dx * al * 0.3, cy - dy * al * 0.3);
+                ctx.lineTo(cx + dx * al, cy + dy * al);
+                ctx.stroke();
+                ctx.fillStyle = "#070b0f";
+                ctx.beginPath();
+                ctx.moveTo(cx + dx * al, cy + dy * al);
+                ctx.lineTo(
+                    cx + dx * al - Math.cos(ang - 0.5) * cs * 0.18,
+                    cy + dy * al - Math.sin(ang - 0.5) * cs * 0.18,
+                );
+                ctx.lineTo(
+                    cx + dx * al - Math.cos(ang + 0.5) * cs * 0.18,
+                    cy + dy * al - Math.sin(ang + 0.5) * cs * 0.18,
+                );
+                ctx.closePath();
+                ctx.fill();
+            }
+            function drawRaycasts(cs) {
+                const s17 = computeState17(),
+                    hx = headPos.x * cs + cs / 2,
+                    hy = headPos.y * cs + cs / 2,
+                    off = getDO();
+                for (let i = 0; i < 8; i++) {
+                    const ri = (i + off) % 8,
+                        [dx, dy] = RD[ri],
+                        d = s17[i];
+                    let ex = hx + dx * N * cs,
+                        ey = hy + dy * N * cs;
+                    for (let step = 1; step <= N * 2; step++) {
+                        const nx = headPos.x + dx * step,
+                            ny = headPos.y + dy * step;
+                        if (isOcc(nx, ny)) {
+                            ex = nx * cs + cs / 2;
+                            ey = ny * cs + cs / 2;
+                            break;
+                        }
+                    }
+                    ctx.strokeStyle = `rgba(255,107,53,${Math.max(0.04, d * 0.5)})`;
+                    ctx.lineWidth = d > 0.9 ? 2 : 1;
+                    ctx.setLineDash([2, 5]);
+                    ctx.beginPath();
+                    ctx.moveTo(hx, hy);
+                    ctx.lineTo(ex, ey);
+                    ctx.stroke();
+                }
+                ctx.setLineDash([]);
+                if (foodPos) {
+                    const fx = foodPos.x * cs + cs / 2,
+                        fy = foodPos.y * cs + cs / 2;
+                    ctx.strokeStyle = "rgba(56,174,255,.22)";
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([3, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(hx, hy);
+                    ctx.lineTo(fx, fy);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
 
-            localDirs.forEach((dir, i) => {
-                // Riconvertiamo la direzione locale (Es. Nord/Avanti) in step per la griglia HTML
-                let w_dx = dir.lx * r_vec.dx + dir.ly * f_vec.dx;
-                let w_dy = dir.lx * r_vec.dy + dir.ly * f_vec.dy;
-                
-                let cx = center, cy = center; let distance = 0;
-                while (true) {
-                    cx += w_dx; cy += w_dy;
-                    let d = Math.sqrt(Math.pow(cx - center, 2) + Math.pow(cy - center, 2));
-                    if (cx < 0 || cx >= gridSize || cy < 0 || cy >= gridSize || snake.some(s => s.x === cx && s.y === cy)) {
-                        distance = d; break;
+            // ── STATE COMPUTATION — exact mirror of Rust get_current_17_state (fixed) ───
+            function computeState17() {
+                const s = new Float32Array(17);
+                if (!headPos) return s;
+                const hx = headPos.x,
+                    hy = headPos.y,
+                    off = getDO();
+                // [0-7] obstacle raycasts
+                for (let i = 0; i < 8; i++) {
+                    const ri = (i + off) % 8,
+                        [dx, dy] = RD[ri];
+                    const sd = Math.sqrt(dx * dx + dy * dy); // 1 or √2
+                    for (let step = 1; step <= N * 2; step++) {
+                        const nx = hx + dx * step,
+                            ny = hy + dy * step;
+                        if (isOcc(nx, ny)) {
+                            const eu = step * sd;
+                            s[i] = eu <= DTHRESH ? 1 : Math.exp(-DECAY * eu);
+                            break;
+                        }
                     }
                 }
+                // [8-15] food direction — no .max(0) clamp → [-1,1]
+                if (foodPos) {
+                    const fdx = foodPos.x - hx,
+                        fdy = foodPos.y - hy,
+                        fl = Math.sqrt(fdx * fdx + fdy * fdy);
+                    if (fl > 0) {
+                        const fnx = fdx / fl,
+                            fny = fdy / fl;
+                        for (let i = 0; i < 8; i++) {
+                            const ri = (i + off) % 8,
+                                [rdx, rdy] = RD[ri],
+                                rl = Math.sqrt(rdx * rdx + rdy * rdy);
+                            s[8 + i] = (rdx / rl) * fnx + (rdy / rl) * fny; // no clamp
+                        }
+                    }
+                }
+                // [16] food proximity
+                if (foodPos) {
+                    const md =
+                        Math.abs(foodPos.x - hx) + Math.abs(foodPos.y - hy);
+                    s[16] = Math.exp(-DECAY * md);
+                }
+                return s;
+            }
 
-                let dangerVal = 1 / distance;
-                wedgesDanger[i].setAttribute("opacity", dangerVal > 0.1 ? Math.max(0.2, dangerVal) : 0.05);
-                wedgesDanger[i].setAttribute("fill", `rgba(239, 68, 68, ${0.3 + dangerVal * 0.7})`);
+            // ── COMPASS ───────────────────────────────────────────────────────────────────
+            function drawCompass(s) {
+                const CW = 178;
+                cctx.clearRect(0, 0, CW, CW);
+                const cx = CW / 2,
+                    cy = CW / 2,
+                    R = CW / 2 - 6;
+                cctx.fillStyle = "#0d1318";
+                cctx.beginPath();
+                cctx.arc(cx, cy, R, 0, Math.PI * 2);
+                cctx.fill();
+                cctx.strokeStyle = "#1a2a1a";
+                cctx.lineWidth = 1;
+                cctx.beginPath();
+                cctx.arc(cx, cy, R, 0, Math.PI * 2);
+                cctx.stroke();
+                [0.33, 0.66, 1].forEach((r) => {
+                    cctx.strokeStyle = "#111820";
+                    cctx.beginPath();
+                    cctx.arc(cx, cy, R * r, 0, Math.PI * 2);
+                    cctx.stroke();
+                });
+                for (let i = 0; i < 8; i++) {
+                    const ang = -Math.PI / 2 + (i * Math.PI) / 4,
+                        nx = Math.cos(ang),
+                        ny = Math.sin(ang);
+                    const obs = s[i],
+                        food = s[8 + i],
+                        fa = Math.abs(food);
+                    if (obs > 0.01) {
+                        cctx.strokeStyle = `rgba(255,107,53,${obs * 0.9})`;
+                        cctx.lineWidth = obs > 0.9 ? 3 : 1.5;
+                        cctx.beginPath();
+                        cctx.moveTo(cx, cy);
+                        cctx.lineTo(
+                            cx + nx * R * obs * 0.82,
+                            cy + ny * R * obs * 0.82,
+                        );
+                        cctx.stroke();
+                    }
+                    if (fa > 0.04) {
+                        cctx.strokeStyle =
+                            food > 0
+                                ? `rgba(56,174,255,${fa * 0.8})`
+                                : `rgba(80,80,190,${fa * 0.5})`;
+                        cctx.lineWidth = food > 0 ? 2 : 1;
+                        cctx.setLineDash(food < 0 ? [2, 4] : []);
+                        cctx.beginPath();
+                        cctx.moveTo(cx, cy);
+                        cctx.lineTo(
+                            cx + nx * R * fa * 0.52,
+                            cy + ny * R * fa * 0.52,
+                        );
+                        cctx.stroke();
+                        cctx.setLineDash([]);
+                    }
+                    cctx.fillStyle = "#2a4a2a";
+                    cctx.font = "6px Share Tech Mono,monospace";
+                    cctx.textAlign = "center";
+                    cctx.textBaseline = "middle";
+                    cctx.fillText(
+                        DLBL[i],
+                        cx + nx * R * 0.84,
+                        cy + ny * R * 0.84,
+                    );
+                }
+                cctx.fillStyle = "#00e87a";
+                cctx.beginPath();
+                cctx.arc(cx, cy, 4, 0, Math.PI * 2);
+                cctx.fill();
+                cctx.fillStyle = "#ff6b35";
+                cctx.fillRect(4, CW - 12, 8, 3);
+                cctx.fillStyle = "#4a6a4a";
+                cctx.font = "7px Share Tech Mono,monospace";
+                cctx.textAlign = "left";
+                cctx.textBaseline = "middle";
+                cctx.fillText("OBSTACLE", 14, CW - 10);
+                cctx.fillStyle = "#38aeff";
+                cctx.fillRect(4, CW - 6, 8, 3);
+                cctx.fillText("FOOD DIR", 14, CW - 4);
+            }
 
-                const r = document.createElement('div'); r.className = 'stat-row';
-                r.style.color = dangerVal === 1 ? '#ef4444' : '#94a3b8';
-                r.innerHTML = `<span style="width:25px">${dir.name}</span><div class="stat-bar-container"><div class="stat-bar" style="background:#ef4444; width:${(dangerVal*100).toFixed(1)}%"></div></div><span style="width:45px; text-align:right">${(dangerVal*100).toFixed(1)}%</span>`;
-                stats.appendChild(r);
+            // ── STATE UI ──────────────────────────────────────────────────────────────────
+            function initStateUI() {
+                function mkRows(cid, idxs, lbls) {
+                    const el = document.getElementById(cid);
+                    el.innerHTML = "";
+                    idxs.forEach((idx, j) => {
+                        const r = document.createElement("div");
+                        r.className = "sr";
+                        r.innerHTML = `<div class="sl">${lbls[j]}</div><div class="sbw"><div class="sb" id="sb${idx}"></div></div><div class="sv" id="sv${idx}">0.000</div>`;
+                        el.appendChild(r);
+                    });
+                }
+                mkRows(
+                    "obsRows",
+                    [...Array(8).keys()],
+                    Array.from({ length: 8 }, (_, i) => `[${i}] ${DLBL[i]}`),
+                );
+                mkRows(
+                    "foodRows",
+                    Array.from({ length: 8 }, (_, i) => 8 + i),
+                    Array.from(
+                        { length: 8 },
+                        (_, i) => `[${8 + i}] ${DLBL[i]}`,
+                    ),
+                );
+                document.getElementById("proxRow").innerHTML =
+                    `<div class="sr"><div class="sl">[16] PROX</div><div class="sbw"><div class="sb" id="sb16"></div></div><div class="sv" id="sv16">0.000</div></div>`;
+            }
+            function updateStateUI(s) {
+                for (let i = 0; i < 17; i++) {
+                    const v = s[i],
+                        bar = document.getElementById("sb" + i),
+                        val = document.getElementById("sv" + i);
+                    if (!bar) continue;
+                    if (i < 8) {
+                        bar.style.left = "0%";
+                        bar.style.width = (v * 100).toFixed(1) + "%";
+                        bar.style.background = `rgba(255,107,53,${0.35 + v * 0.65})`;
+                    } else if (i < 16) {
+                        if (v >= 0) {
+                            bar.style.left = "50%";
+                            bar.style.width = (v * 50).toFixed(1) + "%";
+                            bar.style.background = `rgba(56,174,255,${0.25 + v * 0.75})`;
+                        } else {
+                            bar.style.left = (50 + v * 50).toFixed(1) + "%";
+                            bar.style.width = (-v * 50).toFixed(1) + "%";
+                            bar.style.background = "rgba(80,80,200,.5)";
+                        }
+                    } else {
+                        bar.style.left = "0%";
+                        bar.style.width = (v * 100).toFixed(1) + "%";
+                        bar.style.background = `rgba(56,174,255,${0.35 + v * 0.65})`;
+                    }
+                    val.textContent = v.toFixed(3);
+                }
+            }
+
+            // ── INPUT / HIDDEN LAYERS UI ──────────────────────────────────────────────────
+            const ILBL = [
+                ...Array.from({ length: 8 }, (_, i) => `obs_${DLBL[i]}`),
+                ...Array.from({ length: 8 }, (_, i) => `food_${DLBL[i]}`),
+                "food_prox",
+                ...Array.from({ length: 8 }, (_, i) => `p_obs_${i}`),
+                ...Array.from({ length: 8 }, (_, i) => `p_food_${i}`),
+                "p_prox",
+            ];
+            function initInputLayer() {
+                const el = document.getElementById("inpL");
+                el.innerHTML = "";
+                for (let i = 0; i < 34; i++) {
+                    const d = document.createElement("div");
+                    d.className = "ic";
+                    d.innerHTML = `<div class="id" id="id${i}" style="background:#1a2a1a"></div><div class="ilab">${ILBL[i]}</div><div class="iv" id="iv${i}">—</div>`;
+                    el.appendChild(d);
+                }
+            }
+            function updateInputLayer(inp) {
+                for (let i = 0; i < 34; i++) {
+                    const v = inp[i];
+                    document.getElementById("id" + i).style.background =
+                        ncol(v);
+                    const el = document.getElementById("iv" + i);
+                    el.textContent = v.toFixed(3);
+                    el.style.color =
+                        v > 0.01
+                            ? "#00e87a"
+                            : v < -0.01
+                              ? "#38aeff"
+                              : "#2a4a2a";
+                }
+            }
+            function initHidden() {
+                ["h1g", "h2g"].forEach((id, li) => {
+                    const el = document.getElementById(id);
+                    el.innerHTML = "";
+                    const n = li === 0 ? 128 : 64;
+                    for (let i = 0; i < n; i++) {
+                        const c = document.createElement("div");
+                        c.className = "nc";
+                        c.id = (li ? "h2c" : "h1c") + i;
+                        c.setAttribute("data-v", "?");
+                        c.style.background = "#111820";
+                        el.appendChild(c);
+                    }
+                });
+            }
+            function updateHidden(h1, h2) {
+                for (let i = 0; i < 128; i++) {
+                    const c = document.getElementById("h1c" + i);
+                    if (c) {
+                        c.style.background = ncol(h1[i]);
+                        c.setAttribute("data-v", h1[i].toFixed(3));
+                    }
+                }
+                for (let i = 0; i < 64; i++) {
+                    const c = document.getElementById("h2c" + i);
+                    if (c) {
+                        c.style.background = ncol(h2[i]);
+                        c.setAttribute("data-v", h2[i].toFixed(3));
+                    }
+                }
+            }
+            // ReLU neurons: 0=dark, positive=green, negative(inputs)=blue
+            function ncol(v) {
+                if (v > 0) {
+                    const t = Math.min(1, v / 3);
+                    return `rgb(0,${Math.round(30 + t * 202)},${Math.round(t * 80)})`;
+                }
+                const t = Math.min(1, -v / 2);
+                return `rgb(${Math.round(t * 15)},${Math.round(t * 25)},${Math.round(40 + t * 140)})`;
+            }
+
+            // ── FORWARD PASS — exact Rust Brain::forward with ReLU ────────────────────────
+            const relu = (x) => (x > 0 ? x : 0);
+            function forward(g, inp) {
+                const h1 = new Float32Array(H1);
+                for (let h = 0; h < H1; h++) {
+                    let s = g[BH1 + h];
+                    for (let i = 0; i < IN; i++)
+                        s += g[WIH + h * IN + i] * inp[i];
+                    h1[h] = relu(s);
+                }
+                const h2 = new Float32Array(H2);
+                for (let h = 0; h < H2; h++) {
+                    let s = g[BH2 + h];
+                    for (let i = 0; i < H1; i++)
+                        s += g[WH1H2 + h * H1 + i] * h1[i];
+                    h2[h] = relu(s);
+                }
+                const out = new Float32Array(OUT);
+                for (let o = 0; o < OUT; o++) {
+                    let s = g[BO + o];
+                    for (let i = 0; i < H2; i++)
+                        s += g[WHO + o * H2 + i] * h2[i];
+                    out[o] = s;
+                }
+                return { h1, h2, out };
+            }
+            function updateActions(out) {
+                let ch = 0;
+                if (out[1] > out[0] && out[1] > out[2]) ch = 1;
+                else if (out[2] > out[0]) ch = 2;
+                const mn = Math.min(...out),
+                    rng = Math.max(...out) - mn;
+                ["L", "S", "R"].forEach((n, i) => {
+                    document.getElementById("ac" + n).className =
+                        "ac" + (i === ch ? " won" : "");
+                    document.getElementById("av" + n).textContent =
+                        out[i].toFixed(3);
+                    document.getElementById("ab" + n).style.width =
+                        (rng > 0
+                            ? (((out[i] - mn) / rng) * 100).toFixed(1)
+                            : 0) + "%";
+                });
+            }
+
+            // ── MAIN UPDATE ───────────────────────────────────────────────────────────────
+            function update() {
+                drawGrid();
+                const s17 = computeState17();
+                updateStateUI(s17);
+                drawCompass(s17);
+                const inp = new Float32Array(34);
+                for (let i = 0; i < 17; i++) inp[i] = s17[i];
+                updateInputLayer(inp);
+                if (genome) {
+                    const { h1, h2, out } = forward(genome, inp);
+                    updateHidden(h1, h2);
+                    updateActions(out);
+                }
+                document.getElementById("si").innerHTML =
+                    `<span>head: <b>${headPos ? headPos.x + "," + headPos.y : "–"}</b></span>` +
+                    `<span>food: <b>${foodPos ? foodPos.x + "," + foodPos.y : "–"}</b></span>` +
+                    `<span>walls: <b>${walls.size}</b></span>` +
+                    `<span>body: <b>${BC.length}</b></span>` +
+                    `<span>dir: <b>${DARR[headDir]}</b></span>`;
+            }
+
+            // ── INTERACTION ───────────────────────────────────────────────────────────────
+            function getCell(e) {
+                const cs = CS(),
+                    r = gc.getBoundingClientRect();
+                return {
+                    x: Math.floor((e.clientX - r.left) / cs),
+                    y: Math.floor((e.clientY - r.top) / cs),
+                };
+            }
+            function applyTool(cell) {
+                const { x, y } = cell;
+                if (!inB(x, y)) return;
+                const k = K(x, y);
+                switch (tool) {
+                    case "head":
+                        headPos = { x, y };
+                        walls.delete(k);
+                        if (foodPos && foodPos.x === x && foodPos.y === y)
+                            foodPos = null;
+                        // invalidate body chain if head moved away from its anchor
+                        if (BC.length > 0 && !cardAdj({ x, y }, BC[0]))
+                            clearBody();
+                        break;
+                    case "food":
+                        foodPos = { x, y };
+                        walls.delete(k);
+                        BS.delete(k);
+                        if (headPos && headPos.x === x && headPos.y === y)
+                            headPos = null;
+                        break;
+                    case "wall":
+                        walls.add(k);
+                        if (headPos && headPos.x === x && headPos.y === y)
+                            headPos = null;
+                        if (foodPos && foodPos.x === x && foodPos.y === y)
+                            foodPos = null;
+                        if (BS.has(k)) {
+                            const idx = BC.findIndex(
+                                (s) => s.x === x && s.y === y,
+                            );
+                            if (idx >= 0) truncateFrom(idx);
+                        }
+                        break;
+                    case "body":
+                        if (!headPos) {
+                            toast("Place head first");
+                            return;
+                        }
+                        if (BS.has(k)) {
+                            // click on existing segment → truncate from there
+                            const idx = BC.findIndex(
+                                (s) => s.x === x && s.y === y,
+                            );
+                            if (idx >= 0) truncateFrom(idx);
+                        } else {
+                            if (!canAppend(cell)) {
+                                toast("Must be adjacent to chain tail");
+                                return;
+                            }
+                            appendSeg(cell);
+                        }
+                        break;
+                    case "erase":
+                        walls.delete(k);
+                        if (headPos && headPos.x === x && headPos.y === y)
+                            headPos = null;
+                        if (foodPos && foodPos.x === x && foodPos.y === y)
+                            foodPos = null;
+                        if (BS.has(k)) {
+                            const idx = BC.findIndex(
+                                (s) => s.x === x && s.y === y,
+                            );
+                            if (idx >= 0) truncateFrom(idx);
+                        }
+                        break;
+                }
+            }
+            gc.addEventListener("mousedown", (e) => {
+                drawing = true;
+                applyTool(getCell(e));
+                update();
             });
-        }
+            gc.addEventListener("mousemove", (e) => {
+                if (!drawing) return;
+                applyTool(getCell(e));
+                update();
+            });
+            gc.addEventListener("mouseup", () => (drawing = false));
+            gc.addEventListener("mouseleave", () => (drawing = false));
+            document.addEventListener("keydown", (e) => {
+                const dm = {
+                    ArrowUp: 0,
+                    ArrowRight: 2,
+                    ArrowDown: 4,
+                    ArrowLeft: 6,
+                };
+                if (dm[e.key] !== undefined) {
+                    e.preventDefault();
+                    setDir(dm[e.key]);
+                    return;
+                }
+                if (e.key === "r" || e.key === "R") randomSnake();
+                if (e.key === "c" || e.key === "C") clearGrid();
+                if (e.key === "Delete" || e.key === "Backspace") {
+                    e.preventDefault();
+                    removeTail();
+                    update();
+                }
+            });
 
-        generateScene();
-    </script>
-</body>
+            // ── BRAIN LOADING ─────────────────────────────────────────────────────────────
+            async function decompressGz(ab) {
+                if (!window.DecompressionStream)
+                    throw new Error(
+                        "DecompressionStream not supported in this browser (use Chrome/Firefox/Edge)",
+                    );
+                const ds = new DecompressionStream("gzip");
+                const w = ds.writable.getWriter();
+                w.write(new Uint8Array(ab));
+                w.close();
+                const r = ds.readable.getReader();
+                const chunks = [];
+                while (true) {
+                    const { done, value } = await r.read();
+                    if (done) break;
+                    chunks.push(value);
+                }
+                const tot = chunks.reduce((n, c) => n + c.length, 0);
+                const out = new Uint8Array(tot);
+                let off = 0;
+                for (const c of chunks) {
+                    out.set(c, off);
+                    off += c.length;
+                }
+                return new TextDecoder().decode(out);
+            }
+            function parseBrain(str) {
+                try {
+                    const j = typeof str === "string" ? JSON.parse(str) : str;
+                    // Individual
+                    if (Array.isArray(j.genome)) {
+                        if (j.genome.length !== GS)
+                            throw new Error(`genome ${j.genome.length}≠${GS}`);
+                        genome = new Float32Array(j.genome);
+                        setSt(
+                            "ok",
+                            `✓ genome — fitness:${j.fitness?.toFixed(1) ?? "N/A"} 🍎${j.apples_eaten ?? "?"}`,
+                        );
+                        document.getElementById("csr").style.display = "none";
+                        update();
+                        return;
+                    }
+                    // Archive — try grid key (Rust MapElitesArchive) or cells key
+                    const raw = j.grid ?? j.cells ?? j;
+                    const keys = Object.keys(raw).filter((k) => raw[k]?.genome);
+                    if (!keys.length)
+                        throw new Error("no Individual.genome found");
+                    keys.sort(
+                        (a, b) => (raw[b].fitness ?? 0) - (raw[a].fitness ?? 0),
+                    );
+                    const sel = document.getElementById("csel");
+                    sel.innerHTML = "";
+                    keys.forEach((k) => {
+                        const o = document.createElement("option");
+                        o.value = k;
+                        const ind = raw[k];
+                        o.text = `[${k}] fit=${(ind.fitness ?? 0).toFixed(0)} 🍎${ind.apples_eaten ?? "?"}`;
+                        sel.appendChild(o);
+                    });
+                    sel._cells = raw;
+                    document.getElementById("csr").style.display = "flex";
+                    setSt(
+                        "ok",
+                        `✓ archive — ${keys.length} cells, gen ${j.generation ?? "?"}`,
+                    );
+                    selectCell();
+                } catch (e) {
+                    setSt("err", "✗ " + e.message);
+                    genome = null;
+                }
+            }
+            function selectCell() {
+                const sel = document.getElementById("csel"),
+                    cells = sel._cells;
+                if (!cells) return;
+                const ind = cells[sel.value];
+                if (!ind?.genome) return;
+                if (ind.genome.length !== GS) {
+                    document.getElementById("cfit").textContent =
+                        `⚠ genome len=${ind.genome.length}`;
+                    return;
+                }
+                genome = new Float32Array(ind.genome);
+                document.getElementById("cfit").textContent =
+                    `fit=${(ind.fitness ?? 0).toFixed(1)} dir=${(ind.path_directness ?? 0).toFixed(2)} avd=${(ind.body_avoidance ?? 0).toFixed(2)}`;
+                update();
+            }
+            async function loadFile(ev) {
+                const file = ev.target.files[0];
+                if (!file) return;
+                ev.target.value = "";
+                setSt("loading", "⏳ loading…");
+                try {
+                    const isGz = file.name.endsWith(".gz");
+                    const text = isGz
+                        ? await decompressGz(await file.arrayBuffer())
+                        : await file.text();
+                    parseBrain(text);
+                } catch (e) {
+                    setSt("err", "✗ " + e.message);
+                }
+            }
+            function pasteAndParse() {
+                const t = document.getElementById("jp").value.trim();
+                if (t) parseBrain(t);
+            }
+            function setSt(cls, msg) {
+                const el = document.getElementById("bs");
+                el.className = "bs " + cls;
+                el.textContent = msg;
+            }
+
+            // ── GRID UTILS ────────────────────────────────────────────────────────────────
+            function clearGrid() {
+                headPos = null;
+                foodPos = null;
+                walls.clear();
+                clearBody();
+                update();
+            }
+            function resizeGrid() {
+                N = parseInt(document.getElementById("gridSize").value);
+                clearGrid();
+            }
+            function toast(msg) {
+                const el = document.getElementById("toast");
+                el.textContent = msg;
+                el.classList.add("show");
+                setTimeout(() => el.classList.remove("show"), 1800);
+            }
+            function loadExample() {
+                clearGrid();
+                N = 20;
+                document.getElementById("gridSize").value = "20";
+                headDir = 0;
+                setDir(0);
+                headPos = { x: 10, y: 11 };
+                foodPos = { x: 14, y: 6 };
+                for (let i = 4; i < 16; i++) walls.add(i + ",3");
+                for (let i = 3; i < 13; i++) walls.add("15," + i);
+                walls.add("9,8");
+                walls.add("10,8");
+                walls.add("11,8");
+                [
+                    { x: 10, y: 12 },
+                    { x: 10, y: 13 },
+                    { x: 10, y: 14 },
+                    { x: 11, y: 14 },
+                    { x: 12, y: 14 },
+                ].forEach((p) => appendSeg(p));
+                update();
+            }
+
+            // ── INIT ──────────────────────────────────────────────────────────────────────
+            initStateUI();
+            initInputLayer();
+            initHidden();
+            loadExample();
+        </script>
+    </body>
 </html>

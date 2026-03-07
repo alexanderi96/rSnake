@@ -3,7 +3,6 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
-use bevy::window::WindowMode;
 use std::collections::HashMap;
 
 use crate::evolution::EvolutionManager;
@@ -176,6 +175,28 @@ pub struct CellRenderMap {
     pub terrain_dirty: bool,
 }
 
+/// Visibility state for all floating panels
+#[derive(Resource)]
+pub struct PanelVisibility {
+    pub inspector: bool,   // [I] Brain inspector panel
+    pub graph: bool,       // [G] Fitness history graph
+    pub heatmap: bool,     // [B] Map elites heatmap
+    pub leaderboard: bool, // [L] Snake rankings
+    pub keybindings: bool, // [K] Keybindings help
+}
+
+impl Default for PanelVisibility {
+    fn default() -> Self {
+        Self {
+            inspector: true, // Inspector visible by default
+            graph: true,     // Graph visible by default
+            heatmap: false,
+            leaderboard: true, // Leaderboard visible by default
+            keybindings: false,
+        }
+    }
+}
+
 impl CellRenderMap {
     pub fn new(grid_width: i32, grid_height: i32) -> Self {
         let size = (grid_width * grid_height) as usize;
@@ -230,11 +251,12 @@ impl Plugin for UiPlugin {
         .insert_resource(FoodPool::default())
         .insert_resource(UiUpdateTimer::default())
         .insert_resource(CellRenderMap::new(0, 0)) // placeholder, re-created in setup
+        .insert_resource(PanelVisibility::default()) // Floating panel visibility
         // MaterialPalette is created in main.rs setup (needs access to materials asset)
         .add_systems(
             Update,
             (
-                handle_input.run_if(in_state(crate::brain_inspector::AppState::SimulationView)),
+                handle_input,
                 on_window_resize_collect,
                 on_window_resize_apply.after(on_window_resize_collect),
                 render_system.after(on_window_resize_apply),
@@ -781,7 +803,7 @@ pub fn render_system(
     mut stats: ResMut<TrainingStats>,
     mut cell_map: ResMut<CellRenderMap>,
     evo_manager: Res<EvolutionManager>,
-    app_state: Res<State<crate::brain_inspector::AppState>>,
+    panel_visibility: Res<PanelVisibility>,
     inspected_agent: Res<crate::brain_inspector::InspectedAgent>,
 ) {
     #[cfg(feature = "tracy")]
@@ -841,8 +863,8 @@ pub fn render_system(
         .map(|ind| ind.fitness)
         .collect();
 
-    let is_inspector_view =
-        app_state.get() == &crate::brain_inspector::AppState::BrainInspectorView;
+    // Inspector mode when panel is visible and an agent is selected
+    let is_inspector_view = panel_visibility.inspector && inspected_agent.snake_idx.is_some();
     let selected_snake_id = inspected_agent.snake_idx;
 
     // === PHASE 0: Render terrain walls (only when terrain changes) ===
