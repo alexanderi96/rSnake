@@ -161,6 +161,7 @@ fn main() {
         .add_plugins(UiPlugin)
         .add_plugins(InspectorGizmoPlugin)
         .add_plugins(BrainLoaderPlugin)
+        .add_plugins(brain_inspector::BrainInspectorPlugin)
         .add_systems(Startup, setup)
         .add_systems(Startup, ui::spawn_stats_ui.after(setup))
         // Two-phase parallel simulation: compute moves (parallel) then apply (serial)
