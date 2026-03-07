@@ -82,6 +82,30 @@ pub struct BrainInspectorUi;
 #[derive(Component)]
 pub struct InspectorCamera;
 
+/// State for inspector camera (position, zoom, pan)
+#[derive(Component)]
+pub struct InspectorCameraState {
+    /// Camera offset from the followed snake
+    pub offset: Vec2,
+    /// Zoom level (1.0 = default, >1.0 = zoomed in, <1.0 = zoomed out)
+    pub zoom: f32,
+    /// Whether the camera is currently being dragged
+    pub is_dragging: bool,
+    /// Last mouse position for drag calculation
+    pub last_mouse_pos: Option<Vec2>,
+}
+
+impl Default for InspectorCameraState {
+    fn default() -> Self {
+        Self {
+            offset: Vec2::ZERO,
+            zoom: 1.0,
+            is_dragging: false,
+            last_mouse_pos: None,
+        }
+    }
+}
+
 /// Marker for simulation camera
 #[derive(Component)]
 pub struct SimulationCamera;
@@ -101,8 +125,13 @@ impl Plugin for BrainInspectorPlugin {
         app.init_state::<AppState>()
             .insert_resource(InspectedAgent::default())
             .insert_resource(BrainInspectorState::default())
-            // Input system runs in all states
-            .add_systems(Update, keyboard_input_system)
+            // View switching always available
+            .add_systems(Update, view_switch_system)
+            // Inspector controls only in BrainInspectorView
+            .add_systems(
+                Update,
+                inspector_controls_system.run_if(in_state(AppState::BrainInspectorView)),
+            )
             // State enter/exit systems
             .add_systems(OnEnter(AppState::BrainInspectorView), enter_inspector_view)
             .add_systems(OnExit(AppState::BrainInspectorView), exit_inspector_view)
@@ -110,116 +139,210 @@ impl Plugin for BrainInspectorPlugin {
             // Inspector update systems (only in BrainInspectorView)
             .add_systems(
                 Update,
-                (update_inspected_agent, update_sensor_cache)
+                (
+                    handle_agent_death_and_switch,
+                    update_sensor_cache,
+                    inspector_camera_controls,
+                    follow_inspected_agent_with_camera,
+                )
                     .run_if(in_state(AppState::BrainInspectorView)),
             );
     }
 }
 
 // ============================================================================
-// INPUT SYSTEM
+// INPUT SYSTEMS
 // ============================================================================
 
-/// Keyboard input handler for view switching and inspector controls
-fn keyboard_input_system(
+/// View switching system - always available
+fn view_switch_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     current_state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
-    mut inspector_state: ResMut<BrainInspectorState>,
-    game_state: Res<GameState>,
-    mut inspected_agent: ResMut<InspectedAgent>,
 ) {
-    // View switching with number keys
+    // View switching with number keys (always active)
     if keyboard_input.just_pressed(KeyCode::Digit1) {
         if current_state.get() != &AppState::SimulationView {
-            println!("Switching to Simulation View");
+            println!("[VIEW] Switching to Simulation View");
             next_state.set(AppState::SimulationView);
         }
     }
 
     if keyboard_input.just_pressed(KeyCode::Digit2) {
         if current_state.get() != &AppState::BrainInspectorView {
-            println!("Switching to Brain Inspector View");
+            println!("[VIEW] Switching to Brain Inspector View");
             next_state.set(AppState::BrainInspectorView);
         }
     }
+}
 
-    // Inspector-specific controls (only when in inspector view)
-    if current_state.get() == &AppState::BrainInspectorView {
-        // Tab switching
-        if keyboard_input.just_pressed(KeyCode::KeyS) {
-            inspector_state.active_tab = InspectorTab::Sensors;
-            println!("Inspector tab: Sensors");
-        }
-        if keyboard_input.just_pressed(KeyCode::KeyW) {
-            inspector_state.active_tab = InspectorTab::Weights;
-            println!("Inspector tab: Weights");
-        }
-        if keyboard_input.just_pressed(KeyCode::KeyA) {
-            inspector_state.active_tab = InspectorTab::Activations;
-            println!("Inspector tab: Activations");
-        }
+/// Inspector controls - only active in BrainInspectorView
+fn inspector_controls_system(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut inspector_state: ResMut<BrainInspectorState>,
+    game_state: Res<GameState>,
+    mut inspected_agent: ResMut<InspectedAgent>,
+) {
+    // Tab switching
+    if keyboard_input.just_pressed(KeyCode::KeyS) {
+        inspector_state.active_tab = InspectorTab::Sensors;
+        println!("[INSPECTOR] Tab: Sensors");
+    }
+    if keyboard_input.just_pressed(KeyCode::KeyW) {
+        inspector_state.active_tab = InspectorTab::Weights;
+        println!("[INSPECTOR] Tab: Weights");
+    }
+    if keyboard_input.just_pressed(KeyCode::KeyA) {
+        inspector_state.active_tab = InspectorTab::Activations;
+        println!("[INSPECTOR] Tab: Activations");
+    }
 
-        // Agent selection (number keys 0-9 for quick selection)
-        let key_mappings = [
-            (KeyCode::Digit0, 0usize),
-            (KeyCode::Digit3, 3usize),
-            (KeyCode::Digit4, 4usize),
-            (KeyCode::Digit5, 5usize),
-            (KeyCode::Digit6, 6usize),
-            (KeyCode::Digit7, 7usize),
-            (KeyCode::Digit8, 8usize),
-            (KeyCode::Digit9, 9usize),
-        ];
+    // Agent selection with number keys (0-9)
+    // Skip 1 and 2 as they're used for view switching
+    if keyboard_input.just_pressed(KeyCode::Digit0) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 0);
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit3) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 3);
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit4) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 4);
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit5) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 5);
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit6) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 6);
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit7) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 7);
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit8) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 8);
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit9) {
+        select_agent_by_index(&mut inspected_agent, &mut inspector_state, &game_state, 9);
+    }
 
-        for (key, idx) in key_mappings.iter() {
-            if keyboard_input.just_pressed(*key) {
-                if *idx < game_state.snakes.len() {
-                    inspected_agent.snake_idx = Some(*idx);
-                    inspector_state.follow_snake_id = Some(*idx);
-                    println!("Inspecting snake {}", idx);
-                }
+    // Next/Previous agent navigation
+    if keyboard_input.just_pressed(KeyCode::ArrowRight)
+        || keyboard_input.just_pressed(KeyCode::KeyN)
+    {
+        navigate_to_next_agent(&mut inspected_agent, &mut inspector_state, &game_state);
+    }
+
+    if keyboard_input.just_pressed(KeyCode::ArrowLeft) || keyboard_input.just_pressed(KeyCode::KeyP)
+    {
+        navigate_to_prev_agent(&mut inspected_agent, &mut inspector_state, &game_state);
+    }
+
+    // Toggle panel visibility
+    if keyboard_input.just_pressed(KeyCode::KeyH) {
+        inspector_state.panel_visible = !inspector_state.panel_visible;
+        println!(
+            "[INSPECTOR] Panel: {}",
+            if inspector_state.panel_visible {
+                "visible"
+            } else {
+                "hidden"
             }
-        }
+        );
+    }
+}
 
-        // Next/Previous agent navigation
-        if keyboard_input.just_pressed(KeyCode::ArrowRight)
-            || keyboard_input.just_pressed(KeyCode::KeyN)
-        {
-            let current = inspected_agent.snake_idx.unwrap_or(0);
-            let next = (current + 1) % game_state.snakes.len();
+/// Helper to select an agent by index
+fn select_agent_by_index(
+    inspected_agent: &mut InspectedAgent,
+    inspector_state: &mut BrainInspectorState,
+    game_state: &GameState,
+    idx: usize,
+) {
+    if idx < game_state.snakes.len() {
+        inspected_agent.snake_idx = Some(idx);
+        inspector_state.follow_snake_id = Some(idx);
+        let snake = &game_state.snakes[idx];
+        let status = if snake.is_game_over { "DEAD" } else { "alive" };
+        println!(
+            "[INSPECTOR] Selected snake {} (score: {}, {})",
+            idx, snake.score, status
+        );
+    }
+}
+
+/// Navigate to the next agent (skipping dead ones if possible)
+fn navigate_to_next_agent(
+    inspected_agent: &mut InspectedAgent,
+    inspector_state: &mut BrainInspectorState,
+    game_state: &GameState,
+) {
+    if game_state.snakes.is_empty() {
+        return;
+    }
+
+    let current = inspected_agent.snake_idx.unwrap_or(0);
+    let snake_count = game_state.snakes.len();
+
+    // Try to find next alive snake
+    for i in 1..=snake_count {
+        let next = (current + i) % snake_count;
+        if !game_state.snakes[next].is_game_over {
             inspected_agent.snake_idx = Some(next);
             inspector_state.follow_snake_id = Some(next);
-            println!("Inspecting snake {}", next);
-        }
-
-        if keyboard_input.just_pressed(KeyCode::ArrowLeft)
-            || keyboard_input.just_pressed(KeyCode::KeyP)
-        {
-            let current = inspected_agent.snake_idx.unwrap_or(0);
-            let prev = if current == 0 {
-                game_state.snakes.len() - 1
-            } else {
-                current - 1
-            };
-            inspected_agent.snake_idx = Some(prev);
-            inspector_state.follow_snake_id = Some(prev);
-            println!("Inspecting snake {}", prev);
-        }
-
-        // Toggle panel visibility
-        if keyboard_input.just_pressed(KeyCode::KeyH) {
-            inspector_state.panel_visible = !inspector_state.panel_visible;
             println!(
-                "Inspector panel: {}",
-                if inspector_state.panel_visible {
-                    "visible"
-                } else {
-                    "hidden"
-                }
+                "[INSPECTOR] Next snake {} (score: {})",
+                next, game_state.snakes[next].score
             );
+            return;
         }
     }
+
+    // If all dead, just go to next
+    let next = (current + 1) % snake_count;
+    inspected_agent.snake_idx = Some(next);
+    inspector_state.follow_snake_id = Some(next);
+    println!("[INSPECTOR] Next snake {} (DEAD)", next);
+}
+
+/// Navigate to the previous agent (skipping dead ones if possible)
+fn navigate_to_prev_agent(
+    inspected_agent: &mut InspectedAgent,
+    inspector_state: &mut BrainInspectorState,
+    game_state: &GameState,
+) {
+    if game_state.snakes.is_empty() {
+        return;
+    }
+
+    let current = inspected_agent.snake_idx.unwrap_or(0);
+    let snake_count = game_state.snakes.len();
+
+    // Try to find previous alive snake
+    for i in 1..=snake_count {
+        let prev = if current >= i {
+            current - i
+        } else {
+            snake_count - (i - current)
+        };
+        if !game_state.snakes[prev].is_game_over {
+            inspected_agent.snake_idx = Some(prev);
+            inspector_state.follow_snake_id = Some(prev);
+            println!(
+                "[INSPECTOR] Previous snake {} (score: {})",
+                prev, game_state.snakes[prev].score
+            );
+            return;
+        }
+    }
+
+    // If all dead, just go to previous
+    let prev = if current == 0 {
+        snake_count - 1
+    } else {
+        current - 1
+    };
+    inspected_agent.snake_idx = Some(prev);
+    inspector_state.follow_snake_id = Some(prev);
+    println!("[INSPECTOR] Previous snake {} (DEAD)", prev);
 }
 
 // ============================================================================
@@ -242,7 +365,7 @@ fn enter_inspector_view(
         commands.entity(entity).insert(Visibility::Hidden);
     }
 
-    // Spawn inspector camera
+    // Spawn inspector camera with initial position
     let _window = window_query.single();
     commands.spawn((
         Camera2dBundle {
@@ -253,23 +376,25 @@ fn enter_inspector_view(
             ..default()
         },
         InspectorCamera,
+        InspectorCameraState::default(),
     ));
 
-    // Auto-select first alive snake if none selected
-    if inspected_agent.snake_idx.is_none() {
-        // Find first alive snake
-        for (idx, snake) in game_state.snakes.iter().enumerate() {
-            if !snake.is_game_over {
-                inspected_agent.snake_idx = Some(idx);
-                inspector_state.follow_snake_id = Some(idx);
-                break;
-            }
-        }
-        // If all dead, select first one anyway
-        if inspected_agent.snake_idx.is_none() && !game_state.snakes.is_empty() {
-            inspected_agent.snake_idx = Some(0);
-            inspector_state.follow_snake_id = Some(0);
-        }
+    // Auto-select the alive snake with highest score
+    let best_alive = game_state
+        .snakes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.is_game_over)
+        .max_by_key(|(_, s)| s.score);
+
+    if let Some((idx, snake)) = best_alive {
+        inspected_agent.snake_idx = Some(idx);
+        inspector_state.follow_snake_id = Some(idx);
+        println!("Auto-selected snake {} with score {}", idx, snake.score);
+    } else if !game_state.snakes.is_empty() {
+        // If all dead, select first one
+        inspected_agent.snake_idx = Some(0);
+        inspector_state.follow_snake_id = Some(0);
     }
 
     // Mark panel as needing spawn
@@ -323,28 +448,91 @@ fn enter_simulation_view(
 // UPDATE SYSTEMS
 // ============================================================================
 
-/// Update the inspected agent (handle agent death, follow selection)
-fn update_inspected_agent(
+/// Handle agent death and auto-switch to next alive agent
+fn handle_agent_death_and_switch(
     game_state: Res<GameState>,
     mut inspected_agent: ResMut<InspectedAgent>,
-    inspector_state: Res<BrainInspectorState>,
+    mut inspector_state: ResMut<BrainInspectorState>,
 ) {
-    // If following a specific snake, update the index
-    if let Some(follow_id) = inspector_state.follow_snake_id {
-        if follow_id < game_state.snakes.len() {
-            inspected_agent.snake_idx = Some(follow_id);
+    let Some(current_idx) = inspected_agent.snake_idx else {
+        // No agent selected, try to find best alive one
+        if let Some((idx, snake)) = find_best_alive_snake(&game_state) {
+            inspected_agent.snake_idx = Some(idx);
+            inspector_state.follow_snake_id = Some(idx);
+            println!(
+                "[INSPECTOR] Auto-selected snake {} with score {} (no previous selection)",
+                idx, snake.score
+            );
         }
-    }
+        return;
+    };
 
-    // Validate current selection
-    if let Some(idx) = inspected_agent.snake_idx {
-        if idx >= game_state.snakes.len() {
-            // Selected snake no longer exists, clear selection
+    // Check if current snake is valid
+    if current_idx >= game_state.snakes.len() {
+        // Snake no longer exists, find a replacement
+        if let Some((idx, snake)) = find_best_alive_snake(&game_state) {
+            inspected_agent.snake_idx = Some(idx);
+            inspector_state.follow_snake_id = Some(idx);
+            inspected_agent.last_sensor_state = None;
+            inspected_agent.last_output = None;
+            println!(
+                "[INSPECTOR] Switched to snake {} with score {} (previous invalid)",
+                idx, snake.score
+            );
+        } else {
             inspected_agent.snake_idx = None;
             inspected_agent.last_sensor_state = None;
             inspected_agent.last_output = None;
         }
+        return;
     }
+
+    // Check if current snake died
+    let snake = &game_state.snakes[current_idx];
+    if snake.is_game_over {
+        // Snake died, switch to next alive one
+        if let Some((idx, new_snake)) = find_next_alive_snake(&game_state, current_idx) {
+            inspected_agent.snake_idx = Some(idx);
+            inspector_state.follow_snake_id = Some(idx);
+            inspected_agent.last_sensor_state = None;
+            inspected_agent.last_output = None;
+            println!(
+                "[INSPECTOR] Snake {} died, switched to snake {} with score {}",
+                current_idx, idx, new_snake.score
+            );
+        }
+        // If no alive snakes found, stay on dead one (user can manually navigate)
+    }
+}
+
+/// Find the alive snake with the highest score
+fn find_best_alive_snake(game_state: &GameState) -> Option<(usize, &crate::snake::SnakeInstance)> {
+    game_state
+        .snakes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.is_game_over)
+        .max_by_key(|(_, s)| s.score)
+}
+
+/// Find the next alive snake after the given index
+fn find_next_alive_snake(
+    game_state: &GameState,
+    start_idx: usize,
+) -> Option<(usize, &crate::snake::SnakeInstance)> {
+    let snake_count = game_state.snakes.len();
+
+    // Search forward from start_idx
+    for i in 1..=snake_count {
+        let idx = (start_idx + i) % snake_count;
+        let snake = &game_state.snakes[idx];
+        if !snake.is_game_over {
+            return Some((idx, snake));
+        }
+    }
+
+    // No alive snakes found
+    None
 }
 
 /// Cache sensor state for the inspected agent to avoid recalculation
@@ -377,6 +565,118 @@ fn update_sensor_cache(
         let output = brain_arc.forward(&full_state);
         inspected_agent.last_output = Some(output);
     }
+}
+
+// ============================================================================
+// CAMERA CONTROL SYSTEMS
+// ============================================================================
+
+/// Handle camera controls (zoom, pan, reset)
+fn inspector_camera_controls(
+    mut camera_query: Query<(&mut InspectorCameraState, &mut Transform), With<InspectorCamera>>,
+    mut mouse_wheel: EventReader<bevy::input::mouse::MouseWheel>,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window>,
+) {
+    let Ok((mut cam_state, mut transform)) = camera_query.get_single_mut() else {
+        return;
+    };
+
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+
+    // Reset camera on 'R' key
+    if keyboard_input.just_pressed(KeyCode::KeyR) {
+        cam_state.offset = Vec2::ZERO;
+        cam_state.zoom = 1.0;
+        transform.scale = Vec3::ONE;
+        println!("Camera reset");
+    }
+
+    // Zoom with mouse wheel
+    for event in mouse_wheel.read() {
+        let zoom_delta = event.y * 0.1;
+        cam_state.zoom = (cam_state.zoom + zoom_delta).clamp(0.5, 5.0);
+        transform.scale = Vec3::splat(cam_state.zoom);
+    }
+
+    // Pan with middle mouse button or right mouse button
+    let is_pan_button =
+        mouse_button.pressed(MouseButton::Middle) || mouse_button.pressed(MouseButton::Right);
+
+    if is_pan_button {
+        if let Some(cursor_pos) = window.cursor_position() {
+            if let Some(last_pos) = cam_state.last_mouse_pos {
+                // Calculate delta in world space (accounting for zoom)
+                let delta = (cursor_pos - last_pos) * cam_state.zoom;
+                cam_state.offset.x -= delta.x;
+                cam_state.offset.y += delta.y; // Y is inverted in screen space
+            }
+            cam_state.last_mouse_pos = Some(cursor_pos);
+            cam_state.is_dragging = true;
+        }
+    } else {
+        cam_state.is_dragging = false;
+        cam_state.last_mouse_pos = None;
+    }
+}
+
+/// Update camera position to follow the inspected agent
+fn follow_inspected_agent_with_camera(
+    inspected: Res<InspectedAgent>,
+    game_state: Res<GameState>,
+    windows: Query<&Window>,
+    mut camera_query: Query<(&InspectorCameraState, &mut Transform), With<InspectorCamera>>,
+) {
+    let Ok((cam_state, mut transform)) = camera_query.get_single_mut() else {
+        return;
+    };
+
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+
+    // Calculate grid offset (same as render_system)
+    let grid_px_w = game_state
+        .snakes
+        .first()
+        .map(|_| crate::snake::BLOCK_SIZE * 20.0)
+        .unwrap_or(400.0);
+    let grid_px_h = grid_px_w;
+    let leftover_x = window.resolution.width() - grid_px_w;
+    let leftover_y = window.resolution.height() - grid_px_h;
+    let base_offset_x =
+        -window.resolution.width() / 2.0 + (leftover_x / 2.0) + crate::snake::BLOCK_SIZE / 2.0;
+    let base_offset_y =
+        window.resolution.height() / 2.0 - (leftover_y / 2.0) - crate::snake::BLOCK_SIZE / 2.0;
+
+    // Get snake head position
+    let snake_world_pos = if let Some(idx) = inspected.snake_idx {
+        game_state
+            .snakes
+            .get(idx)
+            .map(|snake| {
+                let head = snake.snake[0];
+                Vec3::new(
+                    base_offset_x + head.x as f32 * crate::snake::BLOCK_SIZE,
+                    base_offset_y - head.y as f32 * crate::snake::BLOCK_SIZE,
+                    0.0,
+                )
+            })
+            .unwrap_or_else(|| Vec3::ZERO)
+    } else {
+        Vec3::ZERO
+    };
+
+    // Apply position with offset
+    transform.translation = snake_world_pos
+        + Vec3::new(
+            cam_state.offset.x / cam_state.zoom,
+            cam_state.offset.y / cam_state.zoom,
+            0.0,
+        );
 }
 
 // ============================================================================

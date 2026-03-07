@@ -339,7 +339,7 @@ pub fn spawn_stats_ui(mut commands: Commands, _game: Res<GameState>) {
 
     commands.spawn((
         TextBundle::from_section(
-            "[R]Render  [G]Graph  [B]Board  [P]Pause  [F]Full  [C]Collision  [[]Steps-  []]Steps+  [ESC]Exit",
+            "[1]Sim  [2]Inspect  [R]Render  [G]Graph  [B]Board  [P]Pause  [F]Full  [C]Coll  [ESC]Exit",
             TextStyle {
                 font_size: 14.0,
                 color: Color::GRAY,
@@ -481,14 +481,9 @@ pub fn update_stats_ui(
         } else {
             "OFF"
         };
-        let graph_status = if GraphPanelState::default().visible {
-            "ON"
-        } else {
-            "OFF"
-        };
         cmd_text.sections[0].value = format!(
-            "[R]Render:{}  [G]Graph:{}  [B]Board  [P]Pause  [F]Full  [C]Collision:{}  [ESC]Exit",
-            render_status, graph_status, collision_status
+            "[1]Sim [2]Inspect | [R]Render:{} [C]Coll:{} | [P]Pause [ESC]Exit",
+            render_status, collision_status
         );
     }
 }
