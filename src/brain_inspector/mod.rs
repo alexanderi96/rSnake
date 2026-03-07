@@ -82,30 +82,6 @@ pub struct BrainInspectorUi;
 #[derive(Component)]
 pub struct InspectorCamera;
 
-/// State for inspector camera (position, zoom, pan)
-#[derive(Component)]
-pub struct InspectorCameraState {
-    /// Camera offset from the followed snake
-    pub offset: Vec2,
-    /// Zoom level (1.0 = default, >1.0 = zoomed in, <1.0 = zoomed out)
-    pub zoom: f32,
-    /// Whether the camera is currently being dragged
-    pub is_dragging: bool,
-    /// Last mouse position for drag calculation
-    pub last_mouse_pos: Option<Vec2>,
-}
-
-impl Default for InspectorCameraState {
-    fn default() -> Self {
-        Self {
-            offset: Vec2::ZERO,
-            zoom: 1.0,
-            is_dragging: false,
-            last_mouse_pos: None,
-        }
-    }
-}
-
 /// Marker for simulation camera
 #[derive(Component)]
 pub struct SimulationCamera;
@@ -139,12 +115,7 @@ impl Plugin for BrainInspectorPlugin {
             // Inspector update systems (only in BrainInspectorView)
             .add_systems(
                 Update,
-                (
-                    handle_agent_death_and_switch,
-                    update_sensor_cache,
-                    inspector_camera_controls,
-                    follow_inspected_agent_with_camera,
-                )
+                (handle_agent_death_and_switch, update_sensor_cache)
                     .run_if(in_state(AppState::BrainInspectorView)),
             );
     }
@@ -365,8 +336,7 @@ fn enter_inspector_view(
         commands.entity(entity).insert(Visibility::Hidden);
     }
 
-    // Spawn inspector camera with initial position
-    let _window = window_query.single();
+    // Spawn inspector camera - static view like simulation (no following)
     commands.spawn((
         Camera2dBundle {
             camera: Camera {
@@ -376,7 +346,6 @@ fn enter_inspector_view(
             ..default()
         },
         InspectorCamera,
-        InspectorCameraState::default(),
     ));
 
     // Auto-select the alive snake with highest score
@@ -565,118 +534,6 @@ fn update_sensor_cache(
         let output = brain_arc.forward(&full_state);
         inspected_agent.last_output = Some(output);
     }
-}
-
-// ============================================================================
-// CAMERA CONTROL SYSTEMS
-// ============================================================================
-
-/// Handle camera controls (zoom, pan, reset)
-fn inspector_camera_controls(
-    mut camera_query: Query<(&mut InspectorCameraState, &mut Transform), With<InspectorCamera>>,
-    mut mouse_wheel: EventReader<bevy::input::mouse::MouseWheel>,
-    mouse_button: Res<ButtonInput<MouseButton>>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    windows: Query<&Window>,
-) {
-    let Ok((mut cam_state, mut transform)) = camera_query.get_single_mut() else {
-        return;
-    };
-
-    let Ok(window) = windows.get_single() else {
-        return;
-    };
-
-    // Reset camera on 'R' key
-    if keyboard_input.just_pressed(KeyCode::KeyR) {
-        cam_state.offset = Vec2::ZERO;
-        cam_state.zoom = 1.0;
-        transform.scale = Vec3::ONE;
-        println!("Camera reset");
-    }
-
-    // Zoom with mouse wheel
-    for event in mouse_wheel.read() {
-        let zoom_delta = event.y * 0.1;
-        cam_state.zoom = (cam_state.zoom + zoom_delta).clamp(0.5, 5.0);
-        transform.scale = Vec3::splat(cam_state.zoom);
-    }
-
-    // Pan with middle mouse button or right mouse button
-    let is_pan_button =
-        mouse_button.pressed(MouseButton::Middle) || mouse_button.pressed(MouseButton::Right);
-
-    if is_pan_button {
-        if let Some(cursor_pos) = window.cursor_position() {
-            if let Some(last_pos) = cam_state.last_mouse_pos {
-                // Calculate delta in world space (accounting for zoom)
-                let delta = (cursor_pos - last_pos) * cam_state.zoom;
-                cam_state.offset.x -= delta.x;
-                cam_state.offset.y += delta.y; // Y is inverted in screen space
-            }
-            cam_state.last_mouse_pos = Some(cursor_pos);
-            cam_state.is_dragging = true;
-        }
-    } else {
-        cam_state.is_dragging = false;
-        cam_state.last_mouse_pos = None;
-    }
-}
-
-/// Update camera position to follow the inspected agent
-fn follow_inspected_agent_with_camera(
-    inspected: Res<InspectedAgent>,
-    game_state: Res<GameState>,
-    windows: Query<&Window>,
-    mut camera_query: Query<(&InspectorCameraState, &mut Transform), With<InspectorCamera>>,
-) {
-    let Ok((cam_state, mut transform)) = camera_query.get_single_mut() else {
-        return;
-    };
-
-    let Ok(window) = windows.get_single() else {
-        return;
-    };
-
-    // Calculate grid offset (same as render_system)
-    let grid_px_w = game_state
-        .snakes
-        .first()
-        .map(|_| crate::snake::BLOCK_SIZE * 20.0)
-        .unwrap_or(400.0);
-    let grid_px_h = grid_px_w;
-    let leftover_x = window.resolution.width() - grid_px_w;
-    let leftover_y = window.resolution.height() - grid_px_h;
-    let base_offset_x =
-        -window.resolution.width() / 2.0 + (leftover_x / 2.0) + crate::snake::BLOCK_SIZE / 2.0;
-    let base_offset_y =
-        window.resolution.height() / 2.0 - (leftover_y / 2.0) - crate::snake::BLOCK_SIZE / 2.0;
-
-    // Get snake head position
-    let snake_world_pos = if let Some(idx) = inspected.snake_idx {
-        game_state
-            .snakes
-            .get(idx)
-            .map(|snake| {
-                let head = snake.snake[0];
-                Vec3::new(
-                    base_offset_x + head.x as f32 * crate::snake::BLOCK_SIZE,
-                    base_offset_y - head.y as f32 * crate::snake::BLOCK_SIZE,
-                    0.0,
-                )
-            })
-            .unwrap_or_else(|| Vec3::ZERO)
-    } else {
-        Vec3::ZERO
-    };
-
-    // Apply position with offset
-    transform.translation = snake_world_pos
-        + Vec3::new(
-            cam_state.offset.x / cam_state.zoom,
-            cam_state.offset.y / cam_state.zoom,
-            0.0,
-        );
 }
 
 // ============================================================================
