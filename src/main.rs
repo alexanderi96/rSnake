@@ -178,8 +178,9 @@ fn main() {
         .add_systems(
             Update,
             (
-                brain_inspector::ui::update_inspector_content,
                 brain_inspector::ui::update_inspector_visibility,
+                brain_inspector::ui::update_inspector_content
+                    .after(brain_inspector::ui::update_inspector_visibility),
             ),
         )
         .run();

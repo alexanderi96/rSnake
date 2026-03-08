@@ -188,9 +188,15 @@ pub fn update_inspector_content(
     global_history: Res<crate::snake::GlobalTrainingHistory>,
     game_stats: Res<crate::snake::GameStats>,
     app_start_time: Res<crate::snake::AppStartTime>,
+    panel_visibility: Res<crate::ui::PanelVisibility>,
     content_query: Query<Entity, With<InspectorContent>>,
     children_query: Query<&Children>,
 ) {
+    // Skip if panel is not visible
+    if !panel_visibility.inspector {
+        return;
+    }
+
     // Only update when state changes
     if !inspector_state.is_changed() && !inspected_agent.is_changed() {
         return;
