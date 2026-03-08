@@ -387,6 +387,8 @@ pub struct SnakeInstance {
     pub body_pressure_sum: f32,
     pub timeout_budget_sum: u64,
     pub obstacle_adjacency_sum: f32,
+    pub turn_alternations: u32,
+    pub last_turn_direction: i8, // 0=nessuna, 1=destra, -1=sinistra
 }
 
 impl SnakeInstance {
@@ -483,6 +485,8 @@ impl SnakeInstance {
             body_pressure_sum: 0.0,
             timeout_budget_sum: 0,
             obstacle_adjacency_sum: 0.0,
+            turn_alternations: 0,
+            last_turn_direction: 0,
         }
     }
 
@@ -526,6 +530,8 @@ impl SnakeInstance {
         self.body_pressure_sum = 0.0;
         self.timeout_budget_sum = 0;
         self.obstacle_adjacency_sum = 0.0;
+        self.turn_alternations = 0;
+        self.last_turn_direction = 0;
     }
 
     /// Descrittore 1: frequenza di svoltate normalizzata [0,1]
@@ -551,6 +557,26 @@ impl SnakeInstance {
             return 0.0;
         }
         (self.obstacle_adjacency_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+    }
+
+    /// Descrittore 2 (nuovo): media di body_pressure normalizzata [0,1]
+    /// Misura quanto il serpente naviga in spazio denso rispetto al proprio corpo.
+    /// 0.0 = naviga sempre in spazio vuoto, 1.0 = massima densità
+    pub fn body_pressure(&self) -> f32 {
+        if self.frames_survived == 0 {
+            return 0.0;
+        }
+        (self.body_pressure_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+    }
+
+    /// Descrittore 3 (nuovo): misura quanto il serpente fa zigzag [0,1]
+    /// 0.0 = va sempre dritto o curve lunghe, 1.0 = zigzaga ad ogni frame
+    pub fn turn_alternation(&self) -> f32 {
+        if self.turn_count < 2 {
+            return 0.0;
+        }
+        // turn_count-1 perché la prima svolta non può essere un'alternanza
+        (self.turn_alternations as f32 / (self.turn_count - 1) as f32).clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)

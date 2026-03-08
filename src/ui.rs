@@ -612,6 +612,20 @@ pub fn render_system(
     let is_inspector_view = panel_visibility.inspector && inspected_agent.snake_idx.is_some();
     let selected_snake_id = inspected_agent.snake_idx;
 
+    // In inspector mode: only show food for selected snake, hide all others
+    if is_inspector_view {
+        for snake in game.snakes.iter() {
+            if let Some(&food_entity) = food_pool.entities.get(snake.id) {
+                let show_food = selected_snake_id == Some(snake.id);
+                commands.entity(food_entity).insert(if show_food {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                });
+            }
+        }
+    }
+
     // === PHASE 0: Render terrain walls (only when terrain changes) ===
     const WALL_COLOR: Color = Color::rgb(0.50, 0.22, 0.15);
     // Dimmed wall color for inspector view (semi-transparent effect via darker color)
@@ -654,35 +668,29 @@ pub fn render_system(
 
     // === PHASE 1: Build cell color map ===
     // For each occupied cell, keep only the color of the highest-fitness snake.
-    // In inspector view: selected snake at full brightness, others dimmed to ~15%.
+    // In inspector view: ONLY render selected snake, hide all others completely.
     for snake in game.snakes.iter() {
         if snake.is_game_over {
             continue;
         }
-        let snake_fitness = fitness_map.get(snake.id).copied().unwrap_or(0.0);
 
-        let is_selected = is_inspector_view && selected_snake_id == Some(snake.id);
-        let dim_factor = if is_inspector_view && !is_selected {
-            0.12 // ~12% brightness for non-selected snakes
-        } else {
-            1.0
-        };
+        // In inspector mode, skip snakes that are not selected
+        if is_inspector_view && selected_snake_id != Some(snake.id) {
+            continue;
+        }
+
+        let snake_fitness = fitness_map.get(snake.id).copied().unwrap_or(0.0);
 
         for (seg_idx, pos) in snake.snake.iter().enumerate() {
             let Some(cidx) = cell_map.cell_index(pos.x, pos.y) else {
                 continue;
             };
-            // Head is always white (or dimmed); body uses the snake's behavioral color
-            let base_color = if seg_idx == 0 {
+            // Head is always white; body uses the snake's behavioral color
+            let color = if seg_idx == 0 {
                 Color::rgb(1.0, 1.0, 1.0)
             } else {
                 snake.color
             };
-            let color = Color::rgb(
-                base_color.r() * dim_factor,
-                base_color.g() * dim_factor,
-                base_color.b() * dim_factor,
-            );
             // Only update if this snake has higher fitness than the current winner
             match cell_map.cells[cidx] {
                 Some((_, existing_fitness)) if snake_fitness <= existing_fitness => {}
@@ -981,7 +989,7 @@ fn spawn_heatmap_panel_internal(mut commands: Commands, heatmap_state: &HeatmapP
                 },))
                 .with_children(|header| {
                     header.spawn(TextBundle::from_section(
-                        "MAP-Elites Heatmap (Body Pressure vs Path Directness)",
+                        "MAP-Elites Heatmap (Turn Rate vs Body Pressure)",
                         TextStyle {
                             font_size: 16.0,
                             color: Color::WHITE,
@@ -1151,7 +1159,7 @@ pub fn draw_heatmap_in_panel(
             // Axis Labels
             spawn_axis_label(
                 parent,
-                "Path Directness →",
+                "Turn Rate →",
                 Val::Px(margin),
                 Val::Px(grid_height + margin + 5.0),
             );

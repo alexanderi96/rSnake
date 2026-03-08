@@ -444,7 +444,7 @@ pub fn rebuild_archive_cubes(
         Vec3::new(ax_len, ax_thick, ax_thick),
         Color::rgba(1.0, 0.25, 0.25, 0.90),
     ));
-    // Y = Exploration Ratio (green)
+    // Y = Body Pressure (green)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -453,7 +453,7 @@ pub fn rebuild_archive_cubes(
         Vec3::new(ax_thick, ax_len, ax_thick),
         Color::rgba(0.25, 1.0, 0.25, 0.90),
     ));
-    // Z = Obstacle Hugging (blue)
+    // Z = Turn Alternation (blue)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -749,8 +749,8 @@ pub fn spawn_map_elites_tab(
         .with_children(|row| {
             for (color, label) in [
                 (Color::rgb(1.0, 0.25, 0.25), "X = Turn Rate"),
-                (Color::rgb(0.25, 1.0, 0.25), "Y = Exploration"),
-                (Color::rgb(0.30, 0.55, 1.0), "Z = Obs. Hugging"),
+                (Color::rgb(0.25, 1.0, 0.25), "Y = Body Pressure"),
+                (Color::rgb(0.30, 0.55, 1.0), "Z = Turn Alternation"),
             ] {
                 row.spawn(NodeBundle {
                     style: Style {

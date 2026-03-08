@@ -579,10 +579,26 @@ fn apply_moves_serial(
                 Action::Left => {
                     snake.direction = snake.direction.turn_left();
                     snake.turn_count += 1;
+                    // Track turn alternation: -1 = sinistra
+                    let current_direction: i8 = -1;
+                    if snake.last_turn_direction != 0
+                        && snake.last_turn_direction != current_direction
+                    {
+                        snake.turn_alternations += 1;
+                    }
+                    snake.last_turn_direction = current_direction;
                 }
                 Action::Right => {
                     snake.direction = snake.direction.turn_right();
                     snake.turn_count += 1;
+                    // Track turn alternation: 1 = destra
+                    let current_direction: i8 = 1;
+                    if snake.last_turn_direction != 0
+                        && snake.last_turn_direction != current_direction
+                    {
+                        snake.turn_alternations += 1;
+                    }
+                    snake.last_turn_direction = current_direction;
                 }
                 Action::Straight => {}
             }
@@ -753,8 +769,8 @@ fn end_generation(
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
             ind.path_directness = snake.turn_rate();
-            ind.body_avoidance = snake.exploration_ratio(grid);
-            ind.obstacle_hugging = snake.obstacle_hugging();
+            ind.body_avoidance = snake.body_pressure();
+            ind.obstacle_hugging = snake.turn_alternation();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

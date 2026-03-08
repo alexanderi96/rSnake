@@ -98,11 +98,11 @@ fn default_descriptor_1() -> String {
 }
 
 fn default_descriptor_2() -> String {
-    "exploration_ratio".to_string()
+    "body_pressure".to_string()
 }
 
 fn default_descriptor_3() -> String {
-    "obstacle_hugging".to_string()
+    "turn_alternation".to_string()
 }
 
 impl Default for MapElitesArchive {
