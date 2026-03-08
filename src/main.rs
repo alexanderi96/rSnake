@@ -722,8 +722,8 @@ fn end_generation(
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
-            ind.path_directness = snake.path_directness();
-            ind.body_avoidance = snake.body_avoidance();
+            ind.path_directness = snake.turn_rate();
+            ind.body_avoidance = snake.exploration_ratio(grid);
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

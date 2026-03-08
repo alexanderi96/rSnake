@@ -1,14 +1,12 @@
 //! Brain Inspector Gizmo Visualization
 //!
-//! Renders sensor rays and neural network visualizations using Bevy Gizmos.
+//! Renders sensor roses and neural network visualizations using Bevy Gizmos.
 //! This provides visual feedback for what the agent is "seeing".
 
 use bevy::prelude::*;
 
 use crate::brain_inspector::InspectedAgent;
-use crate::snake::{
-    Direction, GameState, GridDimensions, GridMap, SnakeInstance, BLOCK_SIZE, RAY_DIRECTIONS,
-};
+use crate::snake::{GameState, GridDimensions, BLOCK_SIZE};
 
 // ============================================================================
 // GIZMO CONFIGURATION
@@ -17,29 +15,14 @@ use crate::snake::{
 /// Configuration for gizmo rendering
 #[derive(Resource)]
 pub struct InspectorGizmoConfig {
-    /// Maximum ray length in grid cells
-    pub max_ray_distance: f32,
-    /// Color for rays that hit obstacles
-    pub hit_color: Color,
-    /// Color for rays that don't hit (reach max distance)
-    pub miss_color: Color,
     /// Color for food direction indicator
     pub food_color: Color,
-    /// Line thickness for rays
-    pub ray_thickness: f32,
-    /// Whether to show ray endpoints
-    pub show_endpoints: bool,
 }
 
 impl Default for InspectorGizmoConfig {
     fn default() -> Self {
         Self {
-            max_ray_distance: 20.0,
-            hit_color: Color::rgb(1.0, 0.3, 0.3), // Red for hits
-            miss_color: Color::rgb(0.3, 0.3, 0.3), // Gray for misses
             food_color: Color::rgb(0.3, 1.0, 0.3), // Green for food
-            ray_thickness: 2.0,
-            show_endpoints: true,
         }
     }
 }
@@ -48,13 +31,12 @@ impl Default for InspectorGizmoConfig {
 // GIZMO RENDERING SYSTEMS
 // ============================================================================
 
-/// Main gizmo rendering system - draws sensor rays for the inspected agent
+/// Main gizmo rendering system - draws bounding box and food indicator for the inspected agent
 pub fn draw_inspector_gizmos(
     mut gizmos: Gizmos,
     inspected: Res<InspectedAgent>,
     game_state: Res<GameState>,
     grid: Res<GridDimensions>,
-    grid_map: Res<GridMap>,
     config: Res<InspectorGizmoConfig>,
     windows: Query<&Window>,
     panel_visibility: Res<crate::ui::PanelVisibility>,
@@ -82,204 +64,221 @@ pub fn draw_inspector_gizmos(
     let offset_x = -window.resolution.width() / 2.0 + (leftover_x / 2.0) + BLOCK_SIZE / 2.0;
     let offset_y = window.resolution.height() / 2.0 - (leftover_y / 2.0) - BLOCK_SIZE / 2.0;
 
-    // Get head position
-    let head = snake.snake[0];
-    let head_world_pos = Vec3::new(
-        offset_x + head.x as f32 * BLOCK_SIZE,
-        offset_y - head.y as f32 * BLOCK_SIZE,
-        5.0, // Above the snake
-    );
+    // Bounding box giallo attorno al serpente selezionato
+    if !snake.snake.is_empty() {
+        let min_x = snake.snake.iter().map(|p| p.x).min().unwrap_or(0);
+        let max_x = snake.snake.iter().map(|p| p.x).max().unwrap_or(0);
+        let min_y = snake.snake.iter().map(|p| p.y).min().unwrap_or(0);
+        let max_y = snake.snake.iter().map(|p| p.y).max().unwrap_or(0);
 
-    // Draw food indicator
-    let food_world_pos = Vec3::new(
-        offset_x + snake.food.x as f32 * BLOCK_SIZE,
-        offset_y - snake.food.y as f32 * BLOCK_SIZE,
-        5.0,
-    );
-
-    // Draw line from head to food
-    gizmos.line(head_world_pos, food_world_pos, config.food_color);
-
-    // Draw food marker
-    gizmos.circle(
-        food_world_pos,
-        Direction3d::Z,
-        BLOCK_SIZE / 2.0,
-        config.food_color,
-    );
-
-    // Draw agent info label above head
-    let _label_pos = head_world_pos + Vec3::new(0.0, BLOCK_SIZE * 1.5, 0.0);
-    // Note: Text rendering with gizmos is limited, we'll use the UI for detailed info
-
-    // Draw selection highlight around the snake
-    draw_selection_highlight(&mut gizmos, snake, offset_x, offset_y);
-
-    // Draw sensor rays for the inspected agent
-    draw_sensor_rays(
-        &mut gizmos,
-        snake,
-        &grid_map,
-        &grid,
-        head_world_pos,
-        offset_x,
-        offset_y,
-        &config,
-    );
-}
-
-/// Draw the 8 sensor rays emanating from the snake's head
-fn draw_sensor_rays(
-    gizmos: &mut Gizmos,
-    snake: &SnakeInstance,
-    grid_map: &GridMap,
-    grid: &GridDimensions,
-    head_pos: Vec3,
-    offset_x: f32,
-    offset_y: f32,
-    config: &InspectorGizmoConfig,
-) {
-    // Ray directions are now imported from crate::snake
-
-    // Direction offset based on current facing direction
-    let dir_offset: usize = match snake.direction {
-        Direction::Up => 0,
-        Direction::Right => 2,
-        Direction::Down => 4,
-        Direction::Left => 6,
-    };
-
-    let head = snake.snake[0];
-    let decay_rate = 0.1_f32;
-
-    for i in 0..8 {
-        let ray_idx = (i + dir_offset) % 8;
-        let (dx, dy) = RAY_DIRECTIONS[ray_idx];
-
-        // Cast ray to find hit point
-        let mut curr_x = head.x;
-        let mut curr_y = head.y;
-        let mut hit_point: Option<(i32, i32)> = None;
-        let mut hit_distance: f32 = config.max_ray_distance;
-
-        loop {
-            curr_x += dx;
-            curr_y += dy;
-
-            let hit_wall =
-                curr_x < 0 || curr_x >= grid.width || curr_y < 0 || curr_y >= grid.height;
-            let hit_obstacle = !hit_wall && grid_map.is_collision_with_self(curr_x, curr_y);
-
-            if hit_wall || hit_obstacle {
-                hit_point = Some((curr_x, curr_y));
-                let diff_x = (curr_x - head.x) as f32;
-                let diff_y = (curr_y - head.y) as f32;
-                hit_distance = (diff_x * diff_x + diff_y * diff_y).sqrt();
-                break;
-            }
-
-            // Max distance check
-            let diff_x = (curr_x - head.x) as f32;
-            let diff_y = (curr_y - head.y) as f32;
-            let dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
-            if dist >= config.max_ray_distance {
-                hit_distance = dist;
-                break;
-            }
-        }
-
-        // Calculate ray color based on distance (same logic as get_current_17_state)
-        let sensor_value = if hit_distance <= 1.415 {
-            1.0
-        } else {
-            (-decay_rate * hit_distance).exp()
-        };
-
-        let ray_color = if hit_point.is_some() {
-            // Hit something - interpolate between hit_color and miss_color based on distance
-            Color::rgb(
-                config.hit_color.r() * sensor_value + config.miss_color.r() * (1.0 - sensor_value),
-                config.hit_color.g() * sensor_value + config.miss_color.g() * (1.0 - sensor_value),
-                config.hit_color.b() * sensor_value + config.miss_color.b() * (1.0 - sensor_value),
-            )
-        } else {
-            config.miss_color
-        };
-
-        // Calculate end point in world space
-        let end_x = head.x as f32 + dx as f32 * hit_distance.min(config.max_ray_distance);
-        let end_y = head.y as f32 + dy as f32 * hit_distance.min(config.max_ray_distance);
-        let end_pos = Vec3::new(
-            offset_x + end_x * BLOCK_SIZE,
-            offset_y - end_y * BLOCK_SIZE,
-            5.0,
-        );
-
-        // Draw the ray
-        gizmos.line(head_pos, end_pos, ray_color);
-
-        // Draw endpoint marker
-        if config.show_endpoints {
-            let marker_size = 3.0 + sensor_value * 5.0;
-            gizmos.circle(end_pos, Direction3d::Z, marker_size, ray_color);
+        let corners = [
+            Vec3::new(
+                offset_x + min_x as f32 * BLOCK_SIZE - BLOCK_SIZE / 2.0,
+                offset_y - max_y as f32 * BLOCK_SIZE - BLOCK_SIZE / 2.0,
+                4.0,
+            ),
+            Vec3::new(
+                offset_x + max_x as f32 * BLOCK_SIZE + BLOCK_SIZE / 2.0,
+                offset_y - max_y as f32 * BLOCK_SIZE - BLOCK_SIZE / 2.0,
+                4.0,
+            ),
+            Vec3::new(
+                offset_x + max_x as f32 * BLOCK_SIZE + BLOCK_SIZE / 2.0,
+                offset_y - min_y as f32 * BLOCK_SIZE + BLOCK_SIZE / 2.0,
+                4.0,
+            ),
+            Vec3::new(
+                offset_x + min_x as f32 * BLOCK_SIZE - BLOCK_SIZE / 2.0,
+                offset_y - min_y as f32 * BLOCK_SIZE + BLOCK_SIZE / 2.0,
+                4.0,
+            ),
+        ];
+        for i in 0..4 {
+            gizmos.line(
+                corners[i],
+                corners[(i + 1) % 4],
+                Color::rgba(1.0, 1.0, 0.0, 0.5),
+            );
         }
     }
-}
 
-/// Draw a selection highlight around the inspected snake
-fn draw_selection_highlight(
-    gizmos: &mut Gizmos,
-    snake: &SnakeInstance,
-    offset_x: f32,
-    offset_y: f32,
-) {
-    if snake.snake.is_empty() {
-        return;
-    }
-
-    let highlight_color = Color::rgba(1.0, 1.0, 0.0, 0.5); // Yellow, semi-transparent
-
-    // Draw bounding box around the snake
-    let min_x = snake.snake.iter().map(|p| p.x).min().unwrap_or(0);
-    let max_x = snake.snake.iter().map(|p| p.x).max().unwrap_or(0);
-    let min_y = snake.snake.iter().map(|p| p.y).min().unwrap_or(0);
-    let max_y = snake.snake.iter().map(|p| p.y).max().unwrap_or(0);
-
-    let min_world = Vec3::new(
-        offset_x + min_x as f32 * BLOCK_SIZE - BLOCK_SIZE / 2.0,
-        offset_y - max_y as f32 * BLOCK_SIZE - BLOCK_SIZE / 2.0,
-        4.0,
-    );
-    let max_world = Vec3::new(
-        offset_x + max_x as f32 * BLOCK_SIZE + BLOCK_SIZE / 2.0,
-        offset_y - min_y as f32 * BLOCK_SIZE + BLOCK_SIZE / 2.0,
-        4.0,
-    );
-
-    // Draw rectangle corners
-    let corners = [
-        Vec3::new(min_world.x, min_world.y, 4.0),
-        Vec3::new(max_world.x, min_world.y, 4.0),
-        Vec3::new(max_world.x, max_world.y, 4.0),
-        Vec3::new(min_world.x, max_world.y, 4.0),
-    ];
-
-    for i in 0..4 {
-        let start = corners[i];
-        let end = corners[(i + 1) % 4];
-        gizmos.line(start, end, highlight_color);
-    }
-
-    // Draw pulsing circle around head
+    // Linea testa → cibo e cerchio sul cibo
     let head = snake.snake[0];
     let head_pos = Vec3::new(
         offset_x + head.x as f32 * BLOCK_SIZE,
         offset_y - head.y as f32 * BLOCK_SIZE,
-        6.0,
+        5.0,
+    );
+    let food_pos = Vec3::new(
+        offset_x + snake.food.x as f32 * BLOCK_SIZE,
+        offset_y - snake.food.y as f32 * BLOCK_SIZE,
+        5.0,
+    );
+    gizmos.line(head_pos, food_pos, config.food_color);
+    gizmos.circle(
+        food_pos,
+        Direction3d::Z,
+        BLOCK_SIZE / 2.0,
+        config.food_color,
+    );
+    gizmos.circle(
+        head_pos,
+        Direction3d::Z,
+        BLOCK_SIZE,
+        Color::rgba(1.0, 1.0, 0.0, 0.5),
     );
 
-    // Pulsing effect (using time would require Time resource, keeping it simple)
-    gizmos.circle(head_pos, Direction3d::Z, BLOCK_SIZE, highlight_color);
+    // NOTA: draw_sensor_rays RIMOSSO — sostituito da draw_sensor_roses
+}
+
+/// Disegna le due rose sensoriali in screen-space nel pannello inspector
+pub fn draw_sensor_roses(
+    mut gizmos: Gizmos,
+    inspected: Res<InspectedAgent>,
+    game_state: Res<GameState>,
+    panel_visibility: Res<crate::ui::PanelVisibility>,
+    windows: Query<&Window>,
+) {
+    if !panel_visibility.inspector {
+        return;
+    }
+    let Some(idx) = inspected.snake_idx else {
+        return;
+    };
+    let Some(snake) = game_state.snakes.get(idx) else {
+        return;
+    };
+    let Some(sensors) = inspected.last_sensor_state else {
+        return;
+    };
+
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+
+    // Posizione rose in screen-space (angolo top-right dove sta il pannello)
+    // Pannello largo 480px, ancorato a destra a 10px
+    let panel_center_x = window.width() - 10.0 - 480.0 / 2.0;
+
+    // Rosa ostacoli: sotto l'header del pannello
+    let obstacle_center = Vec2::new(panel_center_x - 100.0, window.height() / 2.0 - 200.0);
+
+    // Rosa cibo: sotto la rosa ostacoli
+    let food_center = Vec2::new(panel_center_x - 100.0, window.height() / 2.0 - 370.0);
+
+    draw_rose(
+        &mut gizmos,
+        obstacle_center,
+        &sensors[0..8],
+        snake.direction,
+        Color::rgba(1.0, 0.45, 0.1, 0.9),
+    );
+
+    draw_rose(
+        &mut gizmos,
+        food_center,
+        &sensors[8..16],
+        snake.direction,
+        Color::rgba(0.2, 0.7, 1.0, 0.9),
+    );
+}
+
+const ROSE_RADIUS: f32 = 52.0;
+
+fn draw_rose(
+    gizmos: &mut Gizmos,
+    center: Vec2,
+    values: &[f32],
+    facing: crate::snake::Direction,
+    line_color: Color,
+) {
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+
+    // Sfondo scuro
+    gizmos.circle_2d(
+        center,
+        ROSE_RADIUS + 6.0,
+        Color::rgba(0.05, 0.05, 0.08, 0.85),
+    );
+
+    // Cerchi guida
+    gizmos.circle_2d(center, ROSE_RADIUS, Color::rgba(0.35, 0.35, 0.35, 0.25));
+    gizmos.circle_2d(
+        center,
+        ROSE_RADIUS * 0.5,
+        Color::rgba(0.25, 0.25, 0.25, 0.20),
+    );
+
+    // Assi cardinali tenui
+    for angle in [0.0_f32, FRAC_PI_2, PI, 3.0 * FRAC_PI_4] {
+        let d = Vec2::new(angle.cos(), angle.sin()) * (ROSE_RADIUS + 6.0);
+        gizmos.line_2d(center - d, center + d, Color::rgba(0.3, 0.3, 0.3, 0.15));
+    }
+
+    // Angoli base dei sensori in ordine [FWD, F-R, R, B-R, BCK, B-L, L, F-L]
+    // riferiti alla direzione UP del serpente (0° = destra, senso antiorario)
+    const BASE_ANGLES: [f32; 8] = [
+        FRAC_PI_2,        // FWD
+        FRAC_PI_4,        // F-R
+        0.0,              // R
+        -FRAC_PI_4,       // B-R
+        -FRAC_PI_2,       // BCK
+        -3.0 * FRAC_PI_4, // B-L
+        PI,               // L
+        3.0 * FRAC_PI_4,  // F-L
+    ];
+
+    // Offset angolare basato sulla direzione attuale del serpente
+    let facing_offset = match facing {
+        crate::snake::Direction::Up => 0.0,
+        crate::snake::Direction::Right => -FRAC_PI_2,
+        crate::snake::Direction::Down => PI,
+        crate::snake::Direction::Left => FRAC_PI_2,
+    };
+
+    for (i, &raw_val) in values.iter().enumerate() {
+        let angle = BASE_ANGLES[i] + facing_offset;
+        let dir = Vec2::new(angle.cos(), angle.sin());
+
+        // I valori food_dir sono in [-1,1], ostacoli in [0,1]
+        let normalized = raw_val.clamp(-1.0, 1.0);
+        let length = normalized.abs() * ROSE_RADIUS;
+
+        if length < 1.0 {
+            continue;
+        }
+
+        let endpoint = if normalized >= 0.0 {
+            center + dir * length
+        } else {
+            center - dir * length // direzione inversa per valori negativi
+        };
+
+        let alpha = if normalized >= 0.0 { 0.9 } else { 0.35 };
+        gizmos.line_2d(center, endpoint, line_color.with_a(alpha));
+
+        // Pallino all'estremità
+        gizmos.circle_2d(endpoint, 2.5, line_color.with_a(alpha));
+    }
+
+    // Indicatore freccia direzione serpente (bianco semi-trasparente)
+    let facing_angle = match facing {
+        crate::snake::Direction::Up => FRAC_PI_2,
+        crate::snake::Direction::Right => 0.0,
+        crate::snake::Direction::Down => -FRAC_PI_2,
+        crate::snake::Direction::Left => PI,
+    };
+    let fdir = Vec2::new(facing_angle.cos(), facing_angle.sin());
+    gizmos.line_2d(
+        center,
+        center + fdir * (ROSE_RADIUS + 10.0),
+        Color::rgba(1.0, 1.0, 1.0, 0.45),
+    );
+    gizmos.circle_2d(
+        center + fdir * (ROSE_RADIUS + 10.0),
+        3.0,
+        Color::rgba(1.0, 1.0, 1.0, 0.45),
+    );
 }
 
 // ============================================================================
@@ -292,6 +291,10 @@ pub struct InspectorGizmoPlugin;
 impl Plugin for InspectorGizmoPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(InspectorGizmoConfig::default())
-            .add_systems(Update, draw_inspector_gizmos);
+            .add_systems(Update, draw_inspector_gizmos)
+            .add_systems(
+                Update,
+                draw_sensor_roses.after(crate::brain_inspector::update_sensor_cache),
+            );
     }
 }

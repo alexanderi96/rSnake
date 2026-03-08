@@ -662,7 +662,7 @@ fn spawn_map_elites_tab(
         ..default()
     });
     parent.spawn(TextBundle::from_section(
-        "← Body Avoidance (Y)    Path Directness (X) →",
+        "← Exploration Ratio (Y)    Turn Rate (X) →",
         TextStyle {
             font_size: 10.0,
             color: Color::GRAY,

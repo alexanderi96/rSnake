@@ -525,19 +525,20 @@ impl SnakeInstance {
         self.timeout_budget_sum = 0;
     }
 
-    pub fn path_directness(&self) -> f32 {
-        if self.score == 0 {
-            return 0.0;
-        }
-        (self.path_directness_sum / self.score as f32).clamp(0.0, 1.0)
-    }
-
-    pub fn body_avoidance(&self) -> f32 {
+    /// Descrittore 1: frequenza di svoltate normalizzata [0,1]
+    /// 0.0 = va sempre dritto, 1.0 = svolta ogni 2 frame (massimo realistico)
+    pub fn turn_rate(&self) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
-        // INVERTITO: 1.0 = esplora bene, 0.0 = si aggroviglia
-        1.0 - (self.body_pressure_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+        (self.turn_count as f32 / self.frames_survived as f32 / 0.5).clamp(0.0, 1.0)
+    }
+
+    /// Descrittore 2: frazione di mappa esplorata [0,1]
+    /// 0.0 = resta sempre nello stesso posto, 1.0 = ha visitato il 75% della mappa
+    pub fn exploration_ratio(&self, grid: &GridDimensions) -> f32 {
+        let total_free = (grid.width * grid.height) as f32 * 0.75;
+        (self.visited_cells.len() as f32 / total_free).clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)
@@ -676,7 +677,7 @@ pub fn get_current_17_state(
     grid: &GridDimensions,
     snake_vs_snake: bool,
 ) -> [f32; BASE_STATE_SIZE] {
-    let decay_rate = 0.3_f32;
+    let decay = 0.15_f32; // unico decay per tutto il sistema sensoriale
     let mut current_state = [0.0f32; BASE_STATE_SIZE];
     let head = snake.snake[0];
 
@@ -687,10 +688,10 @@ pub fn get_current_17_state(
         Direction::Left => 6,
     };
 
+    // [0-7] Ostacoli: decay aggiustato, adiacente = 1.0
     for i in 0..8 {
         let ray_idx = (i + dir_offset) % 8;
         let (dx, dy) = RAY_DIRECTIONS[ray_idx];
-
         let mut curr_x = head.x;
         let mut curr_y = head.y;
 
@@ -700,6 +701,7 @@ pub fn get_current_17_state(
 
             let hit_wall =
                 curr_x < 0 || curr_x >= grid.width || curr_y < 0 || curr_y >= grid.height;
+
             let hit_obstacle = !hit_wall
                 && if snake_vs_snake {
                     grid_map.is_collision_with_self(curr_x, curr_y)
@@ -717,20 +719,19 @@ pub fn get_current_17_state(
                 let contact_y = curr_y.clamp(0, grid.height - 1);
                 let diff_x = (contact_x - head.x) as f32;
                 let diff_y = (contact_y - head.y) as f32;
-                let euclidean_dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
-                let adjusted_dist = (euclidean_dist - 1.0).max(0.0);
-
-                current_state[i] = (-decay_rate * adjusted_dist).exp();
-
+                let dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
+                // dist aggiustata: adiacente cardinale (1.0) → 0.0 → exp(0) = 1.0
+                let adjusted = (dist - 1.0).max(0.0);
+                current_state[i] = (-decay * adjusted).exp();
                 break;
             }
         }
     }
 
+    // [8-15] Direzione cibo: dot product, nessun decay (già normalizzato [-1,1])
     let target_dx = (snake.food.x - head.x) as f32;
     let target_dy = (snake.food.y - head.y) as f32;
     let target_dist = (target_dx * target_dx + target_dy * target_dy).sqrt();
-
     let target_vec = if target_dist > 0.0 {
         (target_dx / target_dist, target_dy / target_dist)
     } else {
@@ -742,14 +743,12 @@ pub fn get_current_17_state(
         let (dx, dy) = RAY_DIRECTIONS[ray_idx];
         let dir_len = ((dx * dx + dy * dy) as f32).sqrt();
         let dir_vec = (dx as f32 / dir_len, dy as f32 / dir_len);
-        let dot_product = target_vec.0 * dir_vec.0 + target_vec.1 * dir_vec.1;
-        current_state[8 + i] = dot_product;
+        current_state[8 + i] = target_vec.0 * dir_vec.0 + target_vec.1 * dir_vec.1;
     }
 
-    let target_euclidean_dist = target_dist;
-    let target_adjusted_dist = (target_euclidean_dist - 1.0).max(0.0);
-
-    current_state[16] = (-decay_rate * target_adjusted_dist).exp();
+    // [16] Prossimità cibo: stesso decay aggiustato degli ostacoli
+    let adjusted_food = (target_dist - 1.0).max(0.0);
+    current_state[16] = (-decay * adjusted_food).exp();
 
     current_state
 }

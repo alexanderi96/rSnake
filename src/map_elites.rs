@@ -87,11 +87,11 @@ pub struct MapElitesArchive {
 }
 
 fn default_descriptor_1() -> String {
-    "path_directness".to_string()
+    "turn_rate".to_string()
 }
 
 fn default_descriptor_2() -> String {
-    "body_avoidance".to_string()
+    "exploration_ratio".to_string()
 }
 
 impl Default for MapElitesArchive {
