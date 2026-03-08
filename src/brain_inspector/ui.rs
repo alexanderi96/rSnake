@@ -302,6 +302,7 @@ fn spawn_sensors_tab(
             let value = sensors[i];
             spawn_horizontal_bar(
                 parent,
+                i,
                 DIR_LABELS[i],
                 value,
                 Color::rgb(1.0, 0.42, 0.21), // Orange
@@ -338,6 +339,7 @@ fn spawn_sensors_tab(
             };
             spawn_horizontal_bar(
                 parent,
+                8 + i,
                 DIR_LABELS[i],
                 value,
                 bar_color,
@@ -366,6 +368,7 @@ fn spawn_sensors_tab(
 
         spawn_horizontal_bar(
             parent,
+            16,
             "PROX",
             sensors[16],
             Color::rgb(1.0, 0.0, 1.0), // Magenta
@@ -486,6 +489,7 @@ fn spawn_sensors_tab(
 /// Spawn a horizontal bar with label and value (index.html style)
 fn spawn_horizontal_bar(
     parent: &mut ChildBuilder,
+    index: usize,
     label: &str,
     value: f32,
     color: Color,
@@ -507,7 +511,7 @@ fn spawn_horizontal_bar(
         .with_children(|row| {
             // Label
             row.spawn(TextBundle::from_section(
-                format!("[{:02}] {}", 0, label),
+                format!("[{:02}] {}", index, label),
                 TextStyle {
                     font_size: 10.0,
                     color: Color::GRAY,
@@ -535,10 +539,15 @@ fn spawn_horizontal_bar(
                         Val::Percent(pct)
                     };
 
-                    let bar_left = if left_aligned || value >= 0.0 {
+                    // For centered bars: start from center (50%), offset based on sign
+                    // value >= 0: bar extends from center to right
+                    // value < 0: bar extends from center to left
+                    let bar_left = if left_aligned {
                         Val::Percent(0.0)
+                    } else if value >= 0.0 {
+                        Val::Percent(50.0) // Start at center for positive values
                     } else {
-                        Val::Percent(50.0 - value.abs() * 50.0)
+                        Val::Percent(50.0 - value.abs() * 50.0) // Offset left for negative
                     };
 
                     track.spawn((NodeBundle {

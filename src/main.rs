@@ -460,6 +460,7 @@ fn compute_moves_fn(
     grid_map: &GridMap,
     grid: &GridDimensions,
     population: &Population,
+    snake_vs_snake: bool,
 ) -> Vec<Option<(Action, [f32; BASE_STATE_SIZE])>> {
     use rayon::prelude::*;
     let mut results = vec![None; snakes.len()];
@@ -475,7 +476,7 @@ fn compute_moves_fn(
                 Some(b) => b.as_ref(),
                 None => return,
             };
-            let current_17 = get_current_17_state(snake, grid_map, grid);
+            let current_17 = get_current_17_state(snake, grid_map, grid, snake_vs_snake);
             let mut state_34 = [0.0f32; STATE_SIZE];
             state_34[..17].copy_from_slice(&current_17);
             state_34[17..].copy_from_slice(&snake.previous_state);
@@ -491,6 +492,7 @@ fn compute_moves_parallel(
     population: Res<Population>,
     mut computed: ResMut<ComputedMoves>,
     pause_state: Res<PauseState>,
+    collision_settings: Res<CollisionSettings>,
 ) {
     #[cfg(feature = "tracy")]
     let _span = tracing::info_span!("compute_moves_parallel").entered();
@@ -499,7 +501,13 @@ fn compute_moves_parallel(
         return;
     }
 
-    computed.0 = compute_moves_fn(&game.snakes, &grid_map, &grid, &population);
+    computed.0 = compute_moves_fn(
+        &game.snakes,
+        &grid_map,
+        &grid,
+        &population,
+        collision_settings.snake_vs_snake,
+    );
 }
 
 /// PHASE 2: Serial state application
@@ -532,7 +540,13 @@ fn apply_moves_serial(
 
     for step_idx in 0..steps {
         if step_idx > 0 {
-            current_moves = compute_moves_fn(&game.snakes, &grid_map, &grid, &population);
+            current_moves = compute_moves_fn(
+                &game.snakes,
+                &grid_map,
+                &grid,
+                &population,
+                collision_settings.snake_vs_snake,
+            );
         }
 
         // Rebuild grid_map (serial)

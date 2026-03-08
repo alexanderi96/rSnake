@@ -284,6 +284,18 @@ impl GridMap {
         }
         self.terrain[(y * self.width + x) as usize]
     }
+
+    /// Check collision including own body (for sensors only - game logic uses is_collision)
+    pub fn is_collision_with_self(&self, x: i32, y: i32) -> bool {
+        if x < 0 || x >= self.width || y < 0 || y >= self.height {
+            return true;
+        }
+        let idx = (y * self.width + x) as usize;
+        if self.terrain[idx] {
+            return true;
+        }
+        self.data[idx] != 0
+    }
 }
 
 #[derive(Resource)]
@@ -642,7 +654,7 @@ impl Direction {
     }
 }
 
-const RAY_DIRECTIONS: [(i32, i32); 8] = [
+pub const RAY_DIRECTIONS: [(i32, i32); 8] = [
     (0, 1),   // N
     (1, 1),   // NE
     (1, 0),   // E
@@ -657,6 +669,7 @@ pub fn get_current_17_state(
     snake: &SnakeInstance,
     grid_map: &GridMap,
     grid: &GridDimensions,
+    snake_vs_snake: bool,
 ) -> [f32; BASE_STATE_SIZE] {
     let decay_rate = 0.1_f32;
     let mut current_state = [0.0f32; BASE_STATE_SIZE];
@@ -682,7 +695,17 @@ pub fn get_current_17_state(
 
             let hit_wall =
                 curr_x < 0 || curr_x >= grid.width || curr_y < 0 || curr_y >= grid.height;
-            let hit_obstacle = !hit_wall && grid_map.is_collision(curr_x, curr_y, snake.id);
+            let hit_obstacle = !hit_wall
+                && if snake_vs_snake {
+                    grid_map.is_collision_with_self(curr_x, curr_y)
+                } else {
+                    let tidx = (curr_y * grid_map.width + curr_x) as usize;
+                    grid_map.terrain[tidx]
+                        || snake.body_set.contains(&Position {
+                            x: curr_x,
+                            y: curr_y,
+                        })
+                };
 
             if hit_wall || hit_obstacle {
                 let contact_x = curr_x.clamp(0, grid.width - 1);

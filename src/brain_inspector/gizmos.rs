@@ -6,7 +6,9 @@
 use bevy::prelude::*;
 
 use crate::brain_inspector::InspectedAgent;
-use crate::snake::{Direction, GameState, GridDimensions, GridMap, SnakeInstance, BLOCK_SIZE};
+use crate::snake::{
+    Direction, GameState, GridDimensions, GridMap, SnakeInstance, BLOCK_SIZE, RAY_DIRECTIONS,
+};
 
 // ============================================================================
 // GIZMO CONFIGURATION
@@ -52,10 +54,14 @@ pub fn draw_inspector_gizmos(
     inspected: Res<InspectedAgent>,
     game_state: Res<GameState>,
     grid: Res<GridDimensions>,
-    _grid_map: Res<GridMap>,
+    grid_map: Res<GridMap>,
     config: Res<InspectorGizmoConfig>,
     windows: Query<&Window>,
+    panel_visibility: Res<crate::ui::PanelVisibility>,
 ) {
+    if !panel_visibility.inspector {
+        return;
+    }
     let Some(idx) = inspected.snake_idx else {
         return;
     };
@@ -108,6 +114,18 @@ pub fn draw_inspector_gizmos(
 
     // Draw selection highlight around the snake
     draw_selection_highlight(&mut gizmos, snake, offset_x, offset_y);
+
+    // Draw sensor rays for the inspected agent
+    draw_sensor_rays(
+        &mut gizmos,
+        snake,
+        &grid_map,
+        &grid,
+        head_world_pos,
+        offset_x,
+        offset_y,
+        &config,
+    );
 }
 
 /// Draw the 8 sensor rays emanating from the snake's head
@@ -121,17 +139,7 @@ fn draw_sensor_rays(
     offset_y: f32,
     config: &InspectorGizmoConfig,
 ) {
-    // Ray directions (8 directions: N, NE, E, SE, S, SW, W, NW)
-    const RAY_DIRECTIONS: [(i32, i32); 8] = [
-        (0, 1),   // N
-        (1, 1),   // NE
-        (1, 0),   // E
-        (1, -1),  // SE
-        (0, -1),  // S
-        (-1, -1), // SW
-        (-1, 0),  // W
-        (-1, 1),  // NW
-    ];
+    // Ray directions are now imported from crate::snake
 
     // Direction offset based on current facing direction
     let dir_offset: usize = match snake.direction {
@@ -160,7 +168,7 @@ fn draw_sensor_rays(
 
             let hit_wall =
                 curr_x < 0 || curr_x >= grid.width || curr_y < 0 || curr_y >= grid.height;
-            let hit_obstacle = !hit_wall && grid_map.is_collision(curr_x, curr_y, snake.id);
+            let hit_obstacle = !hit_wall && grid_map.is_collision_with_self(curr_x, curr_y);
 
             if hit_wall || hit_obstacle {
                 hit_point = Some((curr_x, curr_y));

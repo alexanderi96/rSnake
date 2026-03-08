@@ -402,6 +402,7 @@ fn update_sensor_cache(
     grid: Res<GridDimensions>,
     mut inspected_agent: ResMut<InspectedAgent>,
     population: Res<crate::Population>,
+    collision_settings: Res<crate::snake::CollisionSettings>,
 ) {
     use crate::snake::get_current_17_state;
 
@@ -414,7 +415,8 @@ fn update_sensor_cache(
     };
 
     // Calculate current sensor state using the same function as training
-    let sensor_state = get_current_17_state(snake, &grid_map, &grid);
+    let sensor_state =
+        get_current_17_state(snake, &grid_map, &grid, collision_settings.snake_vs_snake);
     inspected_agent.last_sensor_state = Some(sensor_state);
 
     // Calculate neural network output if we have a brain for this snake
