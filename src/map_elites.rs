@@ -21,10 +21,10 @@ thread_local! {
 /// Number of bins for each behavioral descriptor dimension
 pub const GRID_RESOLUTION: usize = 20;
 
-/// Custom serializer for HashMap with (usize, usize) keys
-/// Converts tuple keys to "x,y" string format
+/// Custom serializer for HashMap with (usize, usize, usize) keys
+/// Converts tuple keys to "x,y,z" string format
 fn serialize_grid<S>(
-    grid: &HashMap<(usize, usize), Individual>,
+    grid: &HashMap<(usize, usize, usize), Individual>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -32,16 +32,16 @@ where
 {
     let string_keyed: std::collections::HashMap<String, &Individual> = grid
         .iter()
-        .map(|((x, y), v)| (format!("{},{}", x, y), v))
+        .map(|((x, y, z), v)| (format!("{},{},{}", x, y, z), v))
         .collect();
     string_keyed.serialize(serializer)
 }
 
-/// Custom deserializer for HashMap with (usize, usize) keys
-/// Converts "x,y" string keys back to tuple format
+/// Custom deserializer for HashMap with (usize, usize, usize) keys
+/// Converts "x,y,z" string keys back to tuple format
 fn deserialize_grid<'de, D>(
     deserializer: D,
-) -> Result<HashMap<(usize, usize), Individual>, D::Error>
+) -> Result<HashMap<(usize, usize, usize), Individual>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -51,24 +51,28 @@ where
     let mut grid = HashMap::new();
     for (key, value) in string_keyed {
         let parts: Vec<&str> = key.split(',').collect();
-        if parts.len() == 2 {
-            if let (Ok(x), Ok(y)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
-                grid.insert((x, y), value);
+        if parts.len() == 3 {
+            if let (Ok(x), Ok(y), Ok(z)) = (
+                parts[0].parse::<usize>(),
+                parts[1].parse::<usize>(),
+                parts[2].parse::<usize>(),
+            ) {
+                grid.insert((x, y, z), value);
             }
         }
     }
     Ok(grid)
 }
 
-/// MAP-Elites Archive: a 2D grid storing elite individuals
+/// MAP-Elites Archive: a 3D grid storing elite individuals
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapElitesArchive {
-    /// Grid storing elite individuals: key = (descriptor1_bin, descriptor2_bin)
+    /// Grid storing elite individuals: key = (descriptor1_bin, descriptor2_bin, descriptor3_bin)
     #[serde(
         serialize_with = "serialize_grid",
         deserialize_with = "deserialize_grid"
     )]
-    pub grid: HashMap<(usize, usize), Individual>,
+    pub grid: HashMap<(usize, usize, usize), Individual>,
     /// Resolution of each dimension
     pub resolution: usize,
     /// Statistics
@@ -84,6 +88,9 @@ pub struct MapElitesArchive {
     /// Name of second behavioral descriptor (Y-axis)
     #[serde(default = "default_descriptor_2")]
     pub descriptor_2: String,
+    /// Name of third behavioral descriptor (Z-axis)
+    #[serde(default = "default_descriptor_3")]
+    pub descriptor_3: String,
 }
 
 fn default_descriptor_1() -> String {
@@ -92,6 +99,10 @@ fn default_descriptor_1() -> String {
 
 fn default_descriptor_2() -> String {
     "exploration_ratio".to_string()
+}
+
+fn default_descriptor_3() -> String {
+    "obstacle_hugging".to_string()
 }
 
 impl Default for MapElitesArchive {
@@ -112,6 +123,7 @@ impl MapElitesArchive {
             generation: 0,
             descriptor_1: default_descriptor_1(),
             descriptor_2: default_descriptor_2(),
+            descriptor_3: default_descriptor_3(),
         }
     }
 
@@ -124,10 +136,15 @@ impl MapElitesArchive {
     }
 
     /// Get the grid cell coordinates for an individual
-    pub fn get_cell(&self, individual: &Individual) -> (usize, usize) {
+    pub fn get_cell(&self, individual: &Individual) -> (usize, usize, usize) {
         let path_directness_bin = self.discretize(individual.path_directness);
         let body_avoidance_bin = self.discretize(individual.body_avoidance);
-        (path_directness_bin, body_avoidance_bin)
+        let obstacle_hugging_bin = self.discretize(individual.obstacle_hugging);
+        (
+            path_directness_bin,
+            body_avoidance_bin,
+            obstacle_hugging_bin,
+        )
     }
 
     /// Try to insert an individual into the archive
@@ -164,7 +181,7 @@ impl MapElitesArchive {
 
     /// Get the total capacity of the grid
     pub fn capacity(&self) -> usize {
-        self.resolution * self.resolution
+        self.resolution.pow(3)
     }
 
     /// Get the coverage ratio (filled / total)
@@ -192,7 +209,7 @@ impl MapElitesArchive {
         }
 
         // Collect elites with their cell coordinates for archive_color calculation
-        let elites: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
+        let elites: Vec<(&(usize, usize, usize), &Individual)> = self.grid.iter().collect();
 
         // Build fitness-weighted index using sqrt to preserve diversity
         let weights: Vec<f32> = elites
@@ -272,7 +289,7 @@ impl MapElitesArchive {
         }
 
         // Collect elites with their cell coordinates for archive_color calculation
-        let elites: Vec<(&(usize, usize), &Individual)> = self.grid.iter().collect();
+        let elites: Vec<(&(usize, usize, usize), &Individual)> = self.grid.iter().collect();
 
         // Build fitness-weighted index using sqrt to preserve diversity
         let weights: Vec<f32> = elites
@@ -417,10 +434,19 @@ impl MapElitesArchive {
         // Check descriptor compatibility
         let current_desc1 = default_descriptor_1();
         let current_desc2 = default_descriptor_2();
-        if archive.descriptor_1 != current_desc1 || archive.descriptor_2 != current_desc2 {
+        let current_desc3 = default_descriptor_3();
+        if archive.descriptor_1 != current_desc1
+            || archive.descriptor_2 != current_desc2
+            || archive.descriptor_3 != current_desc3
+        {
             eprintln!(
-                "⚠️  Archive descriptors mismatch: loaded ({}, {}) != current ({}, {}).",
-                archive.descriptor_1, archive.descriptor_2, current_desc1, current_desc2
+                "⚠️  Archive descriptors mismatch: loaded ({}, {}, {}) != current ({}, {}, {}).",
+                archive.descriptor_1,
+                archive.descriptor_2,
+                archive.descriptor_3,
+                current_desc1,
+                current_desc2,
+                current_desc3
             );
             eprintln!("    Archive cells are misaligned.");
             // Try to get the run directory from the path
@@ -446,7 +472,7 @@ mod tests {
     #[test]
     fn test_archive_creation() {
         let archive = MapElitesArchive::new(10);
-        assert_eq!(archive.capacity(), 100);
+        assert_eq!(archive.capacity(), 1000);
         assert_eq!(archive.filled_cells(), 0);
     }
 

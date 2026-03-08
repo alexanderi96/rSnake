@@ -293,6 +293,8 @@ pub struct Individual {
     /// Behavioral descriptor 2: Body avoidance (how well snake navigates around itself)
     #[serde(rename = "agility")]
     pub body_avoidance: f32,
+    /// Behavioral descriptor 3: Obstacle hugging (how close snake gets to obstacles)
+    pub obstacle_hugging: f32,
     /// Frames survived
     pub frames_survived: u32,
     /// Apples eaten
@@ -312,6 +314,7 @@ impl Individual {
             fitness: 0.0,
             path_directness: 0.0,
             body_avoidance: 0.0,
+            obstacle_hugging: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -329,6 +332,7 @@ impl Individual {
             fitness: 0.0,
             path_directness: 0.0,
             body_avoidance: 0.0,
+            obstacle_hugging: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -351,6 +355,7 @@ impl Individual {
             fitness: 0.0,
             path_directness: 0.0,
             body_avoidance: 0.0,
+            obstacle_hugging: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -362,6 +367,7 @@ impl Individual {
         self.fitness = 0.0;
         self.path_directness = 0.0;
         self.body_avoidance = 0.0;
+        self.obstacle_hugging = 0.0;
         self.frames_survived = 0;
         self.apples_eaten = 0;
         self.is_alive = true;

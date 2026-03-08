@@ -38,6 +38,8 @@ pub struct BrainInspectorState {
     pub active_tab: InspectorTab,
     /// Target snake ID to follow (for auto-selection)
     pub follow_snake_id: Option<usize>,
+    /// Current Z slice for 3D archive visualization
+    pub archive_slice_z: usize,
 }
 
 impl Default for BrainInspectorState {
@@ -46,6 +48,7 @@ impl Default for BrainInspectorState {
             panel_visible: true,
             active_tab: InspectorTab::Sensors,
             follow_snake_id: Some(0), // Default to first snake
+            archive_slice_z: 10,      // Slice centrale (per GRID_RESOLUTION=20)
         }
     }
 }
@@ -198,6 +201,25 @@ fn inspector_input_system(
 
     if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
         navigate_to_prev_agent(&mut inspected_agent, &mut inspector_state, &game_state);
+    }
+
+    // Archive slice navigation (↑↓) - only when MapElites tab is active
+    if inspector_state.active_tab == InspectorTab::MapElites {
+        if keyboard_input.just_pressed(KeyCode::ArrowUp) {
+            inspector_state.archive_slice_z =
+                (inspector_state.archive_slice_z + 1).min(crate::map_elites::GRID_RESOLUTION - 1);
+            println!(
+                "[ARCHIVE] Obstacle Hugging slice: {}",
+                inspector_state.archive_slice_z
+            );
+        }
+        if keyboard_input.just_pressed(KeyCode::ArrowDown) {
+            inspector_state.archive_slice_z = inspector_state.archive_slice_z.saturating_sub(1);
+            println!(
+                "[ARCHIVE] Obstacle Hugging slice: {}",
+                inspector_state.archive_slice_z
+            );
+        }
     }
 
     // Toggle panel visibility

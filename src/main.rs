@@ -616,6 +616,35 @@ fn apply_moves_serial(
                 let body_len = snake.snake.len() as f32;
                 let visited = snake.visited_cells.len().max(1) as f32;
                 snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
+
+                // Calculate obstacle adjacency (8 neighbors)
+                let mut adj = 0u32;
+                for (odx, ody) in &[
+                    (-1i32, 0i32),
+                    (1, 0),
+                    (0, -1),
+                    (0, 1),
+                    (-1, -1),
+                    (1, -1),
+                    (-1, 1),
+                    (1, 1),
+                ] {
+                    let nx = new_head.x + odx;
+                    let ny = new_head.y + ody;
+                    if nx < 0 || nx >= grid.width || ny < 0 || ny >= grid.height {
+                        adj += 1;
+                        continue;
+                    }
+                    let nidx = (ny * grid.width + nx) as usize;
+                    if grid_map.terrain[nidx] {
+                        adj += 1;
+                        continue;
+                    }
+                    if snake.body_set.contains(&Position { x: nx, y: ny }) {
+                        adj += 1;
+                    }
+                }
+                snake.obstacle_adjacency_sum += adj as f32 / 8.0;
             }
 
             if is_collision || is_timeout {
@@ -724,6 +753,7 @@ fn end_generation(
             ind.fitness = snake.fitness(grid);
             ind.path_directness = snake.turn_rate();
             ind.body_avoidance = snake.exploration_ratio(grid);
+            ind.obstacle_hugging = snake.obstacle_hugging();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

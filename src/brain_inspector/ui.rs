@@ -215,7 +215,9 @@ pub fn update_inspector_content(
             .entity(content_entity)
             .with_children(|parent| match inspector_state.active_tab {
                 InspectorTab::Sensors => spawn_sensors_tab(parent, &inspected_agent, &game_state),
-                InspectorTab::MapElites => spawn_map_elites_tab(parent, &evo_manager),
+                InspectorTab::MapElites => {
+                    spawn_map_elites_tab(parent, &evo_manager, inspector_state.archive_slice_z)
+                }
                 InspectorTab::Graph => spawn_graph_tab(parent, &global_history),
                 InspectorTab::Stats => spawn_stats_tab(
                     parent,
@@ -623,6 +625,7 @@ fn spawn_sensor_grid(parent: &mut ChildBuilder, values: &[f32], _label: &str) {
 fn spawn_map_elites_tab(
     parent: &mut ChildBuilder,
     evo_manager: &crate::evolution::EvolutionManager,
+    slice_z: usize,
 ) {
     let archive = &evo_manager.archive;
     let res = crate::map_elites::GRID_RESOLUTION;
@@ -649,6 +652,37 @@ fn spawn_map_elites_tab(
         TextStyle {
             font_size: 12.0,
             color: Color::GOLD,
+            ..default()
+        },
+    ));
+
+    // Slice indicator with contextual instructions
+    let slice_pct = slice_z as f32 / (res - 1) as f32 * 100.0;
+    parent.spawn(TextBundle::from_section(
+        format!(
+            "Obstacle Hugging: {}/{} ({:.0}%)  ↑↓ to navigate",
+            slice_z,
+            res - 1,
+            slice_pct
+        ),
+        TextStyle {
+            font_size: 11.0,
+            color: Color::rgba(0.7, 0.85, 1.0, 1.0),
+            ..default()
+        },
+    ));
+
+    // Cells in this slice
+    let cells_in_slice = archive
+        .grid
+        .keys()
+        .filter(|(_, _, z)| *z == slice_z)
+        .count();
+    parent.spawn(TextBundle::from_section(
+        format!("Cells in slice: {}/{}", cells_in_slice, res * res),
+        TextStyle {
+            font_size: 10.0,
+            color: Color::GRAY,
             ..default()
         },
     ));
@@ -700,11 +734,18 @@ fn spawn_map_elites_tab(
                 })
                 .with_children(|row_node| {
                     for col in 0..res {
-                        let cell_color = if let Some(ind) = archive.grid.get(&(col, row)) {
+                        let cell_color = if let Some(ind) = archive.grid.get(&(col, row, slice_z)) {
                             let t = (ind.fitness / max_fitness).clamp(0.0, 1.0);
                             Color::rgb(0.1, t, 1.0 - t)
                         } else {
-                            Color::rgb(0.08, 0.08, 0.10)
+                            // Check if this niche exists in other slices
+                            let exists_elsewhere = (0..res)
+                                .any(|z| z != slice_z && archive.grid.contains_key(&(col, row, z)));
+                            if exists_elsewhere {
+                                Color::rgb(0.12, 0.12, 0.20) // grigio-blu: esiste in altra slice
+                            } else {
+                                Color::rgb(0.06, 0.06, 0.08) // nero: mai occupata
+                            }
                         };
 
                         row_node.spawn(NodeBundle {

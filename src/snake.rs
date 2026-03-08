@@ -386,6 +386,7 @@ pub struct SnakeInstance {
     pub food_spawn_distance: u32,
     pub body_pressure_sum: f32,
     pub timeout_budget_sum: u64,
+    pub obstacle_adjacency_sum: f32,
 }
 
 impl SnakeInstance {
@@ -481,6 +482,7 @@ impl SnakeInstance {
             food_spawn_distance,
             body_pressure_sum: 0.0,
             timeout_budget_sum: 0,
+            obstacle_adjacency_sum: 0.0,
         }
     }
 
@@ -523,6 +525,7 @@ impl SnakeInstance {
             + (self.food.y - seed.spawn_pos.y).abs()) as u32;
         self.body_pressure_sum = 0.0;
         self.timeout_budget_sum = 0;
+        self.obstacle_adjacency_sum = 0.0;
     }
 
     /// Descrittore 1: frequenza di svoltate normalizzata [0,1]
@@ -539,6 +542,15 @@ impl SnakeInstance {
     pub fn exploration_ratio(&self, grid: &GridDimensions) -> f32 {
         let total_free = (grid.width * grid.height) as f32 * 0.75;
         (self.visited_cells.len() as f32 / total_free).clamp(0.0, 1.0)
+    }
+
+    /// Descrittore 3: quanto il serpente si avvicina agli ostacoli [0,1]
+    /// 0.0 = evita sempre gli ostacoli, 1.0 = li tocca frequentemente
+    pub fn obstacle_hugging(&self) -> f32 {
+        if self.frames_survived == 0 {
+            return 0.0;
+        }
+        (self.obstacle_adjacency_sum / self.frames_survived as f32).clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)

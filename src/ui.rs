@@ -1114,10 +1114,12 @@ pub fn draw_heatmap_in_panel(
 
         commands.entity(grid_entity).with_children(|parent| {
             let max_fitness = evo_manager.archive.best_fitness.max(1.0);
+            // Use central slice (10 for GRID_RESOLUTION=20)
+            let slice_z = 10;
 
             for x in 0..crate::map_elites::GRID_RESOLUTION {
                 for y in 0..crate::map_elites::GRID_RESOLUTION {
-                    let cell_opt = evo_manager.archive.grid.get(&(x, y));
+                    let cell_opt = evo_manager.archive.grid.get(&(x, y, slice_z));
 
                     let cell_color = if let Some(ind) = cell_opt {
                         // Color based on fitness: blue (low) → green (high)

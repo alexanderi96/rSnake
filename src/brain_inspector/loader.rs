@@ -34,10 +34,12 @@ pub struct BrainMetadata {
     pub path_directness: Option<f32>,
     /// Body avoidance if known
     pub body_avoidance: Option<f32>,
+    /// Obstacle hugging if known
+    pub obstacle_hugging: Option<f32>,
     /// Generation if from archive
     pub generation: Option<u32>,
-    /// Cell coordinates in archive
-    pub archive_cell: Option<(usize, usize)>,
+    /// Cell coordinates in archive (x, y, z)
+    pub archive_cell: Option<(usize, usize, usize)>,
 }
 
 /// Resource holding a loaded archive
@@ -87,6 +89,7 @@ pub fn load_brain_from_gz(path: &Path) -> Result<(Brain, BrainMetadata), BrainLo
                 fitness: Some(individual.fitness),
                 path_directness: Some(individual.path_directness),
                 body_avoidance: Some(individual.body_avoidance),
+                obstacle_hugging: Some(individual.obstacle_hugging),
                 generation: Some(archive.generation),
                 archive_cell: Some(*cell),
             };
@@ -110,6 +113,7 @@ pub fn load_brain_from_gz(path: &Path) -> Result<(Brain, BrainMetadata), BrainLo
             fitness: Some(individual.fitness),
             path_directness: Some(individual.path_directness),
             body_avoidance: Some(individual.body_avoidance),
+            obstacle_hugging: Some(individual.obstacle_hugging),
             generation: None,
             archive_cell: None,
         };
@@ -147,16 +151,17 @@ pub fn load_archive_from_gz(path: &Path) -> Result<MapElitesArchive, BrainLoadEr
 /// Get a specific brain from an archive by cell coordinates
 pub fn get_brain_from_archive(
     archive: &MapElitesArchive,
-    cell: (usize, usize),
+    cell: (usize, usize, usize),
 ) -> Option<(Brain, BrainMetadata)> {
     archive.grid.get(&cell).map(|individual| {
         let metadata = BrainMetadata {
             fitness: Some(individual.fitness),
             path_directness: Some(individual.path_directness),
             body_avoidance: Some(individual.body_avoidance),
+            obstacle_hugging: Some(individual.obstacle_hugging),
             generation: Some(archive.generation),
             archive_cell: Some(cell),
-            ..Default::default()
+            source_path: String::new(),
         };
         (individual.brain.clone(), metadata)
     })
@@ -178,6 +183,7 @@ pub fn get_best_brain_from_archive(archive: &MapElitesArchive) -> Option<(Brain,
                 fitness: Some(individual.fitness),
                 path_directness: Some(individual.path_directness),
                 body_avoidance: Some(individual.body_avoidance),
+                obstacle_hugging: Some(individual.obstacle_hugging),
                 generation: Some(archive.generation),
                 archive_cell: Some(*cell),
             };
