@@ -536,34 +536,39 @@ impl SnakeInstance {
         if self.frames_survived == 0 {
             return 0.0;
         }
-        (self.body_pressure_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+        // INVERTITO: 1.0 = esplora bene, 0.0 = si aggroviglia
+        1.0 - (self.body_pressure_sum / self.frames_survived as f32).clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)
-    pub fn fitness(&self, _grid: &GridDimensions) -> f32 {
-        // Se non ha mangiato nulla, piccolo premio di sopravvivenza
-        if self.score == 0 {
-            return (self.frames_survived as f32 * 0.1).min(10.0);
-        }
-
-        let base_reward = self.score as f32 * 1000.0;
-
-        // Efficienza: quanto velocemente ha raggiunto il cibo
-        let efficiency = if self.timeout_budget_sum > 0 {
-            (1.0 - self.food_time_sum as f32 / self.timeout_budget_sum as f32).clamp(0.0, 1.0)
+    pub fn fitness(&self, grid: &GridDimensions) -> f32 {
+        // Gradiente continuo anche senza mele
+        let proximity_bonus = if self.score == 0 {
+            // distanza percorsa verso il cibo anche senza mangiarlo
+            self.path_directness_sum * 50.0
         } else {
             0.0
         };
 
-        // Bonus per efficienza (maggiore se ha mangiato più mele)
-        let efficiency_bonus = (self.score as f32) * efficiency * 500.0;
+        if self.score == 0 {
+            return (self.frames_survived as f32 * 0.05).min(20.0) + proximity_bonus;
+        }
 
-        // Premio extra per sopravvivenza (logaritmico per evitare dominanza)
-        let survival_reward = if self.score > 0 {
-            (self.frames_survived as f32).ln().max(0.0) * 5.0
+        // Score rimane dominante ma con scala più morbida
+        let base_reward = (self.score as f32).powf(1.2) * 1000.0;
+
+        // Efficiency identica
+        let efficiency = if self.timeout_budget_sum > 0 {
+            1.0 - (self.food_time_sum as f32 / self.timeout_budget_sum as f32).clamp(0.0, 1.0)
         } else {
-            (self.frames_survived as f32 * 0.1).min(5.0)
+            0.0
         };
+
+        // Bonus efficienza non scala con score — evita dominanza esponenziale
+        let efficiency_bonus = efficiency * 800.0;
+
+        // Survival logaritmico mantenuto ma pesato diversamente
+        let survival_reward = (self.frames_survived as f32).ln().max(0.0) * 10.0;
 
         base_reward + efficiency_bonus + survival_reward
     }
@@ -671,7 +676,7 @@ pub fn get_current_17_state(
     grid: &GridDimensions,
     snake_vs_snake: bool,
 ) -> [f32; BASE_STATE_SIZE] {
-    let decay_rate = 0.1_f32;
+    let decay_rate = 0.3_f32;
     let mut current_state = [0.0f32; BASE_STATE_SIZE];
     let head = snake.snake[0];
 
@@ -713,12 +718,10 @@ pub fn get_current_17_state(
                 let diff_x = (contact_x - head.x) as f32;
                 let diff_y = (contact_y - head.y) as f32;
                 let euclidean_dist = (diff_x * diff_x + diff_y * diff_y).sqrt();
+                let adjusted_dist = (euclidean_dist - 1.0).max(0.0);
 
-                if euclidean_dist <= 1.415 {
-                    current_state[i] = 1.0;
-                } else {
-                    current_state[i] = (-decay_rate * euclidean_dist).exp();
-                }
+                current_state[i] = (-decay_rate * adjusted_dist).exp();
+
                 break;
             }
         }
@@ -744,7 +747,9 @@ pub fn get_current_17_state(
     }
 
     let target_euclidean_dist = target_dist;
-    current_state[16] = (-decay_rate * target_euclidean_dist).exp();
+    let target_adjusted_dist = (target_euclidean_dist - 1.0).max(0.0);
+
+    current_state[16] = (-decay_rate * target_adjusted_dist).exp();
 
     current_state
 }
