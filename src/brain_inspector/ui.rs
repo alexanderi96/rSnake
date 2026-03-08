@@ -5,7 +5,6 @@
 
 use bevy::prelude::*;
 
-use crate::brain::{HIDDEN2_SIZE, HIDDEN_SIZE, INPUT_SIZE, OUTPUT_SIZE};
 use crate::brain_inspector::{BrainInspectorState, BrainInspectorUi, InspectedAgent, InspectorTab};
 use crate::snake::GameState;
 
@@ -15,8 +14,8 @@ use crate::snake::GameState;
 
 /// Spawn the brain inspector UI panel
 pub fn spawn_inspector_ui(mut commands: Commands, inspector_state: Res<BrainInspectorState>) {
-    let panel_width = 400.0;
-    let panel_height = 600.0;
+    let panel_width = 480.0;
+    let panel_height = 700.0;
 
     commands
         .spawn((
@@ -93,7 +92,7 @@ fn spawn_header(parent: &mut ChildBuilder) {
             ));
 
             header.spawn(TextBundle::from_section(
-                "[1]Sim [2]Inspect | [S]ensors [W]eights [A]ctivations | [→] Next [←] Prev [H]ide",
+                "[S]ensors [M]ap-Elites [G]raph [T]Stats | [←][→] Nav [I]hide",
                 TextStyle {
                     font_size: 11.0,
                     color: Color::GRAY,
@@ -120,21 +119,10 @@ fn spawn_tab_bar(parent: &mut ChildBuilder, inspector_state: &BrainInspectorStat
         })
         .with_children(|tabs| {
             let tab_names = [
-                (
-                    InspectorTab::Sensors,
-                    "Sensors (S)",
-                    "Input sensors & raycasting",
-                ),
-                (
-                    InspectorTab::Weights,
-                    "Weights (W)",
-                    "Neural network weights",
-                ),
-                (
-                    InspectorTab::Activations,
-                    "Activations (A)",
-                    "Layer activations",
-                ),
+                (InspectorTab::Sensors, "Sensors (S)", ""),
+                (InspectorTab::MapElites, "Archive (M)", ""),
+                (InspectorTab::Graph, "Graph (G)", ""),
+                (InspectorTab::Stats, "Stats (T)", ""),
             ];
 
             for (tab, name, _desc) in tab_names {
@@ -147,7 +135,7 @@ fn spawn_tab_bar(parent: &mut ChildBuilder, inspector_state: &BrainInspectorStat
 
                 tabs.spawn(NodeBundle {
                     style: Style {
-                        width: Val::Percent(32.0),
+                        width: Val::Percent(24.0),
                         height: Val::Percent(100.0),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
@@ -190,24 +178,16 @@ fn spawn_placeholder_content(parent: &mut ChildBuilder) {
 #[derive(Component)]
 pub struct InspectorContent;
 
-/// Marker for sensor visualization elements
-#[derive(Component)]
-pub struct SensorVisualization;
-
-/// Marker for weight visualization elements
-#[derive(Component)]
-pub struct WeightVisualization;
-
-/// Marker for activation visualization elements
-#[derive(Component)]
-pub struct ActivationVisualization;
-
 /// Update the inspector content based on active tab and selected agent
 pub fn update_inspector_content(
     mut commands: Commands,
     inspector_state: Res<BrainInspectorState>,
     inspected_agent: Res<InspectedAgent>,
     game_state: Res<GameState>,
+    evo_manager: Res<crate::evolution::EvolutionManager>,
+    global_history: Res<crate::snake::GlobalTrainingHistory>,
+    game_stats: Res<crate::snake::GameStats>,
+    app_start_time: Res<crate::snake::AppStartTime>,
     content_query: Query<Entity, With<InspectorContent>>,
     children_query: Query<&Children>,
 ) {
@@ -229,8 +209,15 @@ pub fn update_inspector_content(
             .entity(content_entity)
             .with_children(|parent| match inspector_state.active_tab {
                 InspectorTab::Sensors => spawn_sensors_tab(parent, &inspected_agent, &game_state),
-                InspectorTab::Weights => spawn_weights_tab(parent, &inspected_agent),
-                InspectorTab::Activations => spawn_activations_tab(parent, &inspected_agent),
+                InspectorTab::MapElites => spawn_map_elites_tab(parent, &evo_manager),
+                InspectorTab::Graph => spawn_graph_tab(parent, &global_history),
+                InspectorTab::Stats => spawn_stats_tab(
+                    parent,
+                    &game_state,
+                    &game_stats,
+                    &global_history,
+                    &app_start_time,
+                ),
             });
     }
 }
@@ -624,138 +611,406 @@ fn spawn_sensor_grid(parent: &mut ChildBuilder, values: &[f32], _label: &str) {
 }
 
 // ============================================================================
-// WEIGHTS TAB
+// MAP-ELITES TAB
 // ============================================================================
 
-fn spawn_weights_tab(parent: &mut ChildBuilder, _inspected: &InspectedAgent) {
-    parent.spawn(TextBundle::from_section(
-        "Neural Network Weights",
-        TextStyle {
-            font_size: 16.0,
-            color: Color::WHITE,
-            ..default()
-        },
-    ));
+fn spawn_map_elites_tab(
+    parent: &mut ChildBuilder,
+    evo_manager: &crate::evolution::EvolutionManager,
+) {
+    let archive = &evo_manager.archive;
+    let res = crate::map_elites::GRID_RESOLUTION;
+    let max_fitness = archive.best_fitness.max(1.0);
 
-    parent.spawn(NodeBundle {
-        style: Style {
-            width: Val::Percent(100.0),
-            height: Val::Px(10.0),
-            ..default()
-        },
-        ..default()
-    });
-
-    // Network architecture info
+    // Header stats
     parent.spawn(TextBundle::from_section(
-        &format!(
-            "Architecture: {} → {} → {} → {}",
-            INPUT_SIZE, HIDDEN_SIZE, HIDDEN2_SIZE, OUTPUT_SIZE
+        format!(
+            "Gen: {} | Coverage: {:.1}% ({}/{})",
+            archive.generation,
+            archive.coverage() * 100.0,
+            archive.filled_cells(),
+            archive.capacity(),
         ),
         TextStyle {
             font_size: 13.0,
-            color: Color::GRAY,
-            ..default()
-        },
-    ));
-
-    parent.spawn(TextBundle::from_section(
-        "Total parameters: 12,931",
-        TextStyle {
-            font_size: 13.0,
-            color: Color::GRAY,
-            ..default()
-        },
-    ));
-
-    parent.spawn(NodeBundle {
-        style: Style {
-            width: Val::Percent(100.0),
-            height: Val::Px(20.0),
-            ..default()
-        },
-        ..default()
-    });
-
-    parent.spawn(TextBundle::from_section(
-        "Weight visualization coming soon...",
-        TextStyle {
-            font_size: 14.0,
-            color: Color::GRAY,
-            ..default()
-        },
-    ));
-
-    parent.spawn(TextBundle::from_section(
-        "Use [N]/[P] to inspect different agents",
-        TextStyle {
-            font_size: 12.0,
-            color: Color::DARK_GRAY,
-            ..default()
-        },
-    ));
-}
-
-// ============================================================================
-// ACTIVATIONS TAB
-// ============================================================================
-
-fn spawn_activations_tab(parent: &mut ChildBuilder, inspected: &InspectedAgent) {
-    parent.spawn(TextBundle::from_section(
-        "Layer Activations",
-        TextStyle {
-            font_size: 16.0,
             color: Color::WHITE,
             ..default()
         },
     ));
 
+    parent.spawn(TextBundle::from_section(
+        format!("Best fitness: {:.0}", archive.best_fitness),
+        TextStyle {
+            font_size: 12.0,
+            color: Color::GOLD,
+            ..default()
+        },
+    ));
+
+    // Axis labels
     parent.spawn(NodeBundle {
         style: Style {
-            width: Val::Percent(100.0),
-            height: Val::Px(10.0),
+            height: Val::Px(6.0),
             ..default()
         },
         ..default()
     });
+    parent.spawn(TextBundle::from_section(
+        "← Body Avoidance (Y)    Path Directness (X) →",
+        TextStyle {
+            font_size: 10.0,
+            color: Color::GRAY,
+            ..default()
+        },
+    ));
 
-    if let Some(output) = inspected.last_output {
-        parent.spawn(TextBundle::from_section(
-            "Output Layer Activations:",
-            TextStyle {
-                font_size: 14.0,
-                color: Color::YELLOW,
+    // Grid container
+    let cell_px = 18.0;
+    let grid_total = cell_px * res as f32;
+
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Px(grid_total),
+                height: Val::Px(grid_total),
+                flex_direction: FlexDirection::Column,
+                flex_wrap: FlexWrap::NoWrap,
+                margin: UiRect::top(Val::Px(4.0)),
                 ..default()
             },
-        ));
-
-        let actions = ["Left", "Straight", "Right"];
-        for (action, value) in actions.iter().zip(output.iter()) {
-            let bar_length = (value.abs().min(1.0) * 30.0) as usize;
-            let bar = if *value >= 0.0 {
-                "█".repeat(bar_length)
-            } else {
-                "░".repeat(bar_length)
-            };
-
-            parent.spawn(TextBundle::from_section(
-                &format!("{:>10}: {:>7.3} {}", action, value, bar),
-                TextStyle {
-                    font_size: 13.0,
-                    color: Color::WHITE,
+            background_color: Color::rgb(0.05, 0.05, 0.07).into(),
+            ..default()
+        })
+        .with_children(|grid| {
+            for row in (0..res).rev() {
+                grid.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(cell_px),
+                        flex_direction: FlexDirection::Row,
+                        ..default()
+                    },
                     ..default()
-                },
-            ));
-        }
-    } else {
+                })
+                .with_children(|row_node| {
+                    for col in 0..res {
+                        let cell_color = if let Some(ind) = archive.grid.get(&(col, row)) {
+                            let t = (ind.fitness / max_fitness).clamp(0.0, 1.0);
+                            Color::rgb(0.1, t, 1.0 - t)
+                        } else {
+                            Color::rgb(0.08, 0.08, 0.10)
+                        };
+
+                        row_node.spawn(NodeBundle {
+                            style: Style {
+                                width: Val::Px(cell_px - 1.0),
+                                height: Val::Px(cell_px - 1.0),
+                                margin: UiRect::all(Val::Px(0.5)),
+                                ..default()
+                            },
+                            background_color: cell_color.into(),
+                            ..default()
+                        });
+                    }
+                });
+            }
+        });
+}
+
+// ============================================================================
+// GRAPH TAB
+// ============================================================================
+
+fn spawn_graph_tab(
+    parent: &mut ChildBuilder,
+    global_history: &crate::snake::GlobalTrainingHistory,
+) {
+    parent.spawn(TextBundle::from_section(
+        "Fitness History",
+        TextStyle {
+            font_size: 14.0,
+            color: Color::WHITE,
+            ..default()
+        },
+    ));
+
+    let all_records: Vec<_> = global_history.all_records().collect();
+    if all_records.is_empty() {
         parent.spawn(TextBundle::from_section(
-            "No activation data available\nSelect an agent to view activations",
+            "No data yet.",
             TextStyle {
-                font_size: 14.0,
+                font_size: 12.0,
                 color: Color::GRAY,
                 ..default()
             },
         ));
+        return;
+    }
+
+    let graph_w = 440.0_f32;
+    let graph_h = 300.0_f32;
+    let bar_px = 2.0_f32;
+
+    let global_max = all_records
+        .iter()
+        .map(|r| r.best_fitness)
+        .fold(0.0_f32, f32::max)
+        .max(1.0);
+
+    let max_bars = (graph_w / bar_px).floor() as usize;
+    let chunk = (all_records.len() as f32 / max_bars as f32).ceil() as usize;
+    let chunk = chunk.max(1);
+
+    struct Bar {
+        avg: f32,
+        max: f32,
+    }
+    let bars: Vec<Bar> = all_records
+        .chunks(chunk)
+        .map(|c| Bar {
+            avg: c.iter().map(|r| r.avg_fitness).sum::<f32>() / c.len() as f32,
+            max: c.iter().map(|r| r.best_fitness).fold(0.0_f32, f32::max),
+        })
+        .collect();
+
+    let actual_bar_w = graph_w / bars.len().max(1) as f32;
+
+    // Legend
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(12.0),
+                margin: UiRect::vertical(Val::Px(4.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            for (color, label) in [
+                (Color::rgba(1.0, 0.2, 0.2, 0.6), "Best"),
+                (Color::rgba(0.2, 1.0, 0.2, 0.7), "Avg"),
+            ] {
+                row.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Px(12.0),
+                        height: Val::Px(12.0),
+                        margin: UiRect::right(Val::Px(4.0)),
+                        ..default()
+                    },
+                    background_color: color.into(),
+                    ..default()
+                });
+                row.spawn(TextBundle::from_section(
+                    label,
+                    TextStyle {
+                        font_size: 11.0,
+                        color: Color::GRAY,
+                        ..default()
+                    },
+                ));
+            }
+        });
+
+    // Canvas
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Px(graph_w),
+                height: Val::Px(graph_h),
+                position_type: PositionType::Relative,
+                ..default()
+            },
+            background_color: Color::rgba(0.0, 0.0, 0.0, 0.4).into(),
+            ..default()
+        })
+        .with_children(|canvas| {
+            for (i, bar) in bars.iter().enumerate() {
+                let x = i as f32 * actual_bar_w;
+
+                let h_max = (bar.max / global_max).clamp(0.0, 1.0) * graph_h;
+                let h_avg = (bar.avg / global_max).clamp(0.0, 1.0) * graph_h;
+
+                if h_max > 0.0 {
+                    canvas.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x),
+                            bottom: Val::Px(0.0),
+                            width: Val::Px(actual_bar_w.max(1.0)),
+                            height: Val::Px(h_max),
+                            ..default()
+                        },
+                        background_color: Color::rgba(1.0, 0.2, 0.2, 0.4).into(),
+                        ..default()
+                    });
+                }
+                if h_avg > 0.0 {
+                    canvas.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x),
+                            bottom: Val::Px(0.0),
+                            width: Val::Px(actual_bar_w.max(1.0)),
+                            height: Val::Px(h_avg),
+                            ..default()
+                        },
+                        background_color: Color::rgba(0.2, 1.0, 0.2, 0.6).into(),
+                        ..default()
+                    });
+                }
+            }
+
+            canvas.spawn(
+                TextBundle::from_section(
+                    format!("{:.0}", global_max),
+                    TextStyle {
+                        font_size: 10.0,
+                        color: Color::GRAY,
+                        ..default()
+                    },
+                )
+                .with_style(Style {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(2.0),
+                    left: Val::Px(2.0),
+                    ..default()
+                }),
+            );
+        });
+}
+
+// ============================================================================
+// STATS TAB (leaderboard + stats)
+// ============================================================================
+
+fn spawn_stats_tab(
+    parent: &mut ChildBuilder,
+    game_state: &crate::snake::GameState,
+    game_stats: &crate::snake::GameStats,
+    global_history: &crate::snake::GlobalTrainingHistory,
+    app_start_time: &crate::snake::AppStartTime,
+) {
+    use std::time::Instant;
+
+    let now = Instant::now();
+    let session_secs = now.duration_since(app_start_time.0).as_secs();
+    let total_secs = session_secs + global_history.accumulated_time_secs;
+
+    let fmt_time = |s: u64| format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60);
+
+    let alive = game_state.alive_count();
+    let dead = game_state.snakes.len() - alive;
+
+    // Generation stats
+    parent.spawn(TextBundle::from_section(
+        "GENERATION STATS",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::GOLD,
+            ..default()
+        },
+    ));
+
+    for (label, value) in [
+        ("Generation", format!("{}", game_state.total_iterations)),
+        ("High Score", format!("{}", game_state.high_score)),
+        (
+            "All-time Best",
+            format!("{}", global_history.all_time_high_score),
+        ),
+        ("Alive / Dead", format!("{} / {}", alive, dead)),
+        ("Food eaten", format!("{}", game_stats.total_food_eaten)),
+        ("Games played", format!("{}", game_stats.total_games_played)),
+        ("Session time", fmt_time(session_secs)),
+        ("Total time", fmt_time(total_secs)),
+    ] {
+        parent
+            .spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceBetween,
+                    width: Val::Percent(100.0),
+                    padding: UiRect::vertical(Val::Px(1.0)),
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn(TextBundle::from_section(
+                    label,
+                    TextStyle {
+                        font_size: 12.0,
+                        color: Color::GRAY,
+                        ..default()
+                    },
+                ));
+                row.spawn(TextBundle::from_section(
+                    value,
+                    TextStyle {
+                        font_size: 12.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+    }
+
+    parent.spawn(NodeBundle {
+        style: Style {
+            height: Val::Px(10.0),
+            ..default()
+        },
+        ..default()
+    });
+
+    // Leaderboard
+    parent.spawn(TextBundle::from_section(
+        "LEADERBOARD",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::GOLD,
+            ..default()
+        },
+    ));
+
+    let mut snakes_sorted: Vec<(usize, &crate::snake::SnakeInstance)> =
+        game_state.snakes.iter().enumerate().collect();
+    snakes_sorted.sort_by(|a, b| b.1.score.cmp(&a.1.score));
+
+    for (rank, (orig_idx, snake)) in snakes_sorted.iter().take(30).enumerate() {
+        let status_color = if snake.is_game_over {
+            Color::DARK_GRAY
+        } else {
+            snake.color
+        };
+        let status = if snake.is_game_over { "XX" } else { "OK" };
+
+        parent
+            .spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn(TextBundle::from_section(
+                    format!(
+                        "{:2}. S{:03} [{}] {:3}",
+                        rank + 1,
+                        orig_idx + 1,
+                        status,
+                        snake.score
+                    ),
+                    TextStyle {
+                        font_size: 12.0,
+                        color: status_color,
+                        ..default()
+                    },
+                ));
+            });
     }
 }
 

@@ -15,12 +15,6 @@ use crate::snake::{
 #[derive(Component)]
 pub struct StatsText;
 
-#[derive(Component)]
-pub struct LeaderboardText;
-
-#[derive(Component)]
-pub struct CommandsText;
-
 #[derive(Resource)]
 pub struct GraphPanelState {
     pub visible: bool,
@@ -262,155 +256,35 @@ impl Plugin for UiPlugin {
                 render_system.after(on_window_resize_apply),
             ),
         )
-        .add_systems(Update, update_stats_ui)
-        .add_systems(Update, update_graph_panel_visibility)
-        .add_systems(Update, handle_graph_panel_interactions)
-        .add_systems(
-            Update,
-            sync_graph_panel_layout.after(handle_graph_panel_interactions),
-        )
-        .add_systems(
-            Update,
-            draw_graph_in_panel
-                .after(update_graph_panel_visibility)
-                .after(sync_graph_panel_layout),
-        )
-        .add_systems(Update, update_heatmap_panel_visibility)
-        .add_systems(
-            Update,
-            draw_heatmap_in_panel.after(update_heatmap_panel_visibility),
-        );
+        .add_systems(Update, update_stats_ui);
     }
 }
 
 pub fn spawn_stats_ui(mut commands: Commands, _game: Res<GameState>) {
-    let mut leaderboard_sections = vec![TextSection::new(
-        "[LEADERBOARD]\n",
-        TextStyle {
-            font_size: 18.0,
-            color: Color::GOLD,
-            ..default()
-        },
-    )];
-
-    // Create only 20 leaderboard slots (fixed size for performance)
-    for _ in 0..20 {
-        leaderboard_sections.push(TextSection::new(
-            "",
-            TextStyle {
-                font_size: 15.0,
-                color: Color::WHITE,
-                ..default()
-            },
-        ));
-    }
-
-    commands.spawn((
-        TextBundle::from_sections(leaderboard_sections).with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            left: Val::Px(10.0),
-            ..default()
-        }),
-        LeaderboardText,
-    ));
-
-    commands.spawn((
-        TextBundle::from_sections([
-            TextSection::new(
-                "H: 0  G: 0  Best: 0\n",
-                TextStyle {
-                    font_size: 18.0,
-                    color: Color::WHITE,
-                    ..default()
-                },
-            ),
-            TextSection::new(
-                "Time: 00:00:00  Total: 00:00:00  FPS: 0\n",
-                TextStyle {
-                    font_size: 16.0,
-                    color: Color::WHITE,
-                    ..default()
-                },
-            ),
-            TextSection::new(
-                "Alive:0 Dead:0 | Food: 0  Games: 0",
-                TextStyle {
-                    font_size: 14.0,
-                    color: Color::WHITE,
-                    ..default()
-                },
-            ),
-            TextSection::new(
-                "  FPS: 0",
-                TextStyle {
-                    font_size: 14.0,
-                    color: Color::YELLOW,
-                    ..default()
-                },
-            ),
-        ])
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(10.0),
-            left: Val::Px(10.0),
-            ..default()
-        }),
-        StatsText,
-    ));
-
+    // Only FPS + steps in bottom right — everything else is in inspector panel
     commands.spawn((
         TextBundle::from_section(
-            "[1]Sim  [2]Inspect  [R]Render  [G]Graph  [B]Board  [P]Pause  [F]Full  [C]Coll  [ESC]Exit",
+            "FPS: 0 | Steps: 1",
             TextStyle {
-                font_size: 14.0,
-                color: Color::GRAY,
+                font_size: 13.0,
+                color: Color::rgba(0.6, 0.6, 0.6, 0.8),
                 ..default()
             },
         )
         .with_style(Style {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(10.0),
+            bottom: Val::Px(8.0),
             right: Val::Px(10.0),
             ..default()
         }),
-        CommandsText,
+        StatsText,
     ));
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn update_stats_ui(
-    mut leaderboard_query: Query<
-        &mut Text,
-        (
-            With<LeaderboardText>,
-            Without<StatsText>,
-            Without<CommandsText>,
-        ),
-    >,
-    mut stats_query: Query<
-        &mut Text,
-        (
-            With<StatsText>,
-            Without<LeaderboardText>,
-            Without<CommandsText>,
-        ),
-    >,
-    mut commands_query: Query<
-        &mut Text,
-        (
-            With<CommandsText>,
-            Without<LeaderboardText>,
-            Without<StatsText>,
-        ),
-    >,
-    game: Res<GameState>,
+    mut stats_query: Query<&mut Text, With<StatsText>>,
     _stats: Res<TrainingStats>,
-    game_stats: Res<GameStats>,
-    collision_settings: Res<CollisionSettings>,
-    render_config: Res<RenderConfig>,
-    app_start_time: Res<AppStartTime>,
-    global_history: Res<GlobalTrainingHistory>,
     mut ui_timer: ResMut<UiUpdateTimer>,
     time: Res<Time>,
     sim_steps: Res<crate::snake::SimStepsPerFrame>,
@@ -421,92 +295,8 @@ pub fn update_stats_ui(
         return;
     }
 
-    use std::time::Instant;
-
-    let now = Instant::now();
-    let current_session_duration = now.duration_since(app_start_time.0);
-    let total_training_time = std::time::Duration::from_secs(global_history.accumulated_time_secs)
-        + current_session_duration;
-
-    let session_secs = current_session_duration.as_secs();
-    let session_hours = session_secs / 3600;
-    let session_minutes = (session_secs % 3600) / 60;
-    let session_seconds = session_secs % 60;
-
-    let total_secs = total_training_time.as_secs();
-    let total_hours = total_secs / 3600;
-    let total_minutes = (total_secs % 3600) / 60;
-    let total_seconds = total_secs % 60;
-
-    let persistent_high = game_stats.high_score.max(game.high_score);
-    let alive_count = game.alive_count();
-
-    let mut snake_data: Vec<(usize, &SnakeInstance)> = game.snakes.iter().enumerate().collect();
-    snake_data.sort_by(|a, b| b.1.score.cmp(&a.1.score));
-
-    // Limit leaderboard to top 20 for performance with large populations
-    let display_count = snake_data.len().min(20);
-
-    if let Ok(mut lb_text) = leaderboard_query.get_single_mut() {
-        for (rank, (original_idx, snake)) in snake_data.iter().take(display_count).enumerate() {
-            let section_idx = rank + 1;
-            if section_idx < lb_text.sections.len() {
-                let status = if snake.is_game_over { "[XX]" } else { "[OK]" };
-                lb_text.sections[section_idx].value = format!(
-                    "{:2}. S{:02} {}{:3}\n",
-                    rank + 1,
-                    original_idx + 1,
-                    status,
-                    snake.score
-                );
-                lb_text.sections[section_idx].style.color = if snake.is_game_over {
-                    Color::GRAY
-                } else {
-                    snake.color
-                };
-            }
-        }
-        // Clear remaining sections if population is smaller than sections
-        for section_idx in (display_count + 1)..lb_text.sections.len() {
-            lb_text.sections[section_idx].value = String::new();
-        }
-    }
-
-    if let Ok(mut st_text) = stats_query.get_single_mut() {
-        st_text.sections[0].value = format!(
-            "Gen:{:4} | High:{:3} | Best:{:3}\n",
-            game.total_iterations, game.high_score, persistent_high
-        );
-        st_text.sections[1].value = format!(
-            "Time: {:02}:{:02}:{:02} | Tot: {:02}:{:02}:{:02}\n",
-            session_hours,
-            session_minutes,
-            session_seconds,
-            total_hours,
-            total_minutes,
-            total_seconds
-        );
-        st_text.sections[2].value = format!(
-            "Alive:{:2} Dead:{:2} | Food:{:4} | Games:{:5}",
-            alive_count,
-            game.snakes.len() - alive_count,
-            game_stats.total_food_eaten,
-            game_stats.total_games_played
-        );
-        st_text.sections[3].value = format!("FPS:{:4.0} | Steps:{:3}", _stats.fps, sim_steps.0);
-    }
-
-    if let Ok(mut cmd_text) = commands_query.get_single_mut() {
-        let render_status = if render_config.enabled { "ON" } else { "TURBO" };
-        let collision_status = if collision_settings.snake_vs_snake {
-            "ON"
-        } else {
-            "OFF"
-        };
-        cmd_text.sections[0].value = format!(
-            "[1]Sim [2]Inspect | [R]Render:{} [C]Coll:{} | [P]Pause [ESC]Exit",
-            render_status, collision_status
-        );
+    if let Ok(mut text) = stats_query.get_single_mut() {
+        text.sections[0].value = format!("FPS: {:.0} | Steps: {}", _stats.fps, sim_steps.0);
     }
 }
 
@@ -594,51 +384,6 @@ pub fn handle_input(
                 "ON (Normal)"
             } else {
                 "OFF (Turbo)"
-            }
-        );
-    }
-
-    if keyboard_input.just_pressed(KeyCode::KeyG) {
-        if !graph_state.visible && !graph_state.fullscreen {
-            graph_state.visible = true;
-            graph_state.fullscreen = false;
-        } else if graph_state.visible && !graph_state.fullscreen {
-            graph_state.fullscreen = true;
-            if let Ok(window) = windows.get_single() {
-                graph_state.size = Vec2::new(window.width(), window.height() - 60.0);
-                graph_state.position = Vec2::new(0.0, 0.0);
-            }
-        } else {
-            graph_state.visible = false;
-            graph_state.fullscreen = false;
-        }
-
-        graph_state.needs_redraw = true;
-
-        println!(
-            "Graph: {}",
-            if graph_state.visible {
-                if graph_state.fullscreen {
-                    "FULLSCREEN"
-                } else {
-                    "WINDOW"
-                }
-            } else {
-                "HIDDEN"
-            }
-        );
-    }
-
-    if keyboard_input.just_pressed(KeyCode::KeyB) {
-        heatmap_state.visible = !heatmap_state.visible;
-        heatmap_state.needs_redraw = true;
-
-        println!(
-            "Heatmap Board: {}",
-            if heatmap_state.visible {
-                "VISIBLE"
-            } else {
-                "HIDDEN"
             }
         );
     }

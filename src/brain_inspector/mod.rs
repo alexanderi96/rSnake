@@ -54,8 +54,9 @@ impl Default for BrainInspectorState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InspectorTab {
     Sensors,
-    Weights,
-    Activations,
+    MapElites,
+    Graph,
+    Stats,
 }
 
 // ============================================================================
@@ -150,13 +151,17 @@ fn inspector_input_system(
         inspector_state.active_tab = InspectorTab::Sensors;
         println!("[INSPECTOR] Tab: Sensors");
     }
-    if keyboard_input.just_pressed(KeyCode::KeyW) {
-        inspector_state.active_tab = InspectorTab::Weights;
-        println!("[INSPECTOR] Tab: Weights");
+    if keyboard_input.just_pressed(KeyCode::KeyM) {
+        inspector_state.active_tab = InspectorTab::MapElites;
+        println!("[INSPECTOR] Tab: Map-Elites");
     }
-    if keyboard_input.just_pressed(KeyCode::KeyA) {
-        inspector_state.active_tab = InspectorTab::Activations;
-        println!("[INSPECTOR] Tab: Activations");
+    if keyboard_input.just_pressed(KeyCode::KeyG) {
+        inspector_state.active_tab = InspectorTab::Graph;
+        println!("[INSPECTOR] Tab: Graph");
+    }
+    if keyboard_input.just_pressed(KeyCode::KeyT) {
+        inspector_state.active_tab = InspectorTab::Stats;
+        println!("[INSPECTOR] Tab: Stats");
     }
 
     // Agent selection with number keys (0-9)
