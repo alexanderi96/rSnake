@@ -58,6 +58,63 @@ impl ParallelConfig {
 #[derive(Resource, Clone, Debug)]
 pub struct RunDirectory(pub PathBuf);
 
+// ============================================================================
+// BFS Pathfinding
+// ============================================================================
+
+/// Ritorna la distanza BFS (numero di passi) dalla testa al target,
+/// oppure None se non esiste un percorso libero.
+/// Ostacoli: terrain walls + body del serpente (esclusa la coda,
+/// che si sposterà al prossimo step).
+pub fn bfs_distance(
+    head: Position,
+    target: Position,
+    body_set: &HashSet<Position>,
+    tail: Option<Position>, // esclusa dagli ostacoli (si sposterà)
+    terrain: &[bool],
+    width: i32,
+    height: i32,
+) -> Option<u32> {
+    if head == target {
+        return Some(0);
+    }
+
+    let mut visited = vec![false; (width * height) as usize];
+    let mut queue = std::collections::VecDeque::new();
+
+    let start_idx = (head.y * width + head.x) as usize;
+    visited[start_idx] = true;
+    queue.push_back((head, 0u32));
+
+    while let Some((pos, dist)) = queue.pop_front() {
+        for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+            let nx = pos.x + dx;
+            let ny = pos.y + dy;
+            if nx < 0 || nx >= width || ny < 0 || ny >= height {
+                continue;
+            }
+            let nidx = (ny * width + nx) as usize;
+            if visited[nidx] {
+                continue;
+            }
+            if terrain[nidx] {
+                continue;
+            }
+            let npos = Position { x: nx, y: ny };
+            // Corpo del serpente è ostacolo, tranne la coda (che si libererà al prossimo step)
+            if body_set.contains(&npos) && Some(npos) != tail {
+                continue;
+            }
+            if npos == target {
+                return Some(dist + 1);
+            }
+            visited[nidx] = true;
+            queue.push_back((npos, dist + 1));
+        }
+    }
+    None
+}
+
 /// Seed condiviso per la generazione corrente.
 #[derive(Resource, Clone)]
 pub struct GenerationSeed {
@@ -383,9 +440,8 @@ pub struct SnakeInstance {
     pub previous_action: crate::brain::Action,
     pub food_time_sum: u64,
     pub path_directness_sum: f32,
-    pub food_spawn_distance: u32,
+    pub food_real_distance: u32,
     pub body_pressure_sum: f32,
-    pub timeout_budget_sum: u64,
     pub obstacle_adjacency_sum: f32,
     pub turn_alternations: u32,
     pub last_turn_direction: i8, // 0=nessuna, 1=destra, -1=sinistra
@@ -460,7 +516,7 @@ impl SnakeInstance {
             x: (spawn_pos.x + 5) % grid.width,
             y: (spawn_pos.y + 5) % grid.height,
         };
-        let food_spawn_distance =
+        let food_real_distance =
             ((food.x - spawn_pos.x).abs() + (food.y - spawn_pos.y).abs()) as u32;
 
         Self {
@@ -481,9 +537,8 @@ impl SnakeInstance {
             previous_action: crate::brain::Action::Straight,
             food_time_sum: 0,
             path_directness_sum: 0.0,
-            food_spawn_distance,
+            food_real_distance,
             body_pressure_sum: 0.0,
-            timeout_budget_sum: 0,
             obstacle_adjacency_sum: 0.0,
             turn_alternations: 0,
             last_turn_direction: 0,
@@ -492,7 +547,7 @@ impl SnakeInstance {
 
     pub fn reset_with_seed(
         &mut self,
-        _grid: &GridDimensions,
+        grid: &GridDimensions,
         _total_snakes: usize,
         seed: &GenerationSeed,
         parent_courage: f32,
@@ -525,10 +580,41 @@ impl SnakeInstance {
         self.previous_action = crate::brain::Action::Straight;
         self.food_time_sum = 0;
         self.path_directness_sum = 0.0;
-        self.food_spawn_distance = ((self.food.x - seed.spawn_pos.x).abs()
-            + (self.food.y - seed.spawn_pos.y).abs()) as u32;
+
+        // Calcola distanza BFS reale per il primo cibo
+        let tail = self.snake.back().copied();
+        self.food_real_distance = bfs_distance(
+            self.snake[0],
+            self.food,
+            &self.body_set,
+            tail,
+            &seed.terrain,
+            grid.width,
+            grid.height,
+        )
+        .unwrap_or(0);
+
+        // Se già alla partenza il cibo è irraggiungibile, prova altri slot
+        if self.food_real_distance == 0 && self.snake[0] != self.food {
+            for i in 1..FOOD_SEQ_LEN {
+                let candidate = seed.food_at(i);
+                if let Some(d) = bfs_distance(
+                    self.snake[0],
+                    candidate,
+                    &self.body_set,
+                    tail,
+                    &seed.terrain,
+                    grid.width,
+                    grid.height,
+                ) {
+                    self.food = candidate;
+                    self.food_real_distance = d;
+                    break;
+                }
+            }
+        }
+
         self.body_pressure_sum = 0.0;
-        self.timeout_budget_sum = 0;
         self.obstacle_adjacency_sum = 0.0;
         self.turn_alternations = 0;
         self.last_turn_direction = 0;
@@ -580,33 +666,20 @@ impl SnakeInstance {
     }
 
     /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)
-    pub fn fitness(&self, grid: &GridDimensions) -> f32 {
-        // Gradiente continuo anche senza mele
-        let proximity_bonus = if self.score == 0 {
-            // distanza percorsa verso il cibo anche senza mangiarlo
-            self.path_directness_sum * 50.0
-        } else {
-            0.0
-        };
-
+    pub fn fitness(&self, _grid: &GridDimensions) -> f32 {
+        // Gradiente continuo a score=0: quanto si è avvicinati al cibo
         if self.score == 0 {
-            return (self.frames_survived as f32 * 0.05).min(20.0) + proximity_bonus;
+            return (self.frames_survived as f32 * 0.05).min(20.0)
+                + self.path_directness_sum * 150.0;
         }
 
-        // Score rimane dominante ma con scala più morbida
-        let base_reward = (self.score as f32).powf(1.2) * 1000.0;
+        let base_reward = (self.score as f32).powf(1.3) * 1000.0;
 
-        // Efficiency identica
-        let efficiency = if self.timeout_budget_sum > 0 {
-            1.0 - (self.food_time_sum as f32 / self.timeout_budget_sum as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        // Efficienza media per mela: rapporto distanza_reale / passi_impiegati
+        // path_directness_sum accumula questo valore per ogni mela mangiata
+        let avg_efficiency = self.path_directness_sum / self.score as f32;
+        let efficiency_bonus = avg_efficiency * 600.0;
 
-        // Bonus efficienza non scala con score — evita dominanza esponenziale
-        let efficiency_bonus = efficiency * 800.0;
-
-        // Survival logaritmico mantenuto ma pesato diversamente
         let survival_reward = (self.frames_survived as f32).ln().max(0.0) * 10.0;
 
         base_reward + efficiency_bonus + survival_reward

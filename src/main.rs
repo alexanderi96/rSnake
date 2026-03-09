@@ -31,8 +31,8 @@ use brain_inspector::{BrainLoaderPlugin, InspectorGizmoPlugin, SimulationCamera}
 use config::Hyperparameters;
 use evolution::EvolutionManager;
 use snake::{
-    calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings, Food,
-    GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions,
+    bfs_distance, calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings,
+    Food, GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions,
     GridMap, MeshCache, ParallelConfig, Position, RenderConfig, RunDirectory, SnakeId,
     TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
@@ -670,32 +670,53 @@ fn apply_moves_serial(
                 snake.snake.push_front(new_head);
                 snake.body_set.insert(new_head);
                 if ate_food {
-                    if snake.food_spawn_distance > 0 {
-                        let ratio = (snake.food_spawn_distance as f32
+                    // Calcola efficienza PRIMA di resettare steps_without_food
+                    if snake.food_real_distance > 0 && snake.steps_without_food > 0 {
+                        let efficiency = (snake.food_real_distance as f32
                             / snake.steps_without_food as f32)
                             .clamp(0.0, 1.0);
-                        snake.path_directness_sum += ratio;
+                        snake.path_directness_sum += efficiency;
                     }
                     snake.score += 1;
                     game_stats.total_food_eaten += 1;
-                    snake.food_time_sum += snake.steps_without_food as u64;
-                    snake.timeout_budget_sum +=
-                        config.calculate_timeout(snake.snake.len(), grid.width, grid.height) as u64;
                     if snake.score > new_high_score {
                         new_high_score = snake.score;
                     }
 
+                    // Calcola la coda (si libererà al prossimo step)
+                    let tail = snake.snake.back().copied();
+
+                    // Trova nuovo cibo
                     let new_food = gen_seed.food_at_free(
                         snake.score as usize,
                         &snake.body_set,
                         &grid_map.terrain,
                         grid.width,
                     );
-                    let new_manhattan =
-                        (new_food.x - new_head.x).abs() + (new_food.y - new_head.y).abs();
-                    snake.food_spawn_distance = new_manhattan as u32;
-                    snake.food = new_food;
-                    snake.steps_without_food = 0;
+
+                    // Calcola distanza BFS reale
+                    let real_dist = bfs_distance(
+                        new_head,
+                        new_food,
+                        &snake.body_set,
+                        tail,
+                        &grid_map.terrain,
+                        grid.width,
+                        grid.height,
+                    );
+
+                    match real_dist {
+                        None => {
+                            // Nessun path verso il cibo → kill immediato
+                            snake.is_game_over = true;
+                            // Non aggiornare food, non ha senso
+                        }
+                        Some(dist) => {
+                            snake.food = new_food;
+                            snake.food_real_distance = dist;
+                            snake.steps_without_food = 0;
+                        }
+                    }
                 } else {
                     let tail = *snake.snake.back().unwrap();
                     snake.body_set.remove(&tail);

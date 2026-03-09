@@ -66,7 +66,7 @@ pub const CAM_DIST: f32 = 28.0;
 
 /// Camera min/max distance for zoom limits.
 pub const CAM_DIST_MIN: f32 = 15.0;
-pub const CAM_DIST_MAX: f32 = 100.0;
+pub const CAM_DIST_MAX: f32 = 200.0;
 
 /// Mouse sensitivity (rad / pixel).
 pub const DRAG_SENS: f32 = 0.006;
