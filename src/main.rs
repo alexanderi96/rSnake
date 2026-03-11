@@ -411,8 +411,8 @@ fn setup(
         .iter()
         .map(|i| {
             (
-                i.desc_turn_rate,
-                i.desc_exploration,
+                i.desc_path_efficiency,
+                i.desc_danger_affinity,
                 i.fitness,
                 best_fitness,
             )
@@ -585,11 +585,9 @@ fn apply_moves_serial(
             match action {
                 Action::Left => {
                     snake.direction = snake.direction.turn_left();
-                    snake.turn_count += 1;
                 }
                 Action::Right => {
                     snake.direction = snake.direction.turn_right();
-                    snake.turn_count += 1;
                 }
                 Action::Straight => {}
             }
@@ -724,8 +722,8 @@ fn apply_moves_serial(
                     .get(i)
                     .map(|ind| {
                         (
-                            ind.desc_turn_rate,
-                            ind.desc_exploration,
+                            ind.desc_path_efficiency,
+                            ind.desc_danger_affinity,
                             ind.fitness,
                             best_fitness,
                         )
@@ -769,9 +767,9 @@ fn end_generation(
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
-            ind.desc_turn_rate = snake.turn_rate();
-            ind.desc_exploration = snake.exploration_ratio(grid);
+            ind.desc_path_efficiency = snake.path_efficiency();
             ind.desc_danger_affinity = snake.danger_affinity();
+            ind.desc_spatial_spread = snake.spatial_spread();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

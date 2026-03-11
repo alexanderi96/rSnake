@@ -130,12 +130,12 @@ impl Face {
     /// Get the display name for this face.
     pub fn name(&self) -> &'static str {
         match self {
-            Face::XPos => "X+ (Turn+)",
-            Face::XNeg => "X- (Turn-)",
-            Face::YPos => "Y+ (Expl+)",
-            Face::YNeg => "Y- (Expl-)",
-            Face::ZPos => "Z+ (Danger+)",
-            Face::ZNeg => "Z- (Danger-)",
+            Face::XPos => "X+ (Eff+)",
+            Face::XNeg => "X- (Eff-)",
+            Face::YPos => "Y+ (Danger+)",
+            Face::YNeg => "Y- (Danger-)",
+            Face::ZPos => "Z+ (Spread+)",
+            Face::ZNeg => "Z- (Spread-)",
         }
     }
 
@@ -435,7 +435,7 @@ pub fn rebuild_archive_cubes(
     let ax_len = edge_len * 0.55;
     let ax_thick = 0.18;
 
-    // X = Turn Rate (red)
+    // X = Path Efficiency (red)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -444,7 +444,7 @@ pub fn rebuild_archive_cubes(
         Vec3::new(ax_len, ax_thick, ax_thick),
         Color::rgba(1.0, 0.25, 0.25, 0.90),
     ));
-    // Y = Exploration (green)
+    // Y = Danger Affinity (green)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -453,7 +453,7 @@ pub fn rebuild_archive_cubes(
         Vec3::new(ax_thick, ax_len, ax_thick),
         Color::rgba(0.25, 1.0, 0.25, 0.90),
     ));
-    // Z = Danger Affinity (blue)
+    // Z = Spatial Spread (blue)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -748,9 +748,9 @@ pub fn spawn_map_elites_tab(
         })
         .with_children(|row| {
             for (color, label) in [
-                (Color::rgb(1.0, 0.25, 0.25), "X = Turn Rate"),
-                (Color::rgb(0.25, 1.0, 0.25), "Y = Exploration"),
-                (Color::rgb(0.30, 0.55, 1.0), "Z = Danger Affinity"),
+                (Color::rgb(1.0, 0.25, 0.25), "X = Path Efficiency"),
+                (Color::rgb(0.25, 1.0, 0.25), "Y = Danger Affinity"),
+                (Color::rgb(0.30, 0.55, 1.0), "Z = Spatial Spread"),
             ] {
                 row.spawn(NodeBundle {
                     style: Style {

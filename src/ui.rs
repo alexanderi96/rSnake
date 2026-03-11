@@ -989,7 +989,7 @@ fn spawn_heatmap_panel_internal(mut commands: Commands, heatmap_state: &HeatmapP
                 },))
                 .with_children(|header| {
                     header.spawn(TextBundle::from_section(
-                        "MAP-Elites Heatmap (Turn Rate vs Exploration)",
+                        "MAP-Elites Heatmap (Path Efficiency vs Danger Affinity)",
                         TextStyle {
                             font_size: 16.0,
                             color: Color::WHITE,
@@ -1159,11 +1159,11 @@ pub fn draw_heatmap_in_panel(
             // Axis Labels
             spawn_axis_label(
                 parent,
-                "Turn Rate →",
+                "Path Efficiency →",
                 Val::Px(margin),
                 Val::Px(grid_height + margin + 5.0),
             );
-            spawn_axis_label(parent, "Exploration ↑", Val::Px(5.0), Val::Px(margin));
+            spawn_axis_label(parent, "Danger Affinity ↑", Val::Px(5.0), Val::Px(margin));
 
             // Stats text
             let filled = evo_manager.archive.filled_cells();

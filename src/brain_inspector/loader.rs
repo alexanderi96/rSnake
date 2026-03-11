@@ -30,12 +30,12 @@ pub struct BrainMetadata {
     pub source_path: String,
     /// Fitness score if known
     pub fitness: Option<f32>,
-    /// Turn rate (descriptor 1) if known
-    pub desc_turn_rate: Option<f32>,
-    /// Exploration (descriptor 2) if known
-    pub desc_exploration: Option<f32>,
-    /// Danger affinity (descriptor 3) if known
+    /// Path efficiency (descriptor 1) if known
+    pub desc_path_efficiency: Option<f32>,
+    /// Danger affinity (descriptor 2) if known
     pub desc_danger_affinity: Option<f32>,
+    /// Spatial spread (descriptor 3) if known
+    pub desc_spatial_spread: Option<f32>,
     /// Generation if from archive
     pub generation: Option<u32>,
     /// Cell coordinates in archive (x, y, z)
@@ -87,9 +87,9 @@ pub fn load_brain_from_gz(path: &Path) -> Result<(Brain, BrainMetadata), BrainLo
             let metadata = BrainMetadata {
                 source_path: path.to_string_lossy().to_string(),
                 fitness: Some(individual.fitness),
-                desc_turn_rate: Some(individual.desc_turn_rate),
-                desc_exploration: Some(individual.desc_exploration),
+                desc_path_efficiency: Some(individual.desc_path_efficiency),
                 desc_danger_affinity: Some(individual.desc_danger_affinity),
+                desc_spatial_spread: Some(individual.desc_spatial_spread),
                 generation: Some(archive.generation),
                 archive_cell: Some(*cell),
             };
@@ -111,9 +111,9 @@ pub fn load_brain_from_gz(path: &Path) -> Result<(Brain, BrainMetadata), BrainLo
         let metadata = BrainMetadata {
             source_path: path.to_string_lossy().to_string(),
             fitness: Some(individual.fitness),
-            desc_turn_rate: Some(individual.desc_turn_rate),
-            desc_exploration: Some(individual.desc_exploration),
+            desc_path_efficiency: Some(individual.desc_path_efficiency),
             desc_danger_affinity: Some(individual.desc_danger_affinity),
+            desc_spatial_spread: Some(individual.desc_spatial_spread),
             generation: None,
             archive_cell: None,
         };
@@ -156,9 +156,9 @@ pub fn get_brain_from_archive(
     archive.grid.get(&cell).map(|individual| {
         let metadata = BrainMetadata {
             fitness: Some(individual.fitness),
-            desc_turn_rate: Some(individual.desc_turn_rate),
-            desc_exploration: Some(individual.desc_exploration),
+            desc_path_efficiency: Some(individual.desc_path_efficiency),
             desc_danger_affinity: Some(individual.desc_danger_affinity),
+            desc_spatial_spread: Some(individual.desc_spatial_spread),
             generation: Some(archive.generation),
             archive_cell: Some(cell),
             source_path: String::new(),
@@ -181,9 +181,9 @@ pub fn get_best_brain_from_archive(archive: &MapElitesArchive) -> Option<(Brain,
             let metadata = BrainMetadata {
                 source_path: String::new(),
                 fitness: Some(individual.fitness),
-                desc_turn_rate: Some(individual.desc_turn_rate),
-                desc_exploration: Some(individual.desc_exploration),
+                desc_path_efficiency: Some(individual.desc_path_efficiency),
                 desc_danger_affinity: Some(individual.desc_danger_affinity),
+                desc_spatial_spread: Some(individual.desc_spatial_spread),
                 generation: Some(archive.generation),
                 archive_cell: Some(*cell),
             };
@@ -368,11 +368,11 @@ pub fn format_brain_metadata(metadata: &BrainMetadata) -> String {
     if let Some(fitness) = metadata.fitness {
         parts.push(format!("Fitness: {:.1}", fitness));
     }
-    if let Some(tr) = metadata.desc_turn_rate {
-        parts.push(format!("Turn Rate: {:.2}", tr));
+    if let Some(eff) = metadata.desc_path_efficiency {
+        parts.push(format!("Path Efficiency: {:.2}", eff));
     }
-    if let Some(exp) = metadata.desc_exploration {
-        parts.push(format!("Exploration: {:.2}", exp));
+    if let Some(spread) = metadata.desc_spatial_spread {
+        parts.push(format!("Spatial Spread: {:.2}", spread));
     }
     if let Some(gen) = metadata.generation {
         parts.push(format!("Generation: {}", gen));

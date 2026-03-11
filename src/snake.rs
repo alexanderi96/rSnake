@@ -436,7 +436,6 @@ pub struct SnakeInstance {
     pub previous_state: [f32; BASE_STATE_SIZE],
     pub frames_survived: u32,
     pub visited_cells: std::collections::HashSet<(i32, i32)>,
-    pub turn_count: u32,
     pub path_directness_sum: f32,
     pub food_real_distance: u32,
     pub obstacle_adjacency_sum: f32,
@@ -529,7 +528,6 @@ impl SnakeInstance {
             previous_state: [0.0; BASE_STATE_SIZE],
             frames_survived: 0,
             visited_cells: std::collections::HashSet::with_capacity(64),
-            turn_count: 0,
             path_directness_sum: 0.0,
             food_real_distance,
             obstacle_adjacency_sum: 0.0,
@@ -568,7 +566,6 @@ impl SnakeInstance {
         self.frames_survived = 0;
         self.visited_cells.clear();
         self.visited_cells.shrink_to_fit();
-        self.turn_count = 0;
         self.path_directness_sum = 0.0;
         self.path_progress_sum = 0.0;
 
@@ -609,30 +606,37 @@ impl SnakeInstance {
         self.path_progress_sum = 0.0;
     }
 
-    /// Descrittore 1: frequenza di svoltate normalizzata [0,1]
-    /// 0.0 = va sempre dritto, 1.0 = svolta ogni 2 frame (massimo realistico)
-    pub fn turn_rate(&self) -> f32 {
-        if self.frames_survived == 0 {
-            return 0.0;
+    /// D1: how directly the snake reaches food [0,1]
+    /// score > 0: average BFS-efficiency per apple eaten
+    /// score = 0: average per-frame progress toward current food (fallback)
+    pub fn path_efficiency(&self) -> f32 {
+        if self.score > 0 {
+            (self.path_directness_sum / self.score as f32).clamp(0.0, 1.0)
+        } else if self.frames_survived > 0 {
+            (self.path_progress_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
         }
-        (self.turn_count as f32 / self.frames_survived as f32 / 0.5).clamp(0.0, 1.0)
     }
 
-    /// D2: fraction of map explored [0,1]
-    /// Normalized on 65% of total cells (approximate free-cell count at fill_rate=0.35).
-    pub fn exploration_ratio(&self, grid: &GridDimensions) -> f32 {
-        let accessible = (grid.width * grid.height) as f32 * 0.65;
-        (self.visited_cells.len() as f32 / accessible).clamp(0.0, 1.0)
-    }
-
-    /// D3: mean proximity to walls and own body per frame [0,1]
-    /// Counts how many of the 8 neighbors are a wall cell or own body segment.
+    /// D2: mean proximity to walls and own body per frame [0,1]
+    /// Uses the raycast obstacle sensors (current_17[0..8]) accumulated per frame.
     /// 0.0 = always in open space | 1.0 = always surrounded by obstacles
     pub fn danger_affinity(&self) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
         (self.obstacle_adjacency_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+    }
+
+    /// D3: unique cells visited per frame [0,1]
+    /// Max theoretical = 1.0 (snake always moves to a new cell).
+    /// Low = circles in a small area | High = explores broadly
+    pub fn spatial_spread(&self) -> f32 {
+        if self.frames_survived == 0 {
+            return 0.0;
+        }
+        (self.visited_cells.len() as f32 / self.frames_survived as f32).clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness con longevità e ricompensa sinergica
