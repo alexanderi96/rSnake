@@ -83,6 +83,15 @@ impl Hyperparameters {
             + (snake_length as u32 * self.steps_per_segment)
     }
 
+    /// BFS-aware timeout: usa la distanza BFS reale invece della dimensione della mappa
+    /// - Su board vuota: food_real_distance ≈ Manhattan → simile a prima
+    /// - Su terrain: food_real_distance >> Manhattan → molto più generoso
+    pub fn calculate_timeout_bfs(&self, snake_length: usize, food_real_distance: u32) -> u32 {
+        // Dà al serpente 3x il percorso BFS ottimo come budget
+        let bfs_budget = (food_real_distance * 3).max(self.base_steps_without_food);
+        bfs_budget + (snake_length as u32 * self.steps_per_segment)
+    }
+
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(&path)?;
         let path_str = path.as_ref().to_string_lossy();

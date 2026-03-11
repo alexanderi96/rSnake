@@ -445,6 +445,7 @@ pub struct SnakeInstance {
     pub obstacle_adjacency_sum: f32,
     pub turn_alternations: u32,
     pub last_turn_direction: i8, // 0=nessuna, 1=destra, -1=sinistra
+    pub path_progress_sum: f32,  // accumula progress ratio per-frame
 }
 
 impl SnakeInstance {
@@ -542,6 +543,7 @@ impl SnakeInstance {
             obstacle_adjacency_sum: 0.0,
             turn_alternations: 0,
             last_turn_direction: 0,
+            path_progress_sum: 0.0,
         }
     }
 
@@ -580,6 +582,7 @@ impl SnakeInstance {
         self.previous_action = crate::brain::Action::Straight;
         self.food_time_sum = 0;
         self.path_directness_sum = 0.0;
+        self.path_progress_sum = 0.0;
 
         // Calcola distanza BFS reale per il primo cibo
         let tail = self.snake.back().copied();
@@ -618,6 +621,7 @@ impl SnakeInstance {
         self.obstacle_adjacency_sum = 0.0;
         self.turn_alternations = 0;
         self.last_turn_direction = 0;
+        self.path_progress_sum = 0.0;
     }
 
     /// Descrittore 1: frequenza di svoltate normalizzata [0,1]
@@ -665,24 +669,42 @@ impl SnakeInstance {
         (self.turn_alternations as f32 / (self.turn_count - 1) as f32).clamp(0.0, 1.0)
     }
 
-    /// Funzione di Fitness Bilanciata (Lineare + Bonus Efficienza)
+    /// Funzione di Fitness con longevità e ricompensa sinergica
     pub fn fitness(&self, _grid: &GridDimensions) -> f32 {
-        // Gradiente continuo a score=0: quanto si è avvicinati al cibo
-        if self.score == 0 {
-            return (self.frames_survived as f32 * 0.05).min(20.0)
-                + self.path_directness_sum * 150.0;
+        if self.frames_survived == 0 {
+            return 0.0;
         }
 
-        let base_reward = (self.score as f32).powf(1.3) * 1000.0;
+        // ── Path Progress con peso longevità ──────────────────────────────────
+        // Previene l'exploit "muori subito → ratio massimo"
+        // frames=1 → longevity≈0.02, frames=50 → 0.63, frames=150 → 0.95
+        let avg_ratio = (self.path_progress_sum / self.frames_survived as f32).clamp(0.0, 1.0);
+        let longevity = 1.0 - (-(self.frames_survived as f32) / 80.0).exp();
+        let path_progress = avg_ratio * longevity; // [0, 1]
 
-        // Efficienza media per mela: rapporto distanza_reale / passi_impiegati
-        // path_directness_sum accumula questo valore per ogni mela mangiata
-        let avg_efficiency = self.path_directness_sum / self.score as f32;
-        let efficiency_bonus = avg_efficiency * 600.0;
+        // ── Score = 0: segnale puro di navigazione ─────────────────────────────
+        // Max ≈ 400 (richiede lunga sopravvivenza + buon progresso)
+        if self.score == 0 {
+            return path_progress * 400.0;
+        }
 
-        let survival_reward = (self.frames_survived as f32).ln().max(0.0) * 10.0;
+        // ── Score > 0 ──────────────────────────────────────────────────────────
+        let avg_efficiency = (self.path_directness_sum / self.score as f32).clamp(0.0, 1.0);
 
-        base_reward + efficiency_bonus + survival_reward
+        // Ricompensa SINERGICA: score × efficiency
+        // Un serpente efficiente scala molto meglio di uno che mangia a caso
+        // score=1 eff=0.1 → 100  |  score=1 eff=1.0 → 1000
+        // score=5 eff=0.5 → 2500 |  score=5 eff=1.0 → 5000
+        let eating_reward = self.score as f32 * avg_efficiency * 1000.0;
+
+        // Piccolo bonus raw score: anche mangiare in modo inefficiente ha valore
+        // Scala con sqrt per smorzare la crescita (evita che domini sull'efficienza)
+        let raw_score_bonus = (self.score as f32).sqrt() * 150.0;
+
+        // Path progress: stessa scala del ramo score=0 (continuità al confine)
+        let progress_bonus = path_progress * 400.0;
+
+        eating_reward + raw_score_bonus + progress_bonus
     }
 }
 

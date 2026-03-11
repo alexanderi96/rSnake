@@ -624,11 +624,27 @@ fn apply_moves_serial(
                     grid_map.is_wall_collision(new_head.x, new_head.y)
                 };
 
+            // BFS-aware timeout: usa la distanza BFS reale invece della dimensione della mappa
             let is_timeout = snake.steps_without_food
-                > config.calculate_timeout(snake.snake.len(), grid.width, grid.height);
+                > config.calculate_timeout_bfs(snake.snake.len(), snake.food_real_distance);
             if !is_collision && !is_timeout {
+                // Dense progress signal: calcola PRIMA di incrementare steps
+                // Budget 2x: path perfetto → ratio lineare da 1.0 a 0.5
+                //            path doppio   → ratio arriva a 0.0
+                // Più raggiungibile su terrain senza premiare vagabondaggio
+                let progress_ratio = if snake.food_real_distance > 0 {
+                    let par = snake.food_real_distance as f32 * 2.0;
+                    ((par - snake.steps_without_food as f32) / par).clamp(0.0, 1.0)
+                } else {
+                    // food_real_distance == 0 solo se la testa è già sul cibo
+                    1.0
+                };
+                snake.path_progress_sum += progress_ratio;
+
+                // POI incrementa i contatori
                 snake.steps_without_food += 1;
                 snake.frames_survived += 1;
+
                 snake.visited_cells.insert((new_head.x, new_head.y));
                 let body_len = snake.snake.len() as f32;
                 let visited = snake.visited_cells.len().max(1) as f32;
