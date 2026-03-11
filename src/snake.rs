@@ -437,15 +437,10 @@ pub struct SnakeInstance {
     pub frames_survived: u32,
     pub visited_cells: std::collections::HashSet<(i32, i32)>,
     pub turn_count: u32,
-    pub previous_action: crate::brain::Action,
-    pub food_time_sum: u64,
     pub path_directness_sum: f32,
     pub food_real_distance: u32,
-    pub body_pressure_sum: f32,
     pub obstacle_adjacency_sum: f32,
-    pub turn_alternations: u32,
-    pub last_turn_direction: i8, // 0=nessuna, 1=destra, -1=sinistra
-    pub path_progress_sum: f32,  // accumula progress ratio per-frame
+    pub path_progress_sum: f32, // accumula progress ratio per-frame
 }
 
 impl SnakeInstance {
@@ -535,14 +530,9 @@ impl SnakeInstance {
             frames_survived: 0,
             visited_cells: std::collections::HashSet::with_capacity(64),
             turn_count: 0,
-            previous_action: crate::brain::Action::Straight,
-            food_time_sum: 0,
             path_directness_sum: 0.0,
             food_real_distance,
-            body_pressure_sum: 0.0,
             obstacle_adjacency_sum: 0.0,
-            turn_alternations: 0,
-            last_turn_direction: 0,
             path_progress_sum: 0.0,
         }
     }
@@ -579,8 +569,6 @@ impl SnakeInstance {
         self.visited_cells.clear();
         self.visited_cells.shrink_to_fit();
         self.turn_count = 0;
-        self.previous_action = crate::brain::Action::Straight;
-        self.food_time_sum = 0;
         self.path_directness_sum = 0.0;
         self.path_progress_sum = 0.0;
 
@@ -617,10 +605,7 @@ impl SnakeInstance {
             }
         }
 
-        self.body_pressure_sum = 0.0;
         self.obstacle_adjacency_sum = 0.0;
-        self.turn_alternations = 0;
-        self.last_turn_direction = 0;
         self.path_progress_sum = 0.0;
     }
 
@@ -633,40 +618,21 @@ impl SnakeInstance {
         (self.turn_count as f32 / self.frames_survived as f32 / 0.5).clamp(0.0, 1.0)
     }
 
-    /// Descrittore 2: frazione di mappa esplorata [0,1]
-    /// 0.0 = resta sempre nello stesso posto, 1.0 = ha visitato il 75% della mappa
+    /// D2: fraction of map explored [0,1]
+    /// Normalized on 65% of total cells (approximate free-cell count at fill_rate=0.35).
     pub fn exploration_ratio(&self, grid: &GridDimensions) -> f32 {
-        let total_free = (grid.width * grid.height) as f32 * 0.75;
-        (self.visited_cells.len() as f32 / total_free).clamp(0.0, 1.0)
+        let accessible = (grid.width * grid.height) as f32 * 0.65;
+        (self.visited_cells.len() as f32 / accessible).clamp(0.0, 1.0)
     }
 
-    /// Descrittore 3: quanto il serpente si avvicina agli ostacoli [0,1]
-    /// 0.0 = evita sempre gli ostacoli, 1.0 = li tocca frequentemente
-    pub fn obstacle_hugging(&self) -> f32 {
+    /// D3: mean proximity to walls and own body per frame [0,1]
+    /// Counts how many of the 8 neighbors are a wall cell or own body segment.
+    /// 0.0 = always in open space | 1.0 = always surrounded by obstacles
+    pub fn danger_affinity(&self) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
         (self.obstacle_adjacency_sum / self.frames_survived as f32).clamp(0.0, 1.0)
-    }
-
-    /// Descrittore 2 (nuovo): media di body_pressure normalizzata [0,1]
-    /// Misura quanto il serpente naviga in spazio denso rispetto al proprio corpo.
-    /// 0.0 = naviga sempre in spazio vuoto, 1.0 = massima densità
-    pub fn body_pressure(&self) -> f32 {
-        if self.frames_survived == 0 {
-            return 0.0;
-        }
-        (self.body_pressure_sum / self.frames_survived as f32).clamp(0.0, 1.0)
-    }
-
-    /// Descrittore 3 (nuovo): misura quanto il serpente fa zigzag [0,1]
-    /// 0.0 = va sempre dritto o curve lunghe, 1.0 = zigzaga ad ogni frame
-    pub fn turn_alternation(&self) -> f32 {
-        if self.turn_count < 2 {
-            return 0.0;
-        }
-        // turn_count-1 perché la prima svolta non può essere un'alternanza
-        (self.turn_alternations as f32 / (self.turn_count - 1) as f32).clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness con longevità e ricompensa sinergica

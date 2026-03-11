@@ -409,7 +409,14 @@ fn setup(
     let best_fitness = evo_manager.generation_state.best_fitness.max(1.0);
     let behaviors: Vec<(f32, f32, f32, f32)> = individuals
         .iter()
-        .map(|i| (i.path_directness, i.body_avoidance, i.fitness, best_fitness))
+        .map(|i| {
+            (
+                i.desc_turn_rate,
+                i.desc_exploration,
+                i.fitness,
+                best_fitness,
+            )
+        })
         .collect();
 
     commands.insert_resource(global_history);
@@ -579,26 +586,10 @@ fn apply_moves_serial(
                 Action::Left => {
                     snake.direction = snake.direction.turn_left();
                     snake.turn_count += 1;
-                    // Track turn alternation: -1 = sinistra
-                    let current_direction: i8 = -1;
-                    if snake.last_turn_direction != 0
-                        && snake.last_turn_direction != current_direction
-                    {
-                        snake.turn_alternations += 1;
-                    }
-                    snake.last_turn_direction = current_direction;
                 }
                 Action::Right => {
                     snake.direction = snake.direction.turn_right();
                     snake.turn_count += 1;
-                    // Track turn alternation: 1 = destra
-                    let current_direction: i8 = 1;
-                    if snake.last_turn_direction != 0
-                        && snake.last_turn_direction != current_direction
-                    {
-                        snake.turn_alternations += 1;
-                    }
-                    snake.last_turn_direction = current_direction;
                 }
                 Action::Straight => {}
             }
@@ -646,38 +637,11 @@ fn apply_moves_serial(
                 snake.frames_survived += 1;
 
                 snake.visited_cells.insert((new_head.x, new_head.y));
-                let body_len = snake.snake.len() as f32;
-                let visited = snake.visited_cells.len().max(1) as f32;
-                snake.body_pressure_sum += (body_len / visited).clamp(0.0, 1.0);
 
-                // Calculate obstacle adjacency (8 neighbors)
-                let mut adj = 0u32;
-                for (odx, ody) in &[
-                    (-1i32, 0i32),
-                    (1, 0),
-                    (0, -1),
-                    (0, 1),
-                    (-1, -1),
-                    (1, -1),
-                    (-1, 1),
-                    (1, 1),
-                ] {
-                    let nx = new_head.x + odx;
-                    let ny = new_head.y + ody;
-                    if nx < 0 || nx >= grid.width || ny < 0 || ny >= grid.height {
-                        adj += 1;
-                        continue;
-                    }
-                    let nidx = (ny * grid.width + nx) as usize;
-                    if grid_map.terrain[nidx] {
-                        adj += 1;
-                        continue;
-                    }
-                    if snake.body_set.contains(&Position { x: nx, y: ny }) {
-                        adj += 1;
-                    }
-                }
-                snake.obstacle_adjacency_sum += adj as f32 / 8.0;
+                // Calculate obstacle proximity using raycast sensors (continuous, distance-weighted)
+                // current_17[0..8] contains the 8 raycast obstacle sensors with exponential decay
+                let obstacle_proximity = current_17[0..8].iter().sum::<f32>() / 8.0;
+                snake.obstacle_adjacency_sum += obstacle_proximity;
             }
 
             if is_collision || is_timeout {
@@ -760,8 +724,8 @@ fn apply_moves_serial(
                     .get(i)
                     .map(|ind| {
                         (
-                            ind.path_directness,
-                            ind.body_avoidance,
+                            ind.desc_turn_rate,
+                            ind.desc_exploration,
                             ind.fitness,
                             best_fitness,
                         )
@@ -805,9 +769,9 @@ fn end_generation(
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
-            ind.path_directness = snake.turn_rate();
-            ind.body_avoidance = snake.body_pressure();
-            ind.obstacle_hugging = snake.turn_alternation();
+            ind.desc_turn_rate = snake.turn_rate();
+            ind.desc_exploration = snake.exploration_ratio(grid);
+            ind.desc_danger_affinity = snake.danger_affinity();
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

@@ -98,11 +98,11 @@ fn default_descriptor_1() -> String {
 }
 
 fn default_descriptor_2() -> String {
-    "body_pressure".to_string()
+    "exploration".to_string()
 }
 
 fn default_descriptor_3() -> String {
-    "turn_alternation".to_string()
+    "danger_affinity".to_string()
 }
 
 impl Default for MapElitesArchive {
@@ -137,13 +137,10 @@ impl MapElitesArchive {
 
     /// Get the grid cell coordinates for an individual
     pub fn get_cell(&self, individual: &Individual) -> (usize, usize, usize) {
-        let path_directness_bin = self.discretize(individual.path_directness);
-        let body_avoidance_bin = self.discretize(individual.body_avoidance);
-        let obstacle_hugging_bin = self.discretize(individual.obstacle_hugging);
         (
-            path_directness_bin,
-            body_avoidance_bin,
-            obstacle_hugging_bin,
+            self.discretize(individual.desc_turn_rate),
+            self.discretize(individual.desc_exploration),
+            self.discretize(individual.desc_danger_affinity),
         )
     }
 
@@ -490,8 +487,8 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual = Individual::new_random(0);
-        individual.path_directness = 0.5;
-        individual.body_avoidance = 0.5;
+        individual.desc_turn_rate = 0.5;
+        individual.desc_exploration = 0.5;
         individual.fitness = 100.0;
 
         assert!(archive.insert(individual));
@@ -503,15 +500,15 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.path_directness = 0.5;
-        individual1.body_avoidance = 0.5;
+        individual1.desc_turn_rate = 0.5;
+        individual1.desc_exploration = 0.5;
         individual1.fitness = 100.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.path_directness = 0.5;
-        individual2.body_avoidance = 0.5;
+        individual2.desc_turn_rate = 0.5;
+        individual2.desc_exploration = 0.5;
         individual2.fitness = 200.0;
 
         assert!(archive.insert(individual2));
@@ -524,15 +521,15 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.path_directness = 0.5;
-        individual1.body_avoidance = 0.5;
+        individual1.desc_turn_rate = 0.5;
+        individual1.desc_exploration = 0.5;
         individual1.fitness = 200.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.path_directness = 0.5;
-        individual2.body_avoidance = 0.5;
+        individual2.desc_turn_rate = 0.5;
+        individual2.desc_exploration = 0.5;
         individual2.fitness = 100.0;
 
         assert!(!archive.insert(individual2));
@@ -546,8 +543,8 @@ mod tests {
         // Add some elites
         for i in 0..5 {
             let mut individual = Individual::new_random(i);
-            individual.path_directness = i as f32 / 10.0;
-            individual.body_avoidance = i as f32 / 10.0;
+            individual.desc_turn_rate = i as f32 / 10.0;
+            individual.desc_exploration = i as f32 / 10.0;
             individual.fitness = (i * 100) as f32;
             archive.insert(individual);
         }

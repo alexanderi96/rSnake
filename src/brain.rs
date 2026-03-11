@@ -287,14 +287,12 @@ pub struct Individual {
     pub archive_color: GenomeColor,
     /// Fitness score (apples * 1000 + frames)
     pub fitness: f32,
-    /// Behavioral descriptor 1: Path directness (how efficiently snake reaches food)
-    #[serde(rename = "congestion")]
-    pub path_directness: f32,
-    /// Behavioral descriptor 2: Body avoidance (how well snake navigates around itself)
-    #[serde(rename = "agility")]
-    pub body_avoidance: f32,
-    /// Behavioral descriptor 3: Obstacle hugging (how close snake gets to obstacles)
-    pub obstacle_hugging: f32,
+    /// Behavioral descriptor 1: steering frequency [0,1]
+    pub desc_turn_rate: f32,
+    /// Behavioral descriptor 2: fraction of map visited [0,1]
+    pub desc_exploration: f32,
+    /// Behavioral descriptor 3: proximity to walls and own body [0,1]
+    pub desc_danger_affinity: f32,
     /// Frames survived
     pub frames_survived: u32,
     /// Apples eaten
@@ -312,9 +310,9 @@ impl Individual {
             color: GenomeColor::random(),
             archive_color: GenomeColor::default(),
             fitness: 0.0,
-            path_directness: 0.0,
-            body_avoidance: 0.0,
-            obstacle_hugging: 0.0,
+            desc_turn_rate: 0.0,
+            desc_exploration: 0.0,
+            desc_danger_affinity: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -330,9 +328,9 @@ impl Individual {
             color: GenomeColor::random(),
             archive_color: GenomeColor::default(),
             fitness: 0.0,
-            path_directness: 0.0,
-            body_avoidance: 0.0,
-            obstacle_hugging: 0.0,
+            desc_turn_rate: 0.0,
+            desc_exploration: 0.0,
+            desc_danger_affinity: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -353,9 +351,9 @@ impl Individual {
             color,
             archive_color,
             fitness: 0.0,
-            path_directness: 0.0,
-            body_avoidance: 0.0,
-            obstacle_hugging: 0.0,
+            desc_turn_rate: 0.0,
+            desc_exploration: 0.0,
+            desc_danger_affinity: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -365,9 +363,9 @@ impl Individual {
     /// Reset for a new evaluation
     pub fn reset(&mut self) {
         self.fitness = 0.0;
-        self.path_directness = 0.0;
-        self.body_avoidance = 0.0;
-        self.obstacle_hugging = 0.0;
+        self.desc_turn_rate = 0.0;
+        self.desc_exploration = 0.0;
+        self.desc_danger_affinity = 0.0;
         self.frames_survived = 0;
         self.apples_eaten = 0;
         self.is_alive = true;
