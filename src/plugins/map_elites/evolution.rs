@@ -235,55 +235,6 @@ pub struct GenerationRecord {
     pub generation_high_score: u32, // max apples eaten this generation
 }
 
-/// Crossover function for genetic algorithm
-#[allow(dead_code)]
-pub fn crossover(parent1: &Individual, parent2: &Individual) -> Individual {
-    use rand::Rng;
-
-    let child_brain = parent1.brain.crossover(&parent2.brain);
-
-    EVO_RNG.with(|rng_cell| {
-        let mut rng = rng_cell.borrow_mut();
-        let blend_factor = rng.gen::<f32>();
-        let child_color = parent1.color.lerp(&parent2.color, blend_factor);
-
-        let normalized = (parent1.fitness / parent1.fitness.max(1.0)).clamp(0.0, 1.0);
-        let archive_color = crate::plugins::map_elites::individual::GenomeColor {
-            r: 0.1,
-            g: normalized,
-            b: 1.0 - normalized,
-        };
-
-        Individual::from_genome_with_archive_color(
-            parent1.id,
-            child_brain.get_genome(),
-            child_color,
-            archive_color,
-        )
-    })
-}
-
-/// Mutation function for genetic algorithm
-#[allow(dead_code)]
-pub fn mutate(individual: &Individual, mutation_rate: f32, mutation_strength: f32) -> Individual {
-    let mutated_brain = individual.brain.mutate(mutation_rate, mutation_strength);
-    let mutated_color = individual.color.mutate(0.05);
-
-    let normalized = (individual.fitness / individual.fitness.max(1.0)).clamp(0.0, 1.0);
-    let archive_color = crate::plugins::map_elites::individual::GenomeColor {
-        r: 0.1,
-        g: normalized,
-        b: 1.0 - normalized,
-    };
-
-    Individual::from_genome_with_archive_color(
-        individual.id,
-        mutated_brain.get_genome(),
-        mutated_color,
-        archive_color,
-    )
-}
-
 thread_local! {
     static EVO_RNG: std::cell::RefCell<rand::rngs::SmallRng> =
         std::cell::RefCell::new(rand::rngs::SmallRng::from_entropy());

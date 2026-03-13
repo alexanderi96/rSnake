@@ -576,55 +576,6 @@ fn spawn_horizontal_bar(
         });
 }
 
-#[allow(dead_code)]
-fn spawn_sensor_grid(parent: &mut ChildBuilder, values: &[f32], _label: &str) {
-    parent
-        .spawn(NodeBundle {
-            style: Style {
-                width: Val::Percent(100.0),
-                height: Val::Px(60.0),
-                flex_direction: FlexDirection::Row,
-                flex_wrap: FlexWrap::Wrap,
-                margin: UiRect::vertical(Val::Px(5.0)),
-                ..default()
-            },
-            ..default()
-        })
-        .with_children(|grid| {
-            for (i, &value) in values.iter().enumerate() {
-                let intensity = (value * 255.0) as u8;
-                let color = Color::rgb(
-                    intensity as f32 / 255.0,
-                    (255 - intensity) as f32 / 255.0,
-                    0.2,
-                );
-
-                grid.spawn(NodeBundle {
-                    style: Style {
-                        width: Val::Percent(25.0),
-                        height: Val::Px(25.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        margin: UiRect::all(Val::Px(2.0)),
-                        ..default()
-                    },
-                    background_color: color.into(),
-                    ..default()
-                })
-                .with_children(|cell| {
-                    cell.spawn(TextBundle::from_section(
-                        &format!("{}:{:.2}", i, value),
-                        TextStyle {
-                            font_size: 10.0,
-                            color: Color::WHITE,
-                            ..default()
-                        },
-                    ));
-                });
-            }
-        });
-}
-
 // ============================================================================
 // GRAPH TAB
 // ============================================================================

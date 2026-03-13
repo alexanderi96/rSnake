@@ -3,7 +3,7 @@
 //! This plugin contains the core simulation types and functions for the snake game:
 //! - Grid primitives (GridDimensions, GridMap, Position)
 //! - Snake logic (SnakeInstance, Direction, Food, GameState)
-//! - Simulation step functions (apply_moves, compute_moves, end_generation)
+//! - Simulation step (end_generation in main.rs)
 
 pub mod grid;
 pub mod snake;

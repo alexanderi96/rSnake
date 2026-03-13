@@ -68,11 +68,6 @@ pub struct BrainInspectorUi;
 #[derive(Component)]
 pub struct SimulationCamera;
 
-/// Marker for sensor visualization gizmos
-#[allow(dead_code)]
-#[derive(Component)]
-pub struct SensorGizmo;
-
 // ============================================================================
 // PLUGIN
 // ============================================================================
@@ -431,32 +426,5 @@ pub fn update_sensor_cache(
         full_state[17..].copy_from_slice(&snake.previous_state);
         let output = brain_arc.forward(&full_state);
         inspected_agent.last_output = Some(output);
-    }
-}
-
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
-
-/// Get a reference to the inspected snake if valid
-#[allow(dead_code)]
-pub fn get_inspected_snake<'a>(
-    inspected: &'a InspectedAgent,
-    game_state: &'a GameState,
-) -> Option<(usize, &'a SnakeInstance)> {
-    let idx = inspected.snake_idx?;
-    game_state.snakes.get(idx).map(|s| (idx, s))
-}
-
-/// Check if the inspected agent is still alive
-#[allow(dead_code)]
-pub fn is_inspected_agent_alive(inspected: &InspectedAgent, game_state: &GameState) -> bool {
-    match inspected.snake_idx {
-        Some(idx) => game_state
-            .snakes
-            .get(idx)
-            .map(|s| !s.is_game_over)
-            .unwrap_or(false),
-        None => false,
     }
 }

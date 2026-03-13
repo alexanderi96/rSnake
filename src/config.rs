@@ -73,17 +73,6 @@ impl Default for Hyperparameters {
 }
 
 impl Hyperparameters {
-    #[allow(dead_code)]
-    pub fn calculate_timeout(&self, snake_length: usize, grid_width: i32, grid_height: i32) -> u32 {
-        // Add the grid perimeter to ensure the snake always has enough time
-        // to cross the map, regardless of the window resolution.
-        let map_allowance = (grid_width + grid_height) as u32;
-
-        self.base_steps_without_food
-            + map_allowance
-            + (snake_length as u32 * self.steps_per_segment)
-    }
-
     /// BFS-aware timeout: usa la distanza BFS reale invece della dimensione della mappa
     /// - On empty board: food_real_distance ≈ Manhattan → similar to before
     /// - Su terrain: food_real_distance >> Manhattan → molto più generoso

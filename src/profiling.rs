@@ -80,13 +80,3 @@ fn save_flamegraph(guard: pprof::ProfilerGuard<'static>) {
         Err(e) => eprintln!("❌ Errore build report pprof: {}", e),
     }
 }
-
-/// Check if any profiling feature is enabled at compile time.
-#[allow(dead_code)]
-pub fn is_profiling() -> bool {
-    cfg!(any(
-        feature = "profiling",
-        feature = "dhat-heap",
-        feature = "tracy"
-    ))
-}

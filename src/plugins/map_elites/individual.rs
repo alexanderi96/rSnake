@@ -319,24 +319,6 @@ impl Individual {
         }
     }
 
-    /// Create an individual from a genome (used in evolution)
-    #[allow(dead_code)]
-    pub fn from_genome(id: usize, genome: &[f32]) -> Self {
-        Self {
-            id,
-            brain: Brain::from_genome(genome),
-            color: GenomeColor::random(),
-            archive_color: GenomeColor::default(),
-            fitness: 0.0,
-            desc_path_efficiency: 0.0,
-            desc_danger_affinity: 0.0,
-            desc_spatial_spread: 0.0,
-            frames_survived: 0,
-            apples_eaten: 0,
-            is_alive: true,
-        }
-    }
-
     /// Create an individual from a genome with archive color (from parent cell fitness)
     #[must_use]
     pub fn from_genome_with_archive_color(

@@ -47,8 +47,6 @@ pub struct SnakeInstance {
 /// Seed condiviso per la generazione corrente.
 #[derive(Resource, Clone)]
 pub struct GenerationSeed {
-    #[allow(dead_code)]
-    pub seed: u64,
     pub spawn_pos: Position,
     pub spawn_dir: Direction,
     pub food_sequence: Vec<Position>, // pre-generata, lunga FOOD_SEQ_LEN
@@ -89,7 +87,6 @@ impl GenerationSeed {
         let food_sequence = build_food_sequence(&mut rng, grid, &terrain);
 
         Self {
-            seed,
             spawn_pos,
             spawn_dir,
             food_sequence,

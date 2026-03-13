@@ -21,15 +21,6 @@ impl TerrainMap {
     }
 
     #[inline]
-    #[allow(dead_code)]
-    pub fn get(&self, x: i32, y: i32) -> bool {
-        if x < 0 || x >= self.width || y < 0 || y >= self.height {
-            return true;
-        }
-        self.cells[(y * self.width + x) as usize]
-    }
-
-    #[inline]
     pub fn set(&mut self, x: i32, y: i32, v: bool) {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
             return;
