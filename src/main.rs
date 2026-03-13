@@ -3,19 +3,29 @@
 //! A simplified implementation to get things compiling first.
 
 #![recursion_limit = "256"]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::implicit_saturating_sub)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::borrow_deref_ref)]
+#![allow(clippy::indexing_slicing)]
+#![allow(clippy::iter_with_drain)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::wrong_self_convention)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::needless_borrows_for_generic_args)]
 
 use std::sync::Arc;
 
-mod brain;
-mod brain_inspector;
 mod config;
-mod evolution;
-mod map_elites;
+mod plugins;
 mod profiling;
 
 mod snake;
-mod terrain;
-mod ui;
 
 use bevy::app::AppExit;
 use bevy::diagnostic::{
@@ -26,19 +36,21 @@ use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use clap::Parser;
 
-use brain::Action;
-use brain_inspector::{BrainLoaderPlugin, InspectorGizmoPlugin, SimulationCamera};
 use config::Hyperparameters;
-use evolution::EvolutionManager;
+use plugins::brain_inspector::SimulationCamera;
+use plugins::food_spawn::FoodSpawnPlugin;
+use plugins::map_elites::evolution::EvolutionManager;
+use plugins::map_elites::individual::Action;
+use plugins::terrain::TerrainPlugin;
+pub use plugins::terrain::{generate, TerrainMap};
+use plugins::ui::{
+    CellRenderMap, GraphPanelState, HeatmapPanelState, MaterialPalette, PauseState, WindowSettings,
+};
 use snake::{
     bfs_distance, calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings,
     Food, GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions,
     GridMap, MeshCache, ParallelConfig, Position, RenderConfig, RunDirectory, SnakeId,
     TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
-};
-use ui::{
-    CellRenderMap, GraphPanelState, HeatmapPanelState, MaterialPalette, PauseState, UiPlugin,
-    WindowSettings,
 };
 
 /// CLI Arguments
@@ -119,7 +131,7 @@ fn build_hyperparameters(args: &CliArgs) -> Hyperparameters {
 }
 
 #[derive(Resource)]
-struct Population(pub Vec<Arc<brain::Brain>>);
+struct Population(pub Vec<Arc<plugins::map_elites::individual::Brain>>);
 
 /// Intermediate results from parallel brain forward pass
 /// Stores (action, current_17_state) for each snake, indexed by snake id
@@ -151,20 +163,19 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(TerrainPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(EntityCountDiagnosticsPlugin)
         .add_plugins(SystemInformationDiagnosticsPlugin)
         .add_event::<AppExit>()
         .insert_resource(args) // Insert CLI args as resource
         .insert_resource(hyperparams)
-        .add_plugins(SnakePlugin)
-        .add_plugins(UiPlugin)
-        .add_plugins(InspectorGizmoPlugin)
-        .add_plugins(BrainLoaderPlugin)
-        .add_plugins(brain_inspector::BrainInspectorPlugin)
-        .add_plugins(brain_inspector::archive3d::Archive3dPlugin)
+        .add_plugins(FoodSpawnPlugin)
+        .add_plugins(plugins::simulation::SimulationPlugin)
+        .add_plugins(plugins::ui::UiPlugin)
+        .add_plugins(plugins::brain_inspector::BrainInspectorPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Startup, ui::spawn_stats_ui.after(setup))
+        .add_systems(Startup, plugins::ui::spawn_stats_ui.after(setup))
         // Two-phase parallel simulation: compute moves (parallel) then apply (serial)
         .insert_resource(ComputedMoves::default())
         .insert_resource(snake::SimStepsPerFrame::default())
@@ -174,14 +185,6 @@ fn main() {
                 compute_moves_parallel,
                 apply_moves_serial.after(compute_moves_parallel),
                 log_diagnostics_periodic,
-            ),
-        )
-        .add_systems(
-            Update,
-            (
-                brain_inspector::ui::update_inspector_visibility,
-                brain_inspector::ui::update_inspector_content
-                    .after(brain_inspector::ui::update_inspector_visibility),
             ),
         )
         .run();
@@ -342,7 +345,7 @@ fn setup(
             .id();
         food_entities.push(entity);
     }
-    commands.insert_resource(ui::FoodPool {
+    commands.insert_resource(plugins::ui::FoodPool {
         entities: food_entities,
     });
 
@@ -536,6 +539,7 @@ fn apply_moves_serial(
     mut game_stats: ResMut<GameStats>,
     mut cell_map: ResMut<CellRenderMap>,
     sim_steps: Res<snake::SimStepsPerFrame>,
+    food_spawn_zone: Res<plugins::food_spawn::FoodSpawnZone>,
 ) {
     #[cfg(feature = "tracy")]
     let _span = tracing::info_span!("apply_moves_serial").entered();
@@ -665,11 +669,14 @@ fn apply_moves_serial(
                     let tail = snake.snake.back().copied();
 
                     // Trova nuovo cibo
+                    let zone_center = Some((food_spawn_zone.center.x, food_spawn_zone.center.y));
                     let new_food = gen_seed.food_at_free(
                         snake.score as usize,
                         &snake.body_set,
                         &grid_map.terrain,
                         grid.width,
+                        zone_center,
+                        food_spawn_zone.radius,
                     );
 
                     // Calcola distanza BFS reale
@@ -802,9 +809,4 @@ fn end_generation(
     );
 
     evo_manager.start_generation();
-}
-
-pub struct SnakePlugin;
-impl Plugin for SnakePlugin {
-    fn build(&self, _app: &mut App) {}
 }

@@ -73,6 +73,7 @@ impl Default for Hyperparameters {
 }
 
 impl Hyperparameters {
+    #[allow(dead_code)]
     pub fn calculate_timeout(&self, snake_length: usize, grid_width: i32, grid_height: i32) -> u32 {
         // Add the grid perimeter to ensure the snake always has enough time
         // to cross the map, regardless of the window resolution.
@@ -84,7 +85,7 @@ impl Hyperparameters {
     }
 
     /// BFS-aware timeout: usa la distanza BFS reale invece della dimensione della mappa
-    /// - Su board vuota: food_real_distance ≈ Manhattan → simile a prima
+    /// - On empty board: food_real_distance ≈ Manhattan → similar to before
     /// - Su terrain: food_real_distance >> Manhattan → molto più generoso
     pub fn calculate_timeout_bfs(&self, snake_length: usize, food_real_distance: u32) -> u32 {
         // Dà al serpente 3x il percorso BFS ottimo come budget
@@ -101,7 +102,7 @@ impl Hyperparameters {
             Ok(serde_json::from_str(&content)?)
         } else {
             Err(ConfigError::InvalidFormat(
-                "Il file deve avere estensione .toml o .json".to_string(),
+                "File must have .toml or .json extension".to_string(),
             ))
         }
     }

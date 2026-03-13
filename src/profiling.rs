@@ -3,7 +3,7 @@
 //! Compile con:
 //!   cargo run --release --features profiling       → flamegraph SVG on exit
 //!   cargo run --release --features dhat-heap       → heap report JSON on exit
-//!   cargo run --release --features tracy           → Tracy real-time (apri Tracy GUI prima)
+//!   cargo run --release --features tracy           → Tracy real-time (open Tracy GUI first)
 
 // ─── dhat heap profiler ───────────────────────────────────────────────────────
 #[cfg(feature = "dhat-heap")]
@@ -82,6 +82,7 @@ fn save_flamegraph(guard: pprof::ProfilerGuard<'static>) {
 }
 
 /// Check if any profiling feature is enabled at compile time.
+#[allow(dead_code)]
 pub fn is_profiling() -> bool {
     cfg!(any(
         feature = "profiling",

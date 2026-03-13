@@ -8,7 +8,7 @@
 # Sopra i 2000-4000 individui i ritorni diminuiscono: la probabilità di trovare
 # qualcosa di meglio dell'elite corrente non cresce linearmente.
 # 8192 ha senso su macchine con molti core; abbassa a 2048 se è lento.
-population_size = 2048  #4096
+population_size = 8192  #4096
 
 mutation_rate     = 0.05   # P(mutazione per gene) — OK
 mutation_strength = 0.3    # entità della mutazione — OK
@@ -35,7 +35,7 @@ auto_save_interval = 50
 
 # Percentuale di celle che diventano muro.
 # 0.20 = aperto  |  0.35 = bilanciato (consigliato)  |  0.55 = denso
-terrain_fill_rate = 0.01
+terrain_fill_rate = 0.0
 
 # Dimensione dei cluster:
 # 2.0 = grandi isole  |  4.0 = medi (default)  |  7.0 = tanti piccoli ostacoli
