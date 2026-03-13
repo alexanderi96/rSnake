@@ -1,0 +1,971 @@
+//! Brain Inspector UI Components
+//!
+//! UI layout and rendering for the brain inspector view.
+//! Follows the same patterns as the main UI in ui.rs
+
+use bevy::prelude::*;
+
+use super::archive3d::Archive3dTarget;
+use super::{BrainInspectorState, BrainInspectorUi, InspectedAgent, InspectorTab};
+use crate::snake::GameState;
+
+// ============================================================================
+// UI SPAWN SYSTEMS
+// ============================================================================
+
+/// Spawn the brain inspector UI panel
+pub fn spawn_inspector_ui(mut commands: Commands, inspector_state: Res<BrainInspectorState>) {
+    let panel_width = 480.0;
+    let panel_height = 700.0;
+
+    commands
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(10.0),
+                    top: Val::Px(10.0),
+                    width: Val::Px(panel_width),
+                    height: Val::Px(panel_height),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(Val::Px(10.0)),
+                    ..default()
+                },
+                background_color: Color::rgba(0.1, 0.1, 0.15, 0.95).into(),
+                ..default()
+            },
+            BrainInspectorUi,
+        ))
+        .with_children(|parent| {
+            // Header
+            spawn_header(parent);
+
+            // Tab bar
+            spawn_tab_bar(parent, &inspector_state);
+
+            // Content area
+            parent
+                .spawn((
+                    NodeBundle {
+                        style: Style {
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Column,
+                            overflow: Overflow::clip(),
+                            ..default()
+                        },
+                        background_color: Color::rgba(0.05, 0.05, 0.08, 0.9).into(),
+                        ..default()
+                    },
+                    InspectorContent,
+                ))
+                .with_children(|content| {
+                    // Content will be populated based on active tab
+                    spawn_placeholder_content(content);
+                });
+        });
+}
+
+/// Spawn the inspector panel header
+fn spawn_header(parent: &mut ChildBuilder) {
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(40.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Center,
+                margin: UiRect::bottom(Val::Px(10.0)),
+                ..default()
+            },
+            background_color: Color::rgb(0.2, 0.2, 0.3).into(),
+            ..default()
+        })
+        .with_children(|header| {
+            header.spawn(TextBundle::from_section(
+                "Brain Inspector",
+                TextStyle {
+                    font_size: 20.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+
+            header.spawn(TextBundle::from_section(
+                "[S]ensors [M]ap-Elites [G]raph [T]Stats | [←][→] Nav [I]hide",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+        });
+}
+
+/// Spawn the tab selection bar
+fn spawn_tab_bar(parent: &mut ChildBuilder, inspector_state: &BrainInspectorState) {
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(35.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceEvenly,
+                margin: UiRect::bottom(Val::Px(10.0)),
+                ..default()
+            },
+            background_color: Color::rgba(0.15, 0.15, 0.2, 1.0).into(),
+            ..default()
+        })
+        .with_children(|tabs| {
+            let tab_names = [
+                (InspectorTab::Sensors, "Sensors (S)", ""),
+                (InspectorTab::MapElites, "Archive (M)", ""),
+                (InspectorTab::Graph, "Graph (G)", ""),
+                (InspectorTab::Stats, "Stats (T)", ""),
+            ];
+
+            for (tab, name, _desc) in tab_names {
+                let is_active = inspector_state.active_tab == tab;
+                let bg_color = if is_active {
+                    Color::rgb(0.3, 0.5, 0.7)
+                } else {
+                    Color::rgb(0.2, 0.2, 0.25)
+                };
+
+                tabs.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Percent(24.0),
+                        height: Val::Percent(100.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    background_color: bg_color.into(),
+                    ..default()
+                })
+                .with_children(|tab_node| {
+                    tab_node.spawn(TextBundle::from_section(
+                        name,
+                        TextStyle {
+                            font_size: 13.0,
+                            color: if is_active { Color::WHITE } else { Color::GRAY },
+                            ..default()
+                        },
+                    ));
+                });
+            }
+        });
+}
+
+/// Spawn placeholder content (will be replaced by actual content)
+fn spawn_placeholder_content(parent: &mut ChildBuilder) {
+    parent.spawn(TextBundle::from_section(
+        "Select an agent to inspect\nUse arrow keys or N/P to navigate\nPress H to hide this panel",
+        TextStyle {
+            font_size: 14.0,
+            color: Color::GRAY,
+            ..default()
+        },
+    ));
+}
+
+// ============================================================================
+// CONTENT UPDATE SYSTEMS
+// ============================================================================
+
+/// Marker component for inspector content area
+#[derive(Component)]
+pub struct InspectorContent;
+
+/// Update the inspector content based on active tab and selected agent
+pub fn update_inspector_content(
+    mut commands: Commands,
+    inspector_state: Res<BrainInspectorState>,
+    inspected_agent: Res<InspectedAgent>,
+    game_state: Res<GameState>,
+    evo_manager: Res<crate::plugins::map_elites::evolution::EvolutionManager>,
+    global_history: Res<crate::snake::GlobalTrainingHistory>,
+    game_stats: Res<crate::snake::GameStats>,
+    app_start_time: Res<crate::snake::AppStartTime>,
+    panel_visibility: Res<crate::plugins::ui::PanelVisibility>,
+    archive3d_target: Res<Archive3dTarget>,
+    archive3d_orbit: Res<super::archive3d::Archive3dOrbit>,
+    content_query: Query<Entity, With<InspectorContent>>,
+    children_query: Query<&Children>,
+) {
+    // Skip if panel is not visible
+    if !panel_visibility.inspector {
+        return;
+    }
+
+    // Only update when state changes
+    if !inspector_state.is_changed() && !inspected_agent.is_changed() {
+        return;
+    }
+
+    // Clear old content
+    for content_entity in content_query.iter() {
+        if let Ok(children) = children_query.get(content_entity) {
+            for &child in children.iter() {
+                commands.entity(child).despawn_recursive();
+            }
+        }
+
+        // Spawn new content based on tab
+        commands
+            .entity(content_entity)
+            .with_children(|parent| match inspector_state.active_tab {
+                InspectorTab::Sensors => spawn_sensors_tab(parent, &inspected_agent, &game_state),
+                InspectorTab::MapElites => super::archive3d::spawn_map_elites_tab(
+                    parent,
+                    &evo_manager,
+                    &archive3d_target,
+                    &archive3d_orbit,
+                ),
+                InspectorTab::Graph => spawn_graph_tab(parent, &global_history),
+                InspectorTab::Stats => spawn_stats_tab(
+                    parent,
+                    &game_state,
+                    &game_stats,
+                    &global_history,
+                    &app_start_time,
+                ),
+            });
+    }
+}
+
+// ============================================================================
+// SENSORS TAB
+// ============================================================================
+
+/// Direction labels matching index.html: FWD, F-R, R, B-R, BCK, B-L, L, F-L
+const DIR_LABELS: [&str; 8] = ["FWD", "F-R", "R", "B-R", "BCK", "B-L", "L", "F-L"];
+
+fn spawn_sensors_tab(
+    parent: &mut ChildBuilder,
+    inspected: &InspectedAgent,
+    game_state: &GameState,
+) {
+    // Get inspected snake info
+    let (snake_info, status) = match inspected.snake_idx {
+        Some(idx) => match game_state.snakes.get(idx) {
+            Some(snake) => {
+                let status = if snake.is_game_over { "DEAD" } else { "ALIVE" };
+                (
+                    format!("Snake {} - Score: {} - {}", idx, snake.score, status),
+                    status,
+                )
+            }
+            None => ("Invalid snake index".to_string(), "ERROR"),
+        },
+        None => ("No snake selected".to_string(), "NONE"),
+    };
+
+    // Header with status color
+    parent.spawn(TextBundle::from_section(
+        &snake_info,
+        TextStyle {
+            font_size: 16.0,
+            color: if status == "ALIVE" {
+                Color::GREEN
+            } else {
+                Color::RED
+            },
+            ..default()
+        },
+    ));
+
+    // Spacer
+    parent.spawn(NodeBundle {
+        style: Style {
+            width: Val::Percent(100.0),
+            height: Val::Px(8.0),
+            ..default()
+        },
+        ..default()
+    });
+
+    // === OBSTACLE RAYS [0-7] - Orange bars from left ===
+    parent.spawn(TextBundle::from_section(
+        "OBSTACLE RAYS [0-7]",
+        TextStyle {
+            font_size: 12.0,
+            color: Color::rgb(1.0, 0.42, 0.21), // Orange
+            ..default()
+        },
+    ));
+
+    if let Some(sensors) = inspected.last_sensor_state {
+        // Render 8 horizontal bars for obstacle sensors
+        for i in 0..8 {
+            let value = sensors[i];
+            spawn_horizontal_bar(
+                parent,
+                i,
+                DIR_LABELS[i],
+                value,
+                Color::rgb(1.0, 0.42, 0.21), // Orange
+                true,                        // left-aligned
+            );
+        }
+
+        // === FOOD DIRECTION [8-15] - Blue bars centered ===
+        parent.spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(12.0),
+                ..default()
+            },
+            ..default()
+        });
+
+        parent.spawn(TextBundle::from_section(
+            "FOOD DIRECTION [8-15]",
+            TextStyle {
+                font_size: 12.0,
+                color: Color::rgb(0.22, 0.68, 1.0), // Blue
+                ..default()
+            },
+        ));
+
+        for i in 0..8 {
+            let value = sensors[8 + i];
+            // Food direction can be negative (away from food) - render centered
+            let bar_color = if value >= 0.0 {
+                Color::rgb(0.22, 0.68, 1.0) // Blue for positive
+            } else {
+                Color::rgb(0.5, 0.3, 0.8) // Violet for negative
+            };
+            spawn_horizontal_bar(
+                parent,
+                8 + i,
+                DIR_LABELS[i],
+                value,
+                bar_color,
+                false, // centered
+            );
+        }
+
+        // === FOOD PROXIMITY [16] ===
+        parent.spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(12.0),
+                ..default()
+            },
+            ..default()
+        });
+
+        parent.spawn(TextBundle::from_section(
+            "FOOD PROXIMITY [16]",
+            TextStyle {
+                font_size: 12.0,
+                color: Color::rgb(1.0, 0.0, 1.0), // Magenta
+                ..default()
+            },
+        ));
+
+        spawn_horizontal_bar(
+            parent,
+            16,
+            "PROX",
+            sensors[16],
+            Color::rgb(1.0, 0.0, 1.0), // Magenta
+            true,
+        );
+    } else {
+        parent.spawn(TextBundle::from_section(
+            "No sensor data - select snake with [1-9] or [←][→]",
+            TextStyle {
+                font_size: 12.0,
+                color: Color::GRAY,
+                ..default()
+            },
+        ));
+    }
+
+    // === NEURAL OUTPUT ===
+    parent.spawn(NodeBundle {
+        style: Style {
+            width: Val::Percent(100.0),
+            height: Val::Px(16.0),
+            ..default()
+        },
+        ..default()
+    });
+
+    parent.spawn(TextBundle::from_section(
+        "NEURAL OUTPUT",
+        TextStyle {
+            font_size: 12.0,
+            color: Color::GREEN,
+            ..default()
+        },
+    ));
+
+    // Neural output - 3 action cards
+    if let Some(output) = inspected.last_output {
+        let actions = ["LEFT", "STRAIGHT", "RIGHT"];
+        let max_idx = output
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(1);
+
+        // Horizontal layout for 3 actions
+        parent
+            .spawn(NodeBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceEvenly,
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|row| {
+                for (i, (action, &value)) in actions.iter().zip(output.iter()).enumerate() {
+                    let is_max = i == max_idx;
+                    let action_color = if is_max { Color::GREEN } else { Color::GRAY };
+                    let bar_width = (value.clamp(-1.0, 1.0).abs() * 50.0) as f32;
+
+                    row.spawn((NodeBundle {
+                        style: Style {
+                            width: Val::Percent(30.0),
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::Center,
+                            padding: UiRect::all(Val::Px(4.0)),
+                            ..default()
+                        },
+                        background_color: BackgroundColor(Color::rgba(0.1, 0.1, 0.15, 0.8)),
+                        ..default()
+                    },))
+                        .with_children(|card| {
+                            // Action name
+                            card.spawn(TextBundle::from_section(
+                                action.to_string(),
+                                TextStyle {
+                                    font_size: 11.0,
+                                    color: action_color,
+                                    ..default()
+                                },
+                            ));
+                            // Value
+                            card.spawn(TextBundle::from_section(
+                                &format!("{:.3}", value),
+                                TextStyle {
+                                    font_size: 14.0,
+                                    color: if is_max { Color::GREEN } else { Color::WHITE },
+                                    ..default()
+                                },
+                            ));
+                            // Progress bar
+                            card.spawn(NodeBundle {
+                                style: Style {
+                                    width: Val::Px(bar_width),
+                                    height: Val::Px(6.0),
+                                    ..default()
+                                },
+                                background_color: BackgroundColor(action_color),
+                                ..default()
+                            });
+                        });
+                }
+            });
+    } else {
+        parent.spawn(TextBundle::from_section(
+            "No NN output - snake may be dead",
+            TextStyle {
+                font_size: 11.0,
+                color: Color::GRAY,
+                ..default()
+            },
+        ));
+    }
+}
+
+/// Spawn a horizontal bar with label and value (index.html style)
+fn spawn_horizontal_bar(
+    parent: &mut ChildBuilder,
+    index: usize,
+    label: &str,
+    value: f32,
+    color: Color,
+    left_aligned: bool,
+) {
+    // Bar container
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(16.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                margin: UiRect::vertical(Val::Px(1.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            // Label
+            row.spawn(TextBundle::from_section(
+                format!("[{:02}] {}", index, label),
+                TextStyle {
+                    font_size: 10.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+
+            // Bar track
+            row.spawn((NodeBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(8.0),
+                    margin: UiRect::horizontal(Val::Px(4.0)),
+                    ..default()
+                },
+                background_color: BackgroundColor(Color::rgba(0.15, 0.15, 0.2, 1.0)),
+                ..default()
+            },))
+                .with_children(|track| {
+                    let bar_width = if left_aligned {
+                        Val::Percent(value.clamp(0.0, 1.0) * 100.0)
+                    } else {
+                        // Centered bar: value 0 = center, -1 = left edge, 1 = right edge
+                        let pct = value.clamp(-1.0, 1.0).abs() * 50.0;
+                        Val::Percent(pct)
+                    };
+
+                    // For centered bars: start from center (50%), offset based on sign
+                    // value >= 0: bar extends from center to right
+                    // value < 0: bar extends from center to left
+                    let bar_left = if left_aligned {
+                        Val::Percent(0.0)
+                    } else if value >= 0.0 {
+                        Val::Percent(50.0) // Start at center for positive values
+                    } else {
+                        Val::Percent(50.0 - value.abs() * 50.0) // Offset left for negative
+                    };
+
+                    track.spawn((NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: bar_left,
+                            width: bar_width,
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        background_color: BackgroundColor(color),
+                        ..default()
+                    },));
+                });
+
+            // Value
+            row.spawn(TextBundle::from_section(
+                &format!("{:.3}", value),
+                TextStyle {
+                    font_size: 10.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+}
+
+#[allow(dead_code)]
+fn spawn_sensor_grid(parent: &mut ChildBuilder, values: &[f32], _label: &str) {
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(60.0),
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                margin: UiRect::vertical(Val::Px(5.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|grid| {
+            for (i, &value) in values.iter().enumerate() {
+                let intensity = (value * 255.0) as u8;
+                let color = Color::rgb(
+                    intensity as f32 / 255.0,
+                    (255 - intensity) as f32 / 255.0,
+                    0.2,
+                );
+
+                grid.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Percent(25.0),
+                        height: Val::Px(25.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        margin: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    background_color: color.into(),
+                    ..default()
+                })
+                .with_children(|cell| {
+                    cell.spawn(TextBundle::from_section(
+                        &format!("{}:{:.2}", i, value),
+                        TextStyle {
+                            font_size: 10.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ));
+                });
+            }
+        });
+}
+
+// ============================================================================
+// GRAPH TAB
+// ============================================================================
+
+fn spawn_graph_tab(
+    parent: &mut ChildBuilder,
+    global_history: &crate::snake::GlobalTrainingHistory,
+) {
+    parent.spawn(TextBundle::from_section(
+        "Fitness History",
+        TextStyle {
+            font_size: 14.0,
+            color: Color::WHITE,
+            ..default()
+        },
+    ));
+
+    let all_records: Vec<_> = global_history.all_records().collect();
+    if all_records.is_empty() {
+        parent.spawn(TextBundle::from_section(
+            "No data yet.",
+            TextStyle {
+                font_size: 12.0,
+                color: Color::GRAY,
+                ..default()
+            },
+        ));
+        return;
+    }
+
+    let graph_w = 440.0_f32;
+    let graph_h = 300.0_f32;
+    let bar_px = 2.0_f32;
+
+    let global_max = all_records
+        .iter()
+        .map(|r| r.best_fitness)
+        .fold(0.0_f32, f32::max)
+        .max(1.0);
+
+    let max_bars = (graph_w / bar_px).floor() as usize;
+    let chunk = (all_records.len() as f32 / max_bars as f32).ceil() as usize;
+    let chunk = chunk.max(1);
+
+    struct Bar {
+        avg: f32,
+        max: f32,
+    }
+    let bars: Vec<Bar> = all_records
+        .chunks(chunk)
+        .map(|c| Bar {
+            avg: c.iter().map(|r| r.avg_fitness).sum::<f32>() / c.len() as f32,
+            max: c.iter().map(|r| r.best_fitness).fold(0.0_f32, f32::max),
+        })
+        .collect();
+
+    let actual_bar_w = graph_w / bars.len().max(1) as f32;
+
+    // Legend
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(12.0),
+                margin: UiRect::vertical(Val::Px(4.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            for (color, label) in [
+                (Color::rgba(1.0, 0.2, 0.2, 0.6), "Best"),
+                (Color::rgba(0.2, 1.0, 0.2, 0.7), "Avg"),
+            ] {
+                row.spawn(NodeBundle {
+                    style: Style {
+                        width: Val::Px(12.0),
+                        height: Val::Px(12.0),
+                        margin: UiRect::right(Val::Px(4.0)),
+                        ..default()
+                    },
+                    background_color: color.into(),
+                    ..default()
+                });
+                row.spawn(TextBundle::from_section(
+                    label,
+                    TextStyle {
+                        font_size: 11.0,
+                        color: Color::GRAY,
+                        ..default()
+                    },
+                ));
+            }
+        });
+
+    // Canvas
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Px(graph_w),
+                height: Val::Px(graph_h),
+                position_type: PositionType::Relative,
+                ..default()
+            },
+            background_color: Color::rgba(0.0, 0.0, 0.0, 0.4).into(),
+            ..default()
+        })
+        .with_children(|canvas| {
+            for (i, bar) in bars.iter().enumerate() {
+                let x = i as f32 * actual_bar_w;
+
+                let h_max = (bar.max / global_max).clamp(0.0, 1.0) * graph_h;
+                let h_avg = (bar.avg / global_max).clamp(0.0, 1.0) * graph_h;
+
+                if h_max > 0.0 {
+                    canvas.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x),
+                            bottom: Val::Px(0.0),
+                            width: Val::Px(actual_bar_w.max(1.0)),
+                            height: Val::Px(h_max),
+                            ..default()
+                        },
+                        background_color: Color::rgba(1.0, 0.2, 0.2, 0.4).into(),
+                        ..default()
+                    });
+                }
+                if h_avg > 0.0 {
+                    canvas.spawn(NodeBundle {
+                        style: Style {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x),
+                            bottom: Val::Px(0.0),
+                            width: Val::Px(actual_bar_w.max(1.0)),
+                            height: Val::Px(h_avg),
+                            ..default()
+                        },
+                        background_color: Color::rgba(0.2, 1.0, 0.2, 0.6).into(),
+                        ..default()
+                    });
+                }
+            }
+
+            canvas.spawn(
+                TextBundle::from_section(
+                    format!("{:.0}", global_max),
+                    TextStyle {
+                        font_size: 10.0,
+                        color: Color::GRAY,
+                        ..default()
+                    },
+                )
+                .with_style(Style {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(2.0),
+                    left: Val::Px(2.0),
+                    ..default()
+                }),
+            );
+        });
+}
+
+// ============================================================================
+// STATS TAB (leaderboard + stats)
+// ============================================================================
+
+fn spawn_stats_tab(
+    parent: &mut ChildBuilder,
+    game_state: &crate::snake::GameState,
+    game_stats: &crate::snake::GameStats,
+    global_history: &crate::snake::GlobalTrainingHistory,
+    app_start_time: &crate::snake::AppStartTime,
+) {
+    use std::time::Instant;
+
+    let now = Instant::now();
+    let session_secs = now.duration_since(app_start_time.0).as_secs();
+    let total_secs = session_secs + global_history.accumulated_time_secs;
+
+    let fmt_time = |s: u64| format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60);
+
+    let alive = game_state.alive_count();
+    let dead = game_state.snakes.len() - alive;
+
+    // Generation stats
+    parent.spawn(TextBundle::from_section(
+        "GENERATION STATS",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::GOLD,
+            ..default()
+        },
+    ));
+
+    for (label, value) in [
+        ("Generation", format!("{}", game_state.total_iterations)),
+        ("High Score", format!("{}", game_state.high_score)),
+        (
+            "All-time Best",
+            format!("{}", global_history.all_time_high_score),
+        ),
+        ("Alive / Dead", format!("{} / {}", alive, dead)),
+        ("Food eaten", format!("{}", game_stats.total_food_eaten)),
+        ("Games played", format!("{}", game_stats.total_games_played)),
+        ("Session time", fmt_time(session_secs)),
+        ("Total time", fmt_time(total_secs)),
+    ] {
+        parent
+            .spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceBetween,
+                    width: Val::Percent(100.0),
+                    padding: UiRect::vertical(Val::Px(1.0)),
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn(TextBundle::from_section(
+                    label,
+                    TextStyle {
+                        font_size: 12.0,
+                        color: Color::GRAY,
+                        ..default()
+                    },
+                ));
+                row.spawn(TextBundle::from_section(
+                    value,
+                    TextStyle {
+                        font_size: 12.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+    }
+
+    parent.spawn(NodeBundle {
+        style: Style {
+            height: Val::Px(10.0),
+            ..default()
+        },
+        ..default()
+    });
+
+    // Leaderboard
+    parent.spawn(TextBundle::from_section(
+        "LEADERBOARD",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::GOLD,
+            ..default()
+        },
+    ));
+
+    let mut snakes_sorted: Vec<(usize, &crate::snake::SnakeInstance)> =
+        game_state.snakes.iter().enumerate().collect();
+    snakes_sorted.sort_by(|a, b| b.1.score.cmp(&a.1.score));
+
+    for (rank, (orig_idx, snake)) in snakes_sorted.iter().take(30).enumerate() {
+        let status_color = if snake.is_game_over {
+            Color::DARK_GRAY
+        } else {
+            snake.color
+        };
+        let status = if snake.is_game_over { "XX" } else { "OK" };
+
+        parent
+            .spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn(TextBundle::from_section(
+                    format!(
+                        "{:2}. S{:03} [{}] {:3}",
+                        rank + 1,
+                        orig_idx + 1,
+                        status,
+                        snake.score
+                    ),
+                    TextStyle {
+                        font_size: 12.0,
+                        color: status_color,
+                        ..default()
+                    },
+                ));
+            });
+    }
+}
+
+// ============================================================================
+// VISIBILITY SYSTEM
+// ============================================================================
+
+/// Update inspector UI visibility based on state.
+/// Handles panel visibility based on PanelVisibility resource
+pub fn update_inspector_visibility(
+    mut commands: Commands,
+    inspector_state: Res<BrainInspectorState>,
+    panel_visibility: Res<crate::plugins::ui::PanelVisibility>,
+    ui_query: Query<Entity, With<BrainInspectorUi>>,
+) {
+    // Only act when panel_visibility actually changed (avoids work every frame)
+    if !panel_visibility.is_changed() {
+        return;
+    }
+
+    let ui_exists = !ui_query.is_empty();
+
+    // Show panel if inspector flag is true and no UI exists
+    if panel_visibility.inspector && !ui_exists {
+        spawn_inspector_ui(commands, inspector_state);
+    } else if !panel_visibility.inspector && ui_exists {
+        // Hide panel
+        for entity in ui_query.iter() {
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+// ============================================================================
+// PLUGIN
+// ============================================================================
+
+/// Plugin for brain inspector UI
+pub struct InspectorUiPlugin;
+
+impl Plugin for InspectorUiPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, spawn_inspector_ui)
+            .add_systems(Update, update_inspector_visibility)
+            .add_systems(
+                Update,
+                update_inspector_content.after(update_inspector_visibility),
+            );
+    }
+}
