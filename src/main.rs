@@ -40,7 +40,7 @@ use config::Hyperparameters;
 use plugins::brain_inspector::SimulationCamera;
 use plugins::food_spawn::FoodSpawnPlugin;
 use plugins::map_elites::evolution::EvolutionManager;
-use plugins::map_elites::individual::Action;
+use plugins::map_elites::individual::{Action, Individual};
 use plugins::terrain::TerrainPlugin;
 pub use plugins::terrain::{generate, TerrainMap};
 use plugins::ui::{
@@ -48,9 +48,9 @@ use plugins::ui::{
 };
 use snake::{
     bfs_distance, calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings,
-    Food, GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory, GridDimensions,
-    GridMap, MeshCache, ParallelConfig, Position, RenderConfig, RunDirectory, SnakeId,
-    TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
+    ContinuousMode, Food, GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory,
+    GridDimensions, GridMap, MeshCache, ParallelConfig, Position, RenderConfig, RunDirectory,
+    SnakeId, TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
 
 /// CLI Arguments
@@ -84,6 +84,10 @@ pub struct CliArgs {
     /// Azzera la fitness di tutti gli individui caricati dall'archivio (per migrazione a nuova formula)
     #[arg(long, default_value_t = false)]
     pub migrate_fitness: bool,
+
+    /// Modalità apprendimento continuo: gli snake morti vengono sostituiti immediatamente
+    #[arg(long, default_value_t = false)]
+    pub continuous: bool,
 }
 
 fn build_hyperparameters(args: &CliArgs) -> Hyperparameters {
@@ -322,6 +326,11 @@ fn setup(
     commands.insert_resource(GraphPanelState::default());
     commands.insert_resource(HeatmapPanelState::default());
     commands.insert_resource(RenderConfig::default());
+    commands.insert_resource(ContinuousMode {
+        enabled: args.continuous,
+        replacement_count: 0,
+        replacements_since_seed: 0,
+    });
 
     let snake_count = hyperparams.population_size;
     let parallel_config = ParallelConfig::new(snake_count);
@@ -540,6 +549,7 @@ fn apply_moves_serial(
     mut cell_map: ResMut<CellRenderMap>,
     sim_steps: Res<snake::SimStepsPerFrame>,
     food_spawn_zone: Res<plugins::food_spawn::FoodSpawnZone>,
+    mut continuous_mode: ResMut<ContinuousMode>,
 ) {
     #[cfg(feature = "tracy")]
     let _span = tracing::info_span!("apply_moves_serial").entered();
@@ -711,7 +721,92 @@ fn apply_moves_serial(
         }
         game.high_score = new_high_score;
 
-        if game.alive_count() == 0 {
+        // Raccogli gli indici degli snake morti PRIMA di processarli
+        let dead_snakes: Vec<usize> = game
+            .snakes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_game_over)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Logica continua: replacement individuale
+        if continuous_mode.enabled && !dead_snakes.is_empty() {
+            for idx in dead_snakes {
+                let snake = &game.snakes[idx];
+
+                // Calcola fitness per l'individuo morto
+                let mut individual_clone: Option<Individual> = None;
+                if let Some(ind) = evo_manager.get_individual_mut(idx) {
+                    ind.fitness = snake.fitness(&grid);
+                    ind.desc_path_efficiency = snake.path_efficiency();
+                    ind.desc_danger_affinity = snake.danger_affinity();
+                    ind.desc_spatial_spread = snake.spatial_spread();
+                    ind.frames_survived = snake.frames_survived;
+                    ind.apples_eaten = snake.score;
+                    ind.is_alive = false;
+
+                    // Clona per l'archive dopo il borrow
+                    individual_clone = Some(ind.clone());
+                }
+
+                // Prova a inserire nell'archive
+                if let Some(ref ind) = individual_clone {
+                    if ind.fitness > 0.0 {
+                        evo_manager.archive.insert(ind.clone());
+                    }
+                }
+
+                // Incrementa contatori
+                continuous_mode.replacement_count += 1;
+                continuous_mode.replacements_since_seed += 1;
+                game_stats.total_games_played += 1;
+
+                // Genera un NUOVO individuo mutato dalla popolazione dell'archive
+                let new_individual = evo_manager.generate_single_individual(idx);
+
+                // Salva il brain nuovo nella risorsa Population
+                let new_brain = Arc::new(new_individual.brain.clone());
+                let archive_color = new_individual.archive_color;
+                let new_fitness = new_individual.fitness;
+
+                // Sostituisci l'individuo nella popolazione dell'EvolutionManager
+                if let Some(ind) = evo_manager.get_individual_mut(idx) {
+                    *ind = new_individual;
+                }
+
+                // Aggiorna la Population resource con il nuovo brain
+                population.0[idx] = new_brain;
+
+                // Resetta lo snake con il nuovo individuo
+                let best_fitness = evo_manager.archive.best_fitness.max(1.0);
+                let total_snakes = game.snakes.len();
+                let snake = &mut game.snakes[idx];
+                snake.reset_with_seed(
+                    &grid,
+                    total_snakes,
+                    &gen_seed,
+                    new_fitness.max(0.0), // courage
+                    new_fitness.max(0.0), // agility - use fitness as proxy
+                    new_fitness,
+                    best_fitness,
+                );
+                snake.color = archive_color.to_bevy_color();
+            }
+
+            // Log di debug ogni N replacement
+            if continuous_mode.replacement_count % 50 == 0 {
+                println!(
+                    "🔄 Continuous: {:>4} replacements | Coverage: {:.1}% | Gen: {}",
+                    continuous_mode.replacement_count,
+                    evo_manager.archive.coverage() * 100.0,
+                    evo_manager.generation_state.generation
+                );
+            }
+        }
+
+        // Logica batch originale (solo se NON continuous o se tutti morti in batch mode)
+        if !continuous_mode.enabled && game.alive_count() == 0 {
             game_stats.total_games_played += game.snakes.len() as u64;
             end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
 

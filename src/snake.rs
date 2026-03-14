@@ -129,6 +129,28 @@ impl Default for AppStartTime {
     }
 }
 
+/// Modalità apprendimento continuo
+/// Quando enabled: gli snake morti vengono sostituiti immediatamente invece di aspettare la fine della generazione
+#[derive(Resource, Clone, Debug)]
+pub struct ContinuousMode {
+    /// Se true, gli snake morti vengono sostituiti immediatamente
+    pub enabled: bool,
+    /// Numero di replacement effettuati in questa sessione
+    pub replacement_count: u64,
+    /// Numero di replacement dalla ultima rigenerazione seed
+    pub replacements_since_seed: u64,
+}
+
+impl Default for ContinuousMode {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            replacement_count: 0,
+            replacements_since_seed: 0,
+        }
+    }
+}
+
 /// Global training history with separated read-only history and current session
 #[derive(Resource, Default)]
 pub struct GlobalTrainingHistory {

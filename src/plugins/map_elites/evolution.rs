@@ -171,6 +171,25 @@ impl EvolutionManager {
         self.generation_state.population.get_mut(id)
     }
 
+    /// Generate a single new mutated individual from archive elites
+    /// Used for continuous mode replacement
+    pub fn generate_single_individual(&self, id: usize) -> Individual {
+        let population = self.archive.generate_population_with_crossover(
+            1, // Just 1 individual
+            self.config.mutation_rate,
+            self.config.mutation_strength,
+            self.config.crossover_rate,
+        );
+
+        // Return the generated individual with the requested ID
+        let mut ind = population
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Individual::new_random(id));
+        ind.id = id;
+        ind
+    }
+
     /// Save the archive to disk
     /// Uses false to retrieve the current (latest) run directory
     pub fn save_archive(&self) {

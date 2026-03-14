@@ -7,8 +7,9 @@ use std::collections::HashMap;
 
 use crate::plugins::map_elites::evolution::EvolutionManager;
 use crate::snake::{
-    AppStartTime, CollisionSettings, GameState, GameStats, GlobalTrainingHistory, GridDimensions,
-    GridMap, MeshCache, RenderConfig, TrainingStats, BLOCK_SIZE,
+    AppStartTime, CollisionSettings, ContinuousMode, GameState, GameStats, GenerationSeed,
+    GlobalTrainingHistory, GridDimensions, GridMap, MeshCache, RenderConfig, TrainingStats,
+    BLOCK_SIZE,
 };
 
 /// UI Component markers
@@ -259,15 +260,14 @@ impl Plugin for UiPlugin {
         .insert_resource(CellRenderMap::new(0, 0)) // placeholder, re-created in setup
         .insert_resource(PanelVisibility::default()) // Floating panel visibility
         // MaterialPalette is created in main.rs setup (needs access to materials asset)
+        .add_systems(Update, handle_input)
+        .add_systems(Update, handle_continuous_mode_input)
+        .add_systems(Update, on_window_resize_collect)
         .add_systems(
             Update,
-            (
-                handle_input,
-                on_window_resize_collect,
-                on_window_resize_apply.after(on_window_resize_collect),
-                render_system.after(on_window_resize_apply),
-            ),
+            on_window_resize_apply.after(on_window_resize_collect),
         )
+        .add_systems(Update, render_system.after(on_window_resize_apply))
         .add_systems(Update, update_stats_ui);
     }
 }
@@ -276,7 +276,7 @@ pub fn spawn_stats_ui(mut commands: Commands, _game: Res<GameState>) {
     // Only FPS + steps in bottom right — everything else is in inspector panel
     commands.spawn((
         TextBundle::from_section(
-            "FPS: 0 | Steps: 1",
+            "FPS: 0 | Steps: 1 | BATCH",
             TextStyle {
                 font_size: 13.0,
                 color: Color::rgba(0.6, 0.6, 0.6, 0.8),
@@ -300,6 +300,7 @@ pub fn update_stats_ui(
     mut ui_timer: ResMut<UiUpdateTimer>,
     time: Res<Time>,
     sim_steps: Res<crate::snake::SimStepsPerFrame>,
+    continuous_mode: Res<crate::snake::ContinuousMode>,
 ) {
     // Limit UI updates to ~10Hz
     ui_timer.0.tick(time.delta());
@@ -308,7 +309,16 @@ pub fn update_stats_ui(
     }
 
     if let Ok(mut text) = stats_query.get_single_mut() {
-        text.sections[0].value = format!("FPS: {:.0} | Steps: {}", _stats.fps, sim_steps.0);
+        let mode_str = if continuous_mode.enabled {
+            format!("CONTINUOUS | Repl: {}", continuous_mode.replacement_count)
+        } else {
+            "BATCH".to_string()
+        };
+
+        text.sections[0].value = format!(
+            "FPS: {:.0} | Steps: {} | {}",
+            _stats.fps, sim_steps.0, mode_str
+        );
     }
 }
 
@@ -433,6 +443,83 @@ pub fn handle_input(
     if keyboard_input.just_pressed(KeyCode::BracketLeft) {
         sim_steps.0 = sim_steps.0.saturating_sub(1).max(1);
         println!("Steps/frame: {}", sim_steps.0);
+    }
+}
+
+/// Task 04: Sistema separato per continuous mode e rigenerazione seed
+/// (handle_input ha troppi parametri per Bevy ECS, quindi usiamo un sistema separato)
+pub fn handle_continuous_mode_input(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut continuous_mode: ResMut<ContinuousMode>,
+    grid: Res<GridDimensions>,
+    config: Res<crate::config::Hyperparameters>,
+    mut game: ResMut<GameState>,
+    evo_manager: ResMut<EvolutionManager>,
+    mut grid_map: ResMut<GridMap>,
+    mut gen_seed: ResMut<GenerationSeed>,
+    mut cell_map: ResMut<CellRenderMap>,
+) {
+    // Toggle continuous mode con tasto 'O' (On/Off)
+    if keyboard_input.just_pressed(KeyCode::KeyO) {
+        continuous_mode.enabled = !continuous_mode.enabled;
+        println!(
+            "Continuous Mode: {} (replacements: {})",
+            if continuous_mode.enabled { "ON" } else { "OFF" },
+            continuous_mode.replacement_count
+        );
+    }
+
+    // Rigenera seed manualmente con tasto 'N' (N come "New seed")
+    if keyboard_input.just_pressed(KeyCode::KeyN) {
+        // Crea nuovo seed
+        let new_seed = GenerationSeed::new_for_grid_with_config(&grid, &config);
+
+        // Applica i muri alla mappa
+        grid_map.apply_terrain(&new_seed.terrain);
+        cell_map.terrain_dirty = true;
+
+        // Resetta tutti gli snake con il nuovo seed
+        let individuals = evo_manager.get_population();
+        let best_fitness = evo_manager.archive.best_fitness.max(1.0);
+        let total_snakes = game.snakes.len();
+
+        for (i, snake) in game.snakes.iter_mut().enumerate() {
+            let (courage, agility, fitness, best) = individuals
+                .get(i)
+                .map(|ind| {
+                    (
+                        ind.desc_path_efficiency,
+                        ind.desc_danger_affinity,
+                        ind.fitness,
+                        best_fitness,
+                    )
+                })
+                .unwrap_or((0.0, 0.0, 0.0, 1.0));
+
+            snake.reset_with_seed(
+                &grid,
+                total_snakes,
+                &new_seed,
+                courage,
+                agility,
+                fitness,
+                best,
+            );
+            if let Some(ind) = individuals.get(i) {
+                snake.color = ind.archive_color.to_bevy_color();
+            }
+        }
+
+        // Aggiorna il seed
+        *gen_seed = new_seed;
+
+        // Resetta contatore replacements since seed
+        continuous_mode.replacements_since_seed = 0;
+
+        println!(
+            "🔄 NEW SEED: {} replacements since last seed",
+            continuous_mode.replacement_count
+        );
     }
 }
 

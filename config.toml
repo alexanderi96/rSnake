@@ -8,7 +8,7 @@
 # Sopra i 2000-4000 individui i ritorni diminuiscono: la probabilità di trovare
 # qualcosa di meglio dell'elite corrente non cresce linearmente.
 # 8192 ha senso su macchine con molti core; abbassa a 2048 se è lento.
-population_size = 8192  #4096
+population_size = 1024  #4096
 
 mutation_rate     = 0.05   # P(mutazione per gene) — OK
 mutation_strength = 0.3    # entità della mutazione — OK
