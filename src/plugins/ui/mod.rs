@@ -561,6 +561,7 @@ pub fn on_window_resize_apply(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mesh_cache: Res<MeshCache>,
     config: Option<Res<crate::config::Hyperparameters>>,
+    evo_manager: Res<EvolutionManager>,
     mut commands: Commands,
 ) {
     // Ignore all resizes during Wayland/Hyprland startup window placement
@@ -621,8 +622,16 @@ pub fn on_window_resize_apply(
     };
     grid_map.apply_terrain(&new_seed.terrain); // apply terrain to resized map
     let total_snakes = game.snakes.len();
-    for snake in game.snakes.iter_mut() {
+
+    // Get population for color assignment
+    let population = &evo_manager.generation_state.population;
+
+    for (idx, snake) in game.snakes.iter_mut().enumerate() {
         snake.reset_with_seed(&grid, total_snakes, &new_seed, 0.0, 0.0, 0.0, 1.0);
+        // Set color from population archive_color (same logic as initial spawn)
+        if let Some(ind) = population.get(idx) {
+            snake.color = ind.archive_color.to_bevy_color();
+        }
     }
     commands.insert_resource(new_seed);
     graph_state.needs_redraw = true;
@@ -637,6 +646,7 @@ pub fn on_window_resize_apply(
 pub fn render_system(
     mut commands: Commands,
     game: Res<GameState>,
+    grid: Res<GridDimensions>,
     grid_map: Res<GridMap>, // terrain walls
     windows: Query<&Window>,
     _mesh_cache: Res<MeshCache>,
@@ -697,15 +707,6 @@ pub fn render_system(
     // Centra la griglia dividendo lo spazio rimanente equamente
     let offset_x = -window.resolution.width() / 2.0 + (leftover_x / 2.0) + BLOCK_SIZE / 2.0;
     let offset_y = available_height / 2.0 - (leftover_y / 2.0) - BLOCK_SIZE / 2.0;
-
-    // Build fitness lookup: snake_id → fitness from current generation population
-    // This is used to determine which snake "wins" a contested cell
-    let fitness_map: Vec<f32> = evo_manager
-        .generation_state
-        .population
-        .iter()
-        .map(|ind| ind.fitness)
-        .collect();
 
     // Inspector mode when panel is visible and an agent is selected
     let is_inspector_view = panel_visibility.inspector && inspected_agent.snake_idx.is_some();
@@ -768,6 +769,11 @@ pub fn render_system(
     // === PHASE 1: Build cell color map ===
     // For each occupied cell, keep only the color of the highest-fitness snake.
     // In inspector view: ONLY render selected snake, hide all others completely.
+
+    // Use HISTORICAL best fitness from archive for normalization (not current generation max)
+    // This ensures consistent color mapping across all time
+    let max_fitness = evo_manager.archive.best_fitness.max(1.0);
+
     for snake in game.snakes.iter() {
         if snake.is_game_over {
             continue;
@@ -778,21 +784,28 @@ pub fn render_system(
             continue;
         }
 
-        let snake_fitness = fitness_map.get(snake.id).copied().unwrap_or(0.0);
+        // Get REAL-TIME fitness directly from snake
+        let snake_fitness = snake.fitness(&grid);
+
+        // Calculate color directly from fitness (normalized)
+        // Low fitness = blue (0,0,1), High fitness = green (0,1,0)
+        let normalized = (snake_fitness / max_fitness).clamp(0.0, 1.0);
+        let fitness_color = Color::rgb(0.0, normalized, 1.0 - normalized);
 
         for (seg_idx, pos) in snake.snake.iter().enumerate() {
             let Some(cidx) = cell_map.cell_index(pos.x, pos.y) else {
                 continue;
             };
-            // Head is always white; body uses the snake's behavioral color
+            // Head is always white; body uses fitness-based color
             let color = if seg_idx == 0 {
                 Color::rgb(1.0, 1.0, 1.0)
             } else {
-                snake.color
+                fitness_color
             };
             // Only update if this snake has higher fitness than the current winner
+            // Use < instead of <= to ensure deterministic behavior (first snake wins on tie)
             match cell_map.cells[cidx] {
-                Some((_, existing_fitness)) if snake_fitness <= existing_fitness => {}
+                Some((_, existing_fitness)) if snake_fitness < existing_fitness => {}
                 _ => {
                     cell_map.cells[cidx] = Some((color, snake_fitness));
                 }
