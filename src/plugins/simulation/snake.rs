@@ -399,42 +399,47 @@ impl SnakeInstance {
         (self.visited_cells.len() as f32 / self.frames_survived as f32).clamp(0.0, 1.0)
     }
 
-    /// Funzione di Fitness con longevità e ricompensa sinergica
+    /// Funzione di Fitness con pesi dinamici
+    /// Obiettivo: premiare serpenti efficienti E serpenti che fanno zigzag strategico
+    /// La fitness è garantita monotona crescente con lo score
     pub fn fitness(&self, _grid: &GridDimensions) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
 
-        // ── Path Progress con peso longevità ──────────────────────────────────
-        // Prevents 'die immediately → max ratio' exploit
-        // frames=1 → longevity≈0.02, frames=50 → 0.63, frames=150 → 0.95
-        let avg_ratio = (self.path_progress_sum / self.frames_survived as f32).clamp(0.0, 1.0);
-        let longevity = 1.0 - (-(self.frames_survived as f32) / 80.0).exp();
-        let path_progress = avg_ratio * longevity; // [0, 1]
+        let frames = self.frames_survived as f32;
+        let score = self.score as f32;
 
-        // ── Score = 0: segnale puro di navigazione ─────────────────────────────
-        // Max ≈ 400 (richiede lunga sopravvivenza + buon progresso)
-        if self.score == 0 {
-            return path_progress * 400.0;
-        }
+        // ── 1. Navigazione ─────────────────────────────────────────────
+        // Attiva sempre, anche a score=0. Guida il serpente verso il cibo.
+        let longevity = 1.0 - (-frames / 80.0).exp();
+        let avg_ratio = (self.path_progress_sum / frames).clamp(0.0, 1.0);
+        let nav = avg_ratio * longevity * 300.0;
 
-        // ── Score > 0 ──────────────────────────────────────────────────────────
-        let avg_efficiency = (self.path_directness_sum / self.score as f32).clamp(0.0, 1.0);
+        // ── 2. Score grezzo ─────────────────────────────────────────────
+        // powf(1.2): super-lineare, garantisce che ogni mela aggiuntiva
+        // valga sempre *più* della precedente. Non satura mai.
+        let raw_score = score.powf(1.2) * 250.0;
 
-        // Ricompensa SINERGICA: score × efficiency
-        // Un serpente efficiente scala molto meglio di uno che mangia a caso
-        // score=1 eff=0.1 → 100  |  score=1 eff=1.0 → 1000
-        // score=5 eff=0.5 → 2500 |  score=5 eff=1.0 → 5000
-        let eating_reward = self.score as f32 * avg_efficiency * 1000.0;
+        // ── 3. Efficienza cumulata ──────────────────────────────────────
+        // path_directness_sum = Σ(eff_i) per ogni mela mangiata.
+        // Nessuna divisione per score → nessun NaN a score=0, nessun if.
+        // Cresce con ogni mela (quantità) e premia traiettorie dirette (qualità).
+        // Con score alto il suo peso relativo diminuisce naturalmente perché
+        // raw_score cresce più velocemente — senza decay esplicito.
+        let eff_bonus = self.path_directness_sum * 500.0;
 
-        // Small raw score bonus: even inefficient eating has value
-        // Scala con sqrt per smorzare la crescita (evita che domini sull'efficienza)
-        let raw_score_bonus = (self.score as f32).sqrt() * 150.0;
+        // ── 4. Sopravvivenza ────────────────────────────────────────────
+        // ln(score+1): cresce senza saturare, vale 0 a score=0 (corretto:
+        // sopravvivere a lungo senza mangiare nulla non è un risultato).
+        let surv = frames.sqrt() * (score + 1.0).ln() * 60.0;
 
-        // Path progress: stessa scala del ramo score=0 (continuità al confine)
-        let progress_bonus = path_progress * 400.0;
+        // ── 5. Esplorazione ─────────────────────────────────────────────
+        // Peso basso: tiebreaker per MAP-Elites, non obiettivo primario.
+        // sqrt(score+1): diventa rilevante solo con serpenti di media lunghezza.
+        let expl = self.spatial_spread() * (score + 1.0).sqrt() * 80.0;
 
-        eating_reward + raw_score_bonus + progress_bonus
+        nav + raw_score + eff_bonus + surv + expl
     }
 }
 
