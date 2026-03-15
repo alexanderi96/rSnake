@@ -49,8 +49,8 @@ use plugins::ui::{
 use snake::{
     bfs_distance, calculate_grid_dimensions, get_current_17_state, AppStartTime, CollisionSettings,
     ContinuousMode, Food, GameConfig, GameState, GameStats, GenerationSeed, GlobalTrainingHistory,
-    GridDimensions, GridMap, MeshCache, ParallelConfig, Position, RenderConfig, RunDirectory,
-    SnakeId, TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
+    GridDimensions, GridMap, MeshCache, ParallelConfig, PerformanceTuner, Position, RenderConfig,
+    RunDirectory, SnakeId, TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
 
 /// CLI Arguments
@@ -183,11 +183,13 @@ fn main() {
         // Two-phase parallel simulation: compute moves (parallel) then apply (serial)
         .insert_resource(ComputedMoves::default())
         .insert_resource(snake::SimStepsPerFrame::default())
+        .insert_resource(PerformanceTuner::default())
         .add_systems(
             Update,
             (
                 compute_moves_parallel,
                 apply_moves_serial.after(compute_moves_parallel),
+                dynamic_performance_tuner.after(apply_moves_serial),
                 log_diagnostics_periodic,
             ),
         )
@@ -538,7 +540,7 @@ fn apply_moves_serial(
     mut grid_map: ResMut<GridMap>,
     grid: Res<GridDimensions>,
     mut computed: ResMut<ComputedMoves>,
-    config: Res<Hyperparameters>,
+    mut config: ResMut<Hyperparameters>,
     mut evo_manager: ResMut<EvolutionManager>,
     mut global_history: ResMut<GlobalTrainingHistory>,
     mut gen_seed: ResMut<GenerationSeed>,
@@ -757,6 +759,17 @@ fn apply_moves_serial(
                     }
                 }
 
+                // Continuous mode highscore save
+                let snake_fitness = snake.fitness(&grid);
+                if snake_fitness as u32 > global_history.all_time_high_score {
+                    global_history.all_time_high_score = snake_fitness as u32;
+                    evo_manager.save_archive();
+                    eprintln!(
+                        "[SAVE] Continuous — new high fitness: {:.3} — archive saved.",
+                        snake_fitness
+                    );
+                }
+
                 // Incrementa contatori
                 continuous_mode.replacement_count += 1;
                 continuous_mode.replacements_since_seed += 1;
@@ -808,7 +821,13 @@ fn apply_moves_serial(
         // Logica batch originale (solo se NON continuous o se tutti morti in batch mode)
         if !continuous_mode.enabled && game.alive_count() == 0 {
             game_stats.total_games_played += game.snakes.len() as u64;
-            end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
+            end_generation(
+                &mut game,
+                &mut evo_manager,
+                &mut global_history,
+                &grid,
+                &mut config,
+            );
 
             let new_seed = GenerationSeed::new_for_grid_with_config(&grid, &config);
             grid_map.apply_terrain(&new_seed.terrain);
@@ -860,12 +879,80 @@ fn apply_moves_serial(
     computed.0 = Vec::new();
 }
 
+/// Dynamic performance tuner system - adjusts simulation speed and population based on frame time
+fn dynamic_performance_tuner(
+    time: Res<Time>,
+    mut tuner: ResMut<PerformanceTuner>,
+    mut sim_steps: ResMut<snake::SimStepsPerFrame>,
+    mut hyperparams: ResMut<Hyperparameters>,
+    mut game_state: ResMut<GameState>,
+    continuous_mode: Res<ContinuousMode>,
+) {
+    // Always update EMA regardless of enabled state (needed for UI display)
+    let current_ms = time.delta().as_secs_f64() * 1000.0;
+    tuner.ema_frame_ms =
+        tuner.ema_alpha * current_ms + (1.0 - tuner.ema_alpha) * tuner.ema_frame_ms;
+
+    if !tuner.enabled {
+        return;
+    }
+
+    tuner.frames_since_last_adjust += 1;
+    if tuner.frames_since_last_adjust < tuner.cooldown_frames {
+        return;
+    }
+    tuner.frames_since_last_adjust = 0;
+
+    let over_budget = tuner.ema_frame_ms > tuner.target_frame_ms * 1.10;
+    let under_budget = tuner.ema_frame_ms < tuner.target_frame_ms * 0.75;
+
+    if over_budget {
+        if tuner.prefer_steps_first && sim_steps.0 > tuner.min_steps {
+            sim_steps.0 = (sim_steps.0 - 1).max(tuner.min_steps);
+        } else if hyperparams.population_size > tuner.min_population {
+            let new_pop = (hyperparams.population_size - 10).max(tuner.min_population);
+            apply_or_schedule_resize(&mut game_state, &mut hyperparams, new_pop, &continuous_mode);
+        }
+    } else if under_budget {
+        if tuner.prefer_steps_first && sim_steps.0 < tuner.max_steps {
+            sim_steps.0 = (sim_steps.0 + 1).min(tuner.max_steps);
+        } else if hyperparams.population_size < tuner.max_population {
+            let new_pop = (hyperparams.population_size + 10).min(tuner.max_population);
+            apply_or_schedule_resize(&mut game_state, &mut hyperparams, new_pop, &continuous_mode);
+        }
+    }
+}
+
+/// Helper to apply or schedule population resize based on mode
+fn apply_or_schedule_resize(
+    game_state: &mut GameState,
+    hyperparams: &mut Hyperparameters,
+    new_size: usize,
+    continuous_mode: &ContinuousMode,
+) {
+    if continuous_mode.enabled {
+        // Safe to resize immediately in continuous mode
+        game_state.resize_population_to(new_size, hyperparams);
+        hyperparams.population_size = new_size;
+    } else {
+        // In batch mode: apply at next generation boundary only
+        game_state.pending_population_size = Some(new_size);
+    }
+}
+
 fn end_generation(
     game: &mut GameState,
     evo_manager: &mut EvolutionManager,
     global_history: &mut GlobalTrainingHistory,
     grid: &GridDimensions,
+    hyperparams: &mut Hyperparameters,
 ) {
+    // Apply pending population resize at generation boundary
+    if let Some(new_size) = game.pending_population_size.take() {
+        hyperparams.population_size = new_size;
+        game.resize_population_to(new_size, hyperparams);
+    }
+
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
@@ -883,8 +970,19 @@ fn end_generation(
     let mut record = evo_manager.end_generation();
     record.generation_high_score = gen_high_score;
 
+    // Highscore-driven save (batch mode)
     if gen_high_score > global_history.all_time_high_score {
         global_history.all_time_high_score = gen_high_score;
+        evo_manager.save_archive();
+        eprintln!(
+            "[SAVE] New all-time high score: {} — archive saved.",
+            gen_high_score
+        );
+    }
+
+    // Safety-net fallback (every 500 generations)
+    if evo_manager.current_generation() % 500 == 0 {
+        evo_manager.save_archive();
     }
 
     global_history.push(record.clone());

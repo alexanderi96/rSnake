@@ -54,6 +54,55 @@ impl Default for SimStepsPerFrame {
     }
 }
 
+/// Dynamic performance tuner for automatic adjustment of simulation speed
+#[derive(Resource)]
+pub struct PerformanceTuner {
+    /// Enable/disable the auto-tuner entirely
+    pub enabled: bool,
+
+    /// Target frame time budget in ms (tuner tries to stay under this)
+    pub target_frame_ms: f64,
+
+    /// Exponential moving average of recent frame times (ms) — updated every frame
+    pub ema_frame_ms: f64,
+
+    /// EMA smoothing factor (higher = reacts faster). Range: 0.01–0.5
+    pub ema_alpha: f64,
+
+    /// Frames to wait between adjustments (prevents thrashing)
+    pub cooldown_frames: u32,
+    pub frames_since_last_adjust: u32,
+
+    /// Bounds for SimStepsPerFrame auto-adjustment
+    pub min_steps: u32,
+    pub max_steps: u32,
+
+    /// Bounds for population_size auto-adjustment
+    pub min_population: usize,
+    pub max_population: usize,
+
+    /// If true, prefers adjusting steps before population (lower overhead)
+    pub prefer_steps_first: bool,
+}
+
+impl Default for PerformanceTuner {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            target_frame_ms: 14.0,
+            ema_frame_ms: 14.0,
+            ema_alpha: 0.1,
+            cooldown_frames: 30,
+            frames_since_last_adjust: 0,
+            min_steps: 1,
+            max_steps: 64,
+            min_population: 50,
+            max_population: 2000,
+            prefer_steps_first: true,
+        }
+    }
+}
+
 /// Configurazione parallelism - snake_count separato dai core CPU
 #[derive(Resource, Clone)]
 #[allow(dead_code)]

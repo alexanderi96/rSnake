@@ -35,6 +35,8 @@ pub struct BrainInspectorState {
     pub active_tab: InspectorTab,
     /// Target snake ID to follow (for auto-selection)
     pub follow_snake_id: Option<usize>,
+    /// VSync enabled state (for Performance tab display)
+    pub vsync_enabled: bool,
 }
 
 impl Default for BrainInspectorState {
@@ -43,6 +45,7 @@ impl Default for BrainInspectorState {
             panel_visible: true,
             active_tab: InspectorTab::Sensors,
             follow_snake_id: Some(0), // Default to first snake
+            vsync_enabled: false,     // Default to no VSync (AutoNoVsync)
         }
     }
 }
@@ -54,6 +57,7 @@ pub enum InspectorTab {
     MapElites,
     Graph,
     Stats,
+    Performance,
 }
 
 // ============================================================================
@@ -84,6 +88,7 @@ impl Plugin for BrainInspectorPlugin {
             .add_plugins(ui::InspectorUiPlugin)
             .add_plugins(gizmos::InspectorGizmoPlugin)
             .add_systems(Update, inspector_input_system)
+            .add_systems(Update, performance_tab_input)
             .add_systems(Update, (handle_agent_death_and_switch, update_sensor_cache));
     }
 }
@@ -158,6 +163,10 @@ fn inspector_input_system(
         inspector_state.active_tab = InspectorTab::Stats;
         println!("[INSPECTOR] Tab: Stats");
     }
+    if keyboard_input.just_pressed(KeyCode::KeyE) {
+        inspector_state.active_tab = InspectorTab::Performance;
+        println!("[INSPECTOR] Tab: Performance");
+    }
 
     // Agent selection with number keys (0-9)
     // Skip 1 and 2 as they're used for view switching
@@ -206,6 +215,29 @@ fn inspector_input_system(
                 "hidden"
             }
         );
+    }
+
+    // Performance tab controls (only when on Performance tab)
+    if inspector_state.active_tab == InspectorTab::Performance {
+        // [A] Toggle autotuner
+        if keyboard_input.just_pressed(KeyCode::KeyA) {
+            // Toggle will be handled by separate system with tuner resource access
+        }
+
+        // [Q] Toggle VSync
+        if keyboard_input.just_pressed(KeyCode::KeyQ) {
+            inspector_state.vsync_enabled = !inspector_state.vsync_enabled;
+            // Note: Runtime VSync toggle requires window resourcemutability
+            // For now, just track the state - could be applied on next app start
+            println!(
+                "[PERF] VSync toggle: {} (toggle present_mode requires restart)",
+                if inspector_state.vsync_enabled {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+            );
+        }
     }
 }
 
@@ -393,6 +425,107 @@ fn find_next_alive_snake(
 
     // No alive snakes found
     None
+}
+
+/// Handle Performance tab input - tuner adjustments
+fn performance_tab_input(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    inspector_state: Res<BrainInspectorState>,
+    mut tuner: ResMut<crate::snake::PerformanceTuner>,
+    mut hyperparams: ResMut<crate::config::Hyperparameters>,
+    mut game_state: ResMut<crate::snake::GameState>,
+    continuous_mode: Res<crate::snake::ContinuousMode>,
+) {
+    // Only process if on Performance tab
+    if inspector_state.active_tab != InspectorTab::Performance {
+        return;
+    }
+
+    // [A] Toggle autotuner enabled
+    if keyboard_input.just_pressed(KeyCode::KeyA) {
+        tuner.enabled = !tuner.enabled;
+        println!(
+            "[PERF] Auto-tuner: {}",
+            if tuner.enabled { "ENABLED" } else { "DISABLED" }
+        );
+    }
+
+    // [U/D] Target frame budget +/- 1ms (range 4-33ms)
+    if keyboard_input.just_pressed(KeyCode::KeyU) {
+        tuner.target_frame_ms = (tuner.target_frame_ms + 1.0).min(33.0);
+        println!("[PERF] Target: {:.1} ms", tuner.target_frame_ms);
+    }
+    if keyboard_input.just_pressed(KeyCode::KeyD) {
+        tuner.target_frame_ms = (tuner.target_frame_ms - 1.0).max(4.0);
+        println!("[PERF] Target: {:.1} ms", tuner.target_frame_ms);
+    }
+
+    // [J/W] EMA alpha +/- 0.01 (range 0.01-0.5)
+    if keyboard_input.just_pressed(KeyCode::KeyJ) {
+        tuner.ema_alpha = (tuner.ema_alpha + 0.01).min(0.5);
+        println!("[PERF] EMA alpha: {:.2}", tuner.ema_alpha);
+    }
+    if keyboard_input.just_pressed(KeyCode::KeyW) {
+        tuner.ema_alpha = (tuner.ema_alpha - 0.01).max(0.01);
+        println!("[PERF] EMA alpha: {:.2}", tuner.ema_alpha);
+    }
+
+    // [X/Z] Cooldown frames +/- 5 (range 5-300)
+    if keyboard_input.just_pressed(KeyCode::KeyX) {
+        tuner.cooldown_frames = (tuner.cooldown_frames + 5).min(300);
+        println!("[PERF] Cooldown: {} frames", tuner.cooldown_frames);
+    }
+    if keyboard_input.just_pressed(KeyCode::KeyZ) {
+        tuner.cooldown_frames = tuner.cooldown_frames.saturating_sub(5).max(5);
+        println!("[PERF] Cooldown: {} frames", tuner.cooldown_frames);
+    }
+
+    // [;/'] Population +/- 10
+    if keyboard_input.just_pressed(KeyCode::Semicolon) {
+        let new_pop = (hyperparams.population_size + 10).min(tuner.max_population);
+        if continuous_mode.enabled {
+            hyperparams.population_size = new_pop;
+            game_state.resize_population_to(new_pop, &hyperparams);
+        } else {
+            game_state.pending_population_size = Some(new_pop);
+        }
+        println!("[PERF] Population: {}", new_pop);
+    }
+    if keyboard_input.just_pressed(KeyCode::Quote) {
+        let new_pop = hyperparams
+            .population_size
+            .saturating_sub(10)
+            .max(tuner.min_population);
+        if continuous_mode.enabled {
+            hyperparams.population_size = new_pop;
+            game_state.resize_population_to(new_pop, &hyperparams);
+        } else {
+            game_state.pending_population_size = Some(new_pop);
+        }
+        println!("[PERF] Population: {}", new_pop);
+    }
+
+    // [Shift+[/]] Min/Max steps bounds
+    let shift =
+        keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight);
+    if shift && keyboard_input.just_pressed(KeyCode::BracketLeft) {
+        tuner.min_steps = tuner.min_steps.saturating_sub(1).max(1);
+        println!("[PERF] Min steps: {}", tuner.min_steps);
+    }
+    if shift && keyboard_input.just_pressed(KeyCode::BracketRight) {
+        tuner.max_steps = (tuner.max_steps + 1).min(500);
+        println!("[PERF] Max steps: {}", tuner.max_steps);
+    }
+
+    // [Shift+;/' ] Min/Max population bounds
+    if shift && keyboard_input.just_pressed(KeyCode::Semicolon) {
+        tuner.max_population = (tuner.max_population + 10).min(5000);
+        println!("[PERF] Max pop: {}", tuner.max_population);
+    }
+    if shift && keyboard_input.just_pressed(KeyCode::Quote) {
+        tuner.min_population = tuner.min_population.saturating_sub(10).max(10);
+        println!("[PERF] Min pop: {}", tuner.min_population);
+    }
 }
 
 /// Cache sensor state for the inspected agent to avoid recalculation

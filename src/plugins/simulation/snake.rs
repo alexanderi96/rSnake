@@ -452,6 +452,8 @@ pub struct GameState {
     pub high_score: u32,
     pub total_iterations: u32,
     pub snakes: Vec<SnakeInstance>,
+    /// Pending population size to apply at next generation boundary (batch mode)
+    pub pending_population_size: Option<usize>,
 }
 
 impl GameState {
@@ -486,11 +488,97 @@ impl GameState {
             high_score: 0,
             total_iterations: 0,
             snakes,
+            pending_population_size: None,
         }
     }
 
     pub fn alive_count(&self) -> usize {
         self.snakes.iter().filter(|s| !s.is_game_over).count()
+    }
+
+    /// Grow or shrink the snake population to `new_size`.
+    /// Use existing snake initialization logic for new individuals.
+    pub fn resize_population_to(&mut self, new_size: usize, hyperparams: &Hyperparameters) {
+        let current = self.snakes.len();
+        if new_size > current {
+            self.grow_population_to(new_size, hyperparams);
+        } else if new_size < current {
+            self.shrink_population_to(new_size);
+        }
+    }
+
+    /// Append new snakes up to `new_size` using default/random brain initialization.
+    /// Mirror the initialization done in `new_with_behavioral_colors`.
+    pub fn grow_population_to(&mut self, new_size: usize, _hyperparams: &Hyperparameters) {
+        let current = self.snakes.len();
+        if new_size <= current {
+            return;
+        }
+
+        for id in current..new_size {
+            // Use new_with_color with default values (same as new())
+            let new_snake = SnakeInstance::new_with_color(
+                id,
+                // We need grid dimensions - but GameState doesn't store it
+                // Use a default, it will be overridden on reset_with_seed
+                &GridDimensions {
+                    width: 40,
+                    height: 30,
+                },
+                new_size,
+                None,
+                0.5, // parent_courage
+                0.5, // parent_agility
+                0.0, // parent_fitness
+                1.0, // best_fitness
+            );
+            self.snakes.push(new_snake);
+        }
+    }
+
+    /// Remove snakes down to `new_size`.
+    /// Prefer removing dead snakes first; then remove from the tail of the Vec.
+    pub fn shrink_population_to(&mut self, new_size: usize) {
+        let current = self.snakes.len();
+        if new_size >= current {
+            return;
+        }
+
+        // First, remove dead snakes (prefer those at the end since they're likely older)
+        let mut removed = 0;
+        let target_remove = current - new_size;
+
+        // Collect indices of dead snakes in reverse order (from end)
+        let dead_indices: Vec<usize> = self
+            .snakes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_game_over)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Remove dead snakes from the end first to minimize vec reallocation
+        for idx in dead_indices.iter().rev() {
+            if removed >= target_remove {
+                break;
+            }
+            // Remove from the end of the Vec
+            let last_idx = self.snakes.len() - 1;
+            if *idx == last_idx {
+                self.snakes.pop();
+                removed += 1;
+            }
+        }
+
+        // If we still need to remove more, remove from the tail
+        while self.snakes.len() > new_size {
+            self.snakes.pop();
+        }
+
+        // Re-index snake IDs after shrink
+        for (i, snake) in self.snakes.iter_mut().enumerate() {
+            snake.id = i;
+        }
     }
 }
 

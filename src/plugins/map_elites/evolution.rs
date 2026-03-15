@@ -153,12 +153,12 @@ impl EvolutionManager {
             self.history.drain(0..250);
         }
 
-        // Auto-save if needed
-        if self.generation_state.generation % self.config.auto_save_interval == 0 {
-            self.save_archive();
-        }
-
         record
+    }
+
+    /// Get the current generation number
+    pub fn current_generation(&self) -> u32 {
+        self.generation_state.generation
     }
 
     /// Get the current population

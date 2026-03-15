@@ -93,7 +93,7 @@ fn spawn_header(parent: &mut ChildBuilder) {
             ));
 
             header.spawn(TextBundle::from_section(
-                "[S]ensors [M]ap-Elites [G]raph [T]Stats | [←][→] Nav [I]hide",
+                "[S]ens [M]ap [G]raph [T]Stats [E]Perf | [←][→] Nav [I]hide",
                 TextStyle {
                     font_size: 11.0,
                     color: Color::GRAY,
@@ -120,13 +120,14 @@ fn spawn_tab_bar(parent: &mut ChildBuilder, inspector_state: &BrainInspectorStat
         })
         .with_children(|tabs| {
             let tab_names = [
-                (InspectorTab::Sensors, "Sensors (S)", ""),
-                (InspectorTab::MapElites, "Archive (M)", ""),
-                (InspectorTab::Graph, "Graph (G)", ""),
-                (InspectorTab::Stats, "Stats (T)", ""),
+                (InspectorTab::Sensors, "Sens (S)"),
+                (InspectorTab::MapElites, "Maps (M)"),
+                (InspectorTab::Graph, "Graph (G)"),
+                (InspectorTab::Stats, "Stats (T)"),
+                (InspectorTab::Performance, "Perf (E)"),
             ];
 
-            for (tab, name, _desc) in tab_names {
+            for (tab, name) in tab_names {
                 let is_active = inspector_state.active_tab == tab;
                 let bg_color = if is_active {
                     Color::rgb(0.3, 0.5, 0.7)
@@ -136,7 +137,7 @@ fn spawn_tab_bar(parent: &mut ChildBuilder, inspector_state: &BrainInspectorStat
 
                 tabs.spawn(NodeBundle {
                     style: Style {
-                        width: Val::Percent(24.0),
+                        width: Val::Percent(19.0),
                         height: Val::Percent(100.0),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
@@ -149,7 +150,7 @@ fn spawn_tab_bar(parent: &mut ChildBuilder, inspector_state: &BrainInspectorStat
                     tab_node.spawn(TextBundle::from_section(
                         name,
                         TextStyle {
-                            font_size: 13.0,
+                            font_size: 11.0,
                             color: if is_active { Color::WHITE } else { Color::GRAY },
                             ..default()
                         },
@@ -180,6 +181,7 @@ fn spawn_placeholder_content(parent: &mut ChildBuilder) {
 pub struct InspectorContent;
 
 /// Update the inspector content based on active tab and selected agent
+/// Note: Performance tab handled separately via update_performance_tab
 pub fn update_inspector_content(
     mut commands: Commands,
     inspector_state: Res<BrainInspectorState>,
@@ -232,6 +234,7 @@ pub fn update_inspector_content(
                     &global_history,
                     &app_start_time,
                 ),
+                InspectorTab::Performance => spawn_performance_placeholder(parent),
             });
     }
 }
@@ -874,6 +877,545 @@ fn spawn_stats_tab(
 }
 
 // ============================================================================
+// PERFORMANCE TAB
+// ============================================================================
+
+/// Simple placeholder for Performance tab - full content handled separately
+fn spawn_performance_placeholder(parent: &mut ChildBuilder) {
+    parent.spawn(TextBundle::from_section(
+        "Performance Tab\nUse [E] to switch to this tab\n\nSee stats bar for tuner info:\n[AUTO] or [MANUAL] mode",
+        TextStyle {
+            font_size: 12.0,
+            color: Color::GRAY,
+            ..default()
+        },
+    ));
+}
+
+/// Full performance tab with actual data - called when Performance tab is active
+/// This is a separate system to avoid the parameter limit
+pub fn update_performance_tab_content(
+    mut commands: Commands,
+    inspector_state: Res<BrainInspectorState>,
+    panel_visibility: Res<crate::plugins::ui::PanelVisibility>,
+    tuner: Res<crate::snake::PerformanceTuner>,
+    sim_steps: Res<crate::snake::SimStepsPerFrame>,
+    hyperparams: Res<crate::config::Hyperparameters>,
+    continuous_mode: Res<crate::snake::ContinuousMode>,
+    content_query: Query<Entity, With<InspectorContent>>,
+    children_query: Query<&Children>,
+) {
+    // Only run if Performance tab is active and panel is visible
+    if inspector_state.active_tab != InspectorTab::Performance || !panel_visibility.inspector {
+        return;
+    }
+
+    // Only update when state changes
+    if !inspector_state.is_changed() && !tuner.is_changed() {
+        return;
+    }
+
+    // Clear and update content
+    for content_entity in content_query.iter() {
+        if let Ok(children) = children_query.get(content_entity) {
+            for &child in children.iter() {
+                commands.entity(child).despawn_recursive();
+            }
+        }
+
+        commands.entity(content_entity).with_children(|parent| {
+            spawn_performance_tab(
+                parent,
+                &tuner,
+                &sim_steps,
+                &hyperparams,
+                &continuous_mode,
+                inspector_state.vsync_enabled,
+            );
+        });
+    }
+}
+
+/// Spawn the Performance tab content
+fn spawn_performance_tab(
+    parent: &mut ChildBuilder,
+    tuner: &crate::snake::PerformanceTuner,
+    sim_steps: &crate::snake::SimStepsPerFrame,
+    hyperparams: &crate::config::Hyperparameters,
+    continuous_mode: &crate::snake::ContinuousMode,
+    vsync_enabled: bool,
+) {
+    // Section A: Auto-Tuner
+    parent.spawn(TextBundle::from_section(
+        "AUTO-TUNER",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::rgb(0.6, 0.8, 1.0),
+            ..default()
+        },
+    ));
+
+    // Status badge
+    let status_text = if tuner.enabled {
+        "● ENABLED"
+    } else {
+        "○ DISABLED"
+    };
+    let _status_color = if tuner.enabled {
+        Color::rgb(0.2, 0.6, 0.2)
+    } else {
+        Color::rgb(0.5, 0.2, 0.2)
+    };
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Status [A]",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                status_text,
+                TextStyle {
+                    font_size: 11.0,
+                    color: if tuner.enabled {
+                        Color::GREEN
+                    } else {
+                        Color::RED
+                    },
+                    ..default()
+                },
+            ));
+        });
+
+    // EMA frame time
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "EMA frame time",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{:.1} ms", tuner.ema_frame_ms),
+                TextStyle {
+                    font_size: 12.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // Target budget
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Target budget [U/D]",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{:.1} ms", tuner.target_frame_ms),
+                TextStyle {
+                    font_size: 12.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // EMA alpha
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "EMA alpha [J/W]",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{:.2}", tuner.ema_alpha),
+                TextStyle {
+                    font_size: 12.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // Cooldown
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Cooldown [X/Z]",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{} frames", tuner.cooldown_frames),
+                TextStyle {
+                    font_size: 12.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // Spacer
+    parent.spawn(NodeBundle {
+        style: Style {
+            height: Val::Px(10.0),
+            ..default()
+        },
+        ..default()
+    });
+
+    // Section B: Simulation Speed
+    parent.spawn(TextBundle::from_section(
+        "SIMULATION SPEED",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::rgb(0.6, 0.8, 1.0),
+            ..default()
+        },
+    ));
+
+    // Steps per frame (highlighted)
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            background_color: Color::rgb(0.3, 0.5, 0.7).into(),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Steps/frame [[/]]",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{}", sim_steps.0),
+                TextStyle {
+                    font_size: 14.0,
+                    font: Default::default(),
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // Min/Max steps
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Min/Max steps",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{} / {}", tuner.min_steps, tuner.max_steps),
+                TextStyle {
+                    font_size: 12.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // Spacer
+    parent.spawn(NodeBundle {
+        style: Style {
+            height: Val::Px(10.0),
+            ..default()
+        },
+        ..default()
+    });
+
+    // Section C: Population
+    parent.spawn(TextBundle::from_section(
+        "POPULATION",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::rgb(0.6, 0.8, 1.0),
+            ..default()
+        },
+    ));
+
+    // Active snakes (highlighted)
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            background_color: Color::rgb(0.3, 0.5, 0.7).into(),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Active snakes [;/']",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{}", hyperparams.population_size),
+                TextStyle {
+                    font_size: 14.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // Min/Max population
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Min/Max pop",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                format!("{} / {}", tuner.min_population, tuner.max_population),
+                TextStyle {
+                    font_size: 12.0,
+                    color: Color::WHITE,
+                    ..default()
+                },
+            ));
+        });
+
+    // Mode (read-only)
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Mode",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                if continuous_mode.enabled {
+                    "CONTINUOUS"
+                } else {
+                    "BATCH"
+                },
+                TextStyle {
+                    font_size: 12.0,
+                    color: if continuous_mode.enabled {
+                        Color::rgb(0.2, 0.8, 0.4)
+                    } else {
+                        Color::rgb(0.8, 0.6, 0.2)
+                    },
+                    ..default()
+                },
+            ));
+        });
+
+    // Spacer
+    parent.spawn(NodeBundle {
+        style: Style {
+            height: Val::Px(10.0),
+            ..default()
+        },
+        ..default()
+    });
+
+    // Section D: Rendering
+    parent.spawn(TextBundle::from_section(
+        "RENDERING",
+        TextStyle {
+            font_size: 13.0,
+            color: Color::rgb(0.6, 0.8, 1.0),
+            ..default()
+        },
+    ));
+
+    // VSync toggle
+    let vsync_text = if vsync_enabled { "ON" } else { "OFF" };
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "VSync [Q]",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                vsync_text,
+                TextStyle {
+                    font_size: 12.0,
+                    color: if vsync_enabled {
+                        Color::GREEN
+                    } else {
+                        Color::RED
+                    },
+                    ..default()
+                },
+            ));
+        });
+
+    // Render toggle (read from RenderConfig)
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                margin: UiRect::vertical(Val::Px(2.0)),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(TextBundle::from_section(
+                "Render [R]",
+                TextStyle {
+                    font_size: 11.0,
+                    color: Color::GRAY,
+                    ..default()
+                },
+            ));
+            row.spawn(TextBundle::from_section(
+                "ON (see stats)",
+                TextStyle {
+                    font_size: 12.0,
+                    color: Color::GREEN,
+                    ..default()
+                },
+            ));
+        });
+}
+
+// ============================================================================
 // VISIBILITY SYSTEM
 // ============================================================================
 
@@ -914,9 +1456,7 @@ impl Plugin for InspectorUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_inspector_ui)
             .add_systems(Update, update_inspector_visibility)
-            .add_systems(
-                Update,
-                update_inspector_content.after(update_inspector_visibility),
-            );
+            .add_systems(Update, update_inspector_content)
+            .add_systems(Update, update_performance_tab_content);
     }
 }

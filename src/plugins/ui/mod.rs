@@ -301,6 +301,8 @@ pub fn update_stats_ui(
     time: Res<Time>,
     sim_steps: Res<crate::snake::SimStepsPerFrame>,
     continuous_mode: Res<crate::snake::ContinuousMode>,
+    tuner: Res<crate::snake::PerformanceTuner>,
+    hyperparams: Res<crate::config::Hyperparameters>,
 ) {
     // Limit UI updates to ~10Hz
     ui_timer.0.tick(time.delta());
@@ -315,10 +317,20 @@ pub fn update_stats_ui(
             "BATCH".to_string()
         };
 
-        text.sections[0].value = format!(
-            "FPS: {:.0} | Steps: {} | {}",
-            _stats.fps, sim_steps.0, mode_str
-        );
+        // Tuner status line
+        let tuner_str = if tuner.enabled {
+            format!(
+                "[AUTO] EMA:{:.1}ms | Tgt:{:.0}ms | Steps:{} | Pop:{}",
+                tuner.ema_frame_ms, tuner.target_frame_ms, sim_steps.0, hyperparams.population_size
+            )
+        } else {
+            format!(
+                "[MANUAL] Steps:{} | Pop:{}",
+                sim_steps.0, hyperparams.population_size
+            )
+        };
+
+        text.sections[0].value = format!("{} | {}", tuner_str, mode_str);
     }
 }
 
@@ -563,6 +575,7 @@ pub fn on_window_resize_apply(
     config: Option<Res<crate::config::Hyperparameters>>,
     evo_manager: Res<EvolutionManager>,
     mut commands: Commands,
+    mut food_pool: ResMut<FoodPool>,
 ) {
     // Ignore all resizes during Wayland/Hyprland startup window placement
     if debounce.startup_time.elapsed().as_secs_f64() < STARTUP_GRACE_PERIOD_SECS {
@@ -588,8 +601,11 @@ pub fn on_window_resize_apply(
     *grid_map = GridMap::new(new_width, new_height);
 
     // Despawn old cell entities and re-create for new grid size
+    // Only despawn if entity is valid - skip silently if already despawned
     for &entity in cell_map.entities.iter() {
-        commands.entity(entity).despawn();
+        if entity != Entity::from_raw(u32::MAX) {
+            commands.entity(entity).despawn();
+        }
     }
     let cell_count = (new_width * new_height) as usize;
     let default_material = materials.add(Color::rgb(0.05, 0.05, 0.05));
@@ -613,6 +629,30 @@ pub fn on_window_resize_apply(
     cell_map.grid_height = new_height;
     cell_map.rebuilding = true; // Skip next render frame, entities not yet in World
     cell_map.terrain_dirty = true;
+
+    // Sync FoodPool with snake count - despawn excess or create new entities
+    let snake_count = game.snakes.len();
+    while food_pool.entities.len() > snake_count {
+        if let Some(entity) = food_pool.entities.pop() {
+            commands.entity(entity).despawn();
+        }
+    }
+    while food_pool.entities.len() < snake_count {
+        let entity = commands
+            .spawn((
+                MaterialMesh2dBundle {
+                    mesh: mesh_cache.food_mesh.clone().into(),
+                    material: mesh_cache.food_material.clone(),
+                    transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                    visibility: Visibility::Hidden,
+                    ..default()
+                },
+                crate::snake::Food,
+                crate::snake::SnakeId(food_pool.entities.len()),
+            ))
+            .id();
+        food_pool.entities.push(entity);
+    }
 
     // Regenerate seed for new grid, preserving user config if available
     let new_seed = if let Some(ref cfg) = config {
