@@ -727,9 +727,9 @@ pub fn render_system(
     }
 
     // === PHASE 0: Render terrain walls (only when terrain changes) ===
-    const WALL_COLOR: Color = Color::rgb(0.50, 0.22, 0.15);
-    // Dimmed wall color for inspector view (semi-transparent effect via darker color)
-    const WALL_COLOR_DIM: Color = Color::rgb(0.12, 0.06, 0.04);
+    const WALL_COLOR: Color = Color::rgb(0.14, 0.16, 0.22);     // ardesia blu-scuro
+    // inspector view    // Dimmed wall color for inspector view (semi-transparent effect via darker color)
+    const WALL_COLOR_DIM: Color = Color::rgb(0.05, 0.05, 0.08);
 
     // Clear dynamic cells (snakes) but preserve terrain via dirty flag
     cell_map.cells.fill(None);
@@ -774,36 +774,43 @@ pub fn render_system(
     // This ensures consistent color mapping across all time
     let max_fitness = evo_manager.archive.best_fitness.max(1.0);
 
+    // === PHASE 1: Build cell color map ===
     for snake in game.snakes.iter() {
         if snake.is_game_over {
             continue;
         }
 
-        // In inspector mode, skip snakes that are not selected
         if is_inspector_view && selected_snake_id != Some(snake.id) {
             continue;
         }
 
-        // Get REAL-TIME fitness directly from snake
         let snake_fitness = snake.fitness(&grid);
-
-        // Calculate color directly from fitness (normalized)
-        // Low fitness = blue (0,0,1), High fitness = green (0,1,0)
-        let normalized = (snake_fitness / max_fitness).clamp(0.0, 1.0);
-        let fitness_color = Color::rgb(0.0, normalized, 1.0 - normalized);
+        let snake_len = snake.snake.len();
 
         for (seg_idx, pos) in snake.snake.iter().enumerate() {
             let Some(cidx) = cell_map.cell_index(pos.x, pos.y) else {
                 continue;
             };
-            // Head is always white; body uses fitness-based color
+
             let color = if seg_idx == 0 {
-                Color::rgb(1.0, 1.0, 1.0)
+                // Testa: colore pieno dello snake
+                snake.color
             } else {
-                fitness_color
+                // Corpo: gradiente dal colore snake → scuro verso la coda
+                let t = if snake_len > 1 {
+                    seg_idx as f32 / (snake_len - 1) as f32
+                } else {
+                    0.0
+                };
+                // Fade: 100% intensità alla testa, ~12% alla coda
+                let brightness = 1.0 - t * 0.88;
+                Color::rgb(
+                    snake.color.r() * brightness,
+                    snake.color.g() * brightness,
+                    snake.color.b() * brightness,
+                )
             };
-            // Only update if this snake has higher fitness than the current winner
-            // Use < instead of <= to ensure deterministic behavior (first snake wins on tie)
+
             match cell_map.cells[cidx] {
                 Some((_, existing_fitness)) if snake_fitness < existing_fitness => {}
                 _ => {

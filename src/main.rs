@@ -172,6 +172,7 @@ fn main() {
         .add_plugins(EntityCountDiagnosticsPlugin)
         .add_plugins(SystemInformationDiagnosticsPlugin)
         .add_event::<AppExit>()
+        .insert_resource(ClearColor(Color::rgb(0.02, 0.02, 0.035)))
         .insert_resource(args) // Insert CLI args as resource
         .insert_resource(hyperparams)
         .add_plugins(FoodSpawnPlugin)
