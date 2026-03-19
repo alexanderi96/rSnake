@@ -302,11 +302,12 @@ fn setup(
         for g in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
             for b in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
                 palette_colors.push([r, g, b]);
-                palette_handles.push(materials.add(Color::rgb(
-                    r as f32 / 255.0,
-                    g as f32 / 255.0,
-                    b as f32 / 255.0,
-                )));
+                palette_handles.push(materials.add(Color::rgba(
+                                   r as f32 / 255.0,
+                                   g as f32 / 255.0,
+                                   b as f32 / 255.0,
+                                   a as f32 / 255.0,
+                               )));
             }
         }
     }

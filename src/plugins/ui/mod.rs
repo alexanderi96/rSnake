@@ -770,10 +770,6 @@ pub fn render_system(
     // For each occupied cell, keep only the color of the highest-fitness snake.
     // In inspector view: ONLY render selected snake, hide all others completely.
 
-    // Use HISTORICAL best fitness from archive for normalization (not current generation max)
-    // This ensures consistent color mapping across all time
-    let max_fitness = evo_manager.archive.best_fitness.max(1.0);
-
     // === PHASE 1: Build cell color map ===
     for snake in game.snakes.iter() {
         if snake.is_game_over {
