@@ -3,26 +3,16 @@
 //! Renders the 3-dimensional behavioural archive as an interactive voxel cube
 //! using a dedicated render-target + camera isolated on its own RenderLayer.
 //!
-//! Features
-//! ─────────
-//! • Each filled cell → a semi-transparent PBR cube.
-//!   Alpha  = 0.04 + (fitness / max_fitness) * 0.88  (nearly invisible → opaque)
-//!   Colour = rgba(0.1, t, 1-t, alpha)  – same green→blue ramp as the 2-D view.
-//! • Mouse drag in the inspector panel orbits the scene.
-//! • On mouse-release a "magnet" snaps to the nearest canonical view
-//!   (6 face-aligned + 4 isometric corners) if the angle is < ~23°.
-//! • Axis markers + bounding-box edges are rendered inside the 3-D scene,
-//!   so they always rotate with the cube.
+//! Rotation model: trackball — both axes in world space.
+//!   horizontal drag → always Ry (world Y)
+//!   vertical   drag → always Rx (world X = camera right, fixed)
+//!   formula: new = Rx(pitch) * Ry(yaw) * old
 //!
-//! Integration
-//! ───────────
-//! 1. Add `pub mod archive3d;` to `brain_inspector/mod.rs`.
-//! 2. Add `Archive3dPlugin` to your app builder.
-//! 3. In `brain_inspector/ui.rs` → `update_inspector_content` system:
-//!      - Add `archive3d_target: Res<Archive3dTarget>` parameter.
-//!      - Pass `&archive3d_target` to `spawn_map_elites_tab`.
-//! 4. Replace `spawn_map_elites_tab` body with the version at the bottom
-//!    of this file (search "// ── UI INTEGRATION ──").
+//! Axis-lock gizmo rings (Blender-style):
+//!   Hold X → lock rotation to world X axis
+//!   Hold Y → lock rotation to world Y axis
+//!   Hold Z → lock rotation to world Z axis
+//!   Release → back to free trackball
 
 use bevy::{
     input::mouse::{MouseMotion, MouseWheel},
@@ -35,7 +25,7 @@ use bevy::{
         view::RenderLayers,
     },
 };
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
 use super::{BrainInspectorState, InspectorTab};
 use crate::plugins::map_elites::evolution::EvolutionManager;
@@ -45,156 +35,69 @@ use crate::plugins::ui::PanelVisibility;
 // CONSTANTS
 // ============================================================================
 
-/// Isolated render layer – nothing else renders here.
 pub const LAYER: u8 = 3;
-
-/// Dimensions of the off-screen render target (pixels).
 pub const RT_W: u32 = 430;
 pub const RT_H: u32 = 390;
-
-/// Visual half-size of each cell cube.
 pub const CELL_SIZE: f32 = 0.80;
-
-/// Grid step (centre-to-centre distance between adjacent cells).
 pub const CELL_STEP: f32 = 1.05;
-
-/// Perspective FOV (radians). Narrower → less perspective distortion.
 pub const FOV: f32 = 0.50;
-
-/// Camera distance from origin.
 pub const CAM_DIST: f32 = 28.0;
-
-/// Camera min/max distance for zoom limits.
 pub const CAM_DIST_MIN: f32 = 15.0;
 pub const CAM_DIST_MAX: f32 = 200.0;
 
 /// Mouse sensitivity (rad / pixel).
 pub const DRAG_SENS: f32 = 0.006;
-
-/// Mouse wheel zoom sensitivity.
+/// Scroll zoom sensitivity.
 pub const ZOOM_SENS: f32 = 0.15;
+/// Maximum elevation angle (just under 90°).
+const MAX_ELEV: f32 = FRAC_PI_2 * 0.98;
 
-/// cos(angle) threshold to trigger magnetic snap. cos(23°) ≈ 0.921.
-pub const SNAP_COS: f32 = 0.921;
+// ============================================================================
+// DRAG AXIS
+// ============================================================================
 
-/// Slerp speed for snap animation (s⁻¹).
-pub const SNAP_SPEED: f32 = 9.0;
-
-/// Slerp speed while freely rotating (s⁻¹).
-pub const FREE_SPEED: f32 = 22.0;
+#[derive(Default, PartialEq, Clone, Copy, Debug)]
+pub enum DragAxis {
+    #[default]
+    Free,
+    X,
+    Y,
+    Z,
+}
 
 // ============================================================================
 // RESOURCES
 // ============================================================================
 
-/// GPU texture that the archive camera renders into.
-/// Store the handle in the UI's `ImageBundle` to display the result.
 #[derive(Resource)]
 pub struct Archive3dTarget {
     pub image: Handle<Image>,
 }
 
-/// View mode for the 3D archive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ViewMode {
-    /// Free rotation in all directions.
-    FreeRotate,
-    /// Locked perpendicular to a specific face (X+, X-, Y+, Y-, Z+, Z-).
-    LockedToFace,
-}
-
-/// Face indices for locked mode (corresponds to canonical views).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Face {
-    XPos, // +X face
-    XNeg, // -X face
-    YPos, // +Y face (top)
-    YNeg, // -Y face (bottom)
-    ZPos, // +Z face
-    ZNeg, // -Z face
-}
-
-impl Face {
-    /// Get the quaternion that looks at this face from outside the cube.
-    pub fn to_quaternion(self) -> Quat {
-        match self {
-            Face::XPos => Quat::from_rotation_y(-FRAC_PI_2),
-            Face::XNeg => Quat::from_rotation_y(FRAC_PI_2),
-            Face::YPos => Quat::from_rotation_x(FRAC_PI_2),
-            Face::YNeg => Quat::from_rotation_x(-FRAC_PI_2),
-            Face::ZPos => Quat::IDENTITY,
-            Face::ZNeg => Quat::from_rotation_y(PI),
-        }
-    }
-
-    /// Get the display name for this face.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Face::XPos => "X+ (Eff+)",
-            Face::XNeg => "X- (Eff-)",
-            Face::YPos => "Y+ (Danger+)",
-            Face::YNeg => "Y- (Danger-)",
-            Face::ZPos => "Z+ (Spread+)",
-            Face::ZNeg => "Z- (Spread-)",
-        }
-    }
-
-    /// Get the next face when pressing "next" in locked mode.
-    pub fn next(&self) -> Self {
-        match self {
-            Face::XPos => Face::YPos,
-            Face::YPos => Face::ZPos,
-            Face::ZPos => Face::XNeg,
-            Face::XNeg => Face::YNeg,
-            Face::YNeg => Face::ZNeg,
-            Face::ZNeg => Face::XPos,
-        }
-    }
-
-    /// Get the previous face when pressing "previous" in locked mode.
-    pub fn previous(&self) -> Self {
-        match self {
-            Face::XPos => Face::ZNeg,
-            Face::ZPos => Face::YPos,
-            Face::YPos => Face::XPos,
-            Face::XNeg => Face::ZPos,
-            Face::ZNeg => Face::YNeg,
-            Face::YNeg => Face::XNeg,
-        }
-    }
-}
-
-/// Orbit state for the archive cube (shared between input and render systems).
+/// Orbit state.
 #[derive(Resource)]
 pub struct Archive3dOrbit {
-    /// Smoothed current rotation applied to the scene root.
+    /// Authoritative scene rotation.
     pub rotation: Quat,
-    /// Desired orientation – may be ahead of `rotation` during snap.
-    pub target: Quat,
-    /// True while the left mouse button is held inside the panel.
+    /// Approximate elevation for clamping (radians, negative = looking down).
+    pub elevation: f32,
     pub dragging: bool,
-    /// True while animating toward a snap orientation.
-    pub snapping: bool,
-    /// Camera distance (for zoom).
     pub camera_distance: f32,
-    /// Current view mode.
-    pub view_mode: ViewMode,
-    /// Current face when locked.
-    pub locked_face: Face,
+    /// Current drag axis constraint.
+    pub drag_axis: DragAxis,
 }
 
 impl Default for Archive3dOrbit {
     fn default() -> Self {
-        // Pleasant initial view: front-right-top isometric.
-        let q = Quat::from_euler(EulerRot::YXZ, FRAC_PI_4 * 0.85, -0.55, 0.0);
+        let az: f32 = FRAC_PI_4 * 0.85;
+        let el: f32 = -0.55;
+        let rotation = Quat::from_rotation_x(el) * Quat::from_rotation_y(az);
         Self {
-            rotation: q,
-            target: q,
+            rotation,
+            elevation: el,
             dragging: false,
-            snapping: false,
             camera_distance: CAM_DIST,
-            view_mode: ViewMode::FreeRotate,
-            locked_face: Face::ZPos,
+            drag_axis: DragAxis::Free,
         }
     }
 }
@@ -210,14 +113,23 @@ pub struct Archive3dRoot;
 #[derive(Component)]
 pub struct Archive3dCell;
 #[derive(Component)]
-pub struct Archive3dDecor; // axes + bbox edges
+pub struct Archive3dDecor;
+
+/// Marker for the three axis-lock ring gizmos.
+#[derive(Component)]
+pub struct AxisRing(pub DragAxis);
 
 // ============================================================================
 // SETUP
 // ============================================================================
 
-pub fn setup_archive3d(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    // ── render-target texture ──────────────────────────────────────────────
+pub fn setup_archive3d(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    // ── Render target ──────────────────────────────────────────────────────
     let size = Extent3d {
         width: RT_W,
         height: RT_H,
@@ -241,7 +153,7 @@ pub fn setup_archive3d(mut commands: Commands, mut images: ResMut<Assets<Image>>
     img.resize(size);
     let rt = images.add(img);
 
-    // ── camera ────────────────────────────────────────────────────────────
+    // ── Camera ─────────────────────────────────────────────────────────────
     commands.spawn((
         Camera3dBundle {
             camera: Camera {
@@ -250,7 +162,8 @@ pub fn setup_archive3d(mut commands: Commands, mut images: ResMut<Assets<Image>>
                 ..default()
             },
             camera_3d: Camera3d::default(),
-            transform: Transform::from_xyz(0.0, 0.0, CAM_DIST).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(0.0, 0.0, CAM_DIST)
+                .looking_at(Vec3::ZERO, Vec3::Y),
             projection: Projection::Perspective(PerspectiveProjection {
                 fov: FOV,
                 ..default()
@@ -261,7 +174,7 @@ pub fn setup_archive3d(mut commands: Commands, mut images: ResMut<Assets<Image>>
         Archive3dCam,
     ));
 
-    // ── key light ─────────────────────────────────────────────────────────
+    // ── Lights ─────────────────────────────────────────────────────────────
     commands.spawn((
         DirectionalLightBundle {
             directional_light: DirectionalLight {
@@ -270,13 +183,13 @@ pub fn setup_archive3d(mut commands: Commands, mut images: ResMut<Assets<Image>>
                 shadows_enabled: false,
                 ..default()
             },
-            transform: Transform::from_xyz(3.0, 5.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(3.0, 5.0, 4.0)
+                .looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         },
         RenderLayers::layer(LAYER),
     ));
 
-    // ── fill light (opposite side, cooler tint) ───────────────────────────
     commands.spawn((
         DirectionalLightBundle {
             directional_light: DirectionalLight {
@@ -285,17 +198,92 @@ pub fn setup_archive3d(mut commands: Commands, mut images: ResMut<Assets<Image>>
                 shadows_enabled: false,
                 ..default()
             },
-            transform: Transform::from_xyz(-3.0, -2.0, -4.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(-3.0, -2.0, -4.0)
+                .looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         },
         RenderLayers::layer(LAYER),
     ));
 
-    // ── scene rotation root ───────────────────────────────────────────────
+    // ── Scene rotation root ────────────────────────────────────────────────
     commands.spawn((
         SpatialBundle::default(),
         RenderLayers::layer(LAYER),
         Archive3dRoot,
+    ));
+
+    // ── Axis-lock gizmo rings ──────────────────────────────────────────────
+    // Radius slightly outside the bounding box so rings are always visible.
+    let res = crate::plugins::map_elites::GRID_RESOLUTION as f32;
+    let ring_radius = res * CELL_STEP * 0.5 + 2.0;
+    let ring_thickness = 0.14;
+
+    #[allow(deprecated)]
+    let ring_mesh = meshes.add(shape::Torus {
+        radius: ring_radius,
+        ring_radius: ring_thickness,
+        subdivisions_segments: 64,
+        subdivisions_sides: 12,
+    });
+
+    // X ring — red, lives in the YZ plane → rotate 90° around Z
+    commands.spawn((
+        PbrBundle {
+            mesh: ring_mesh.clone(),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(1.0, 0.18, 0.18, 0.80),
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            }),
+            transform: Transform::from_rotation(Quat::from_rotation_z(FRAC_PI_2)),
+            ..default()
+        },
+        RenderLayers::layer(LAYER),
+        Archive3dDecor,
+        AxisRing(DragAxis::X),
+    ));
+
+    // Y ring — green, lives in the XZ plane (identity)
+    commands.spawn((
+        PbrBundle {
+            mesh: ring_mesh.clone(),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(0.18, 1.0, 0.18, 0.80),
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            }),
+            transform: Transform::IDENTITY,
+            ..default()
+        },
+        RenderLayers::layer(LAYER),
+        Archive3dDecor,
+        AxisRing(DragAxis::Y),
+    ));
+
+    // Z ring — blue, lives in the XY plane → rotate 90° around X
+    commands.spawn((
+        PbrBundle {
+            mesh: ring_mesh.clone(),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgba(0.18, 0.45, 1.0, 0.80),
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            }),
+            transform: Transform::from_rotation(Quat::from_rotation_x(FRAC_PI_2)),
+            ..default()
+        },
+        RenderLayers::layer(LAYER),
+        Archive3dDecor,
+        AxisRing(DragAxis::Z),
     ));
 
     commands.insert_resource(Archive3dTarget { image: rt });
@@ -306,14 +294,12 @@ pub fn setup_archive3d(mut commands: Commands, mut images: ResMut<Assets<Image>>
 // CUBE REBUILD
 // ============================================================================
 
-/// Clears and re-spawns archive cells whenever the archive changes.
-/// Also spawns axis arrows and bounding-box edges as part of the 3-D scene.
 pub fn rebuild_archive_cubes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     evo_manager: Res<EvolutionManager>,
-    old_cells: Query<Entity, Or<(With<Archive3dCell>, With<Archive3dDecor>)>>,
+    old_cells: Query<Entity, With<Archive3dCell>>,
     root_q: Query<Entity, With<Archive3dRoot>>,
 ) {
     if !evo_manager.is_changed() {
@@ -333,24 +319,19 @@ pub fn rebuild_archive_cubes(
     let max_fit = archive.best_fitness.max(1.0);
     let half = (res as f32 - 1.0) * CELL_STEP * 0.5;
 
-    // Shared mesh for all cells
     #[allow(deprecated)]
     let cell_mesh: Handle<Mesh> = meshes.add(shape::Cube { size: CELL_SIZE });
 
     let mut children: Vec<Entity> = Vec::with_capacity(archive.filled_cells() + 50);
 
-    // ── archive cells ──────────────────────────────────────────────────────
+    // ── Archive cells ──────────────────────────────────────────────────────
     for (&(x, y, z), ind) in archive.grid.iter() {
         let t = (ind.fitness / max_fit).clamp(0.0, 1.0);
-
-        // Alpha: low-fitness cells are ghostly; high-fitness cells are solid.
         let alpha = 0.04 + t * 0.88;
 
-        // Same hue ramp as the existing 2-D view: (0.1, t, 1-t)
         let mat: Handle<StandardMaterial> = materials.add(StandardMaterial {
             base_color: Color::rgba(0.1, t, 1.0 - t, alpha),
             alpha_mode: AlphaMode::Blend,
-            // Faint emissive so near-zero cells are still barely perceptible.
             emissive: Color::rgba(0.01, t * 0.12, (1.0 - t) * 0.08, 0.0),
             perceptual_roughness: 0.55,
             metallic: 0.05,
@@ -381,7 +362,7 @@ pub fn rebuild_archive_cubes(
         );
     }
 
-    // ── bounding-box edges (12 thin boxes) ────────────────────────────────
+    // ── Bounding-box edges ─────────────────────────────────────────────────
     let edge_mat: Handle<StandardMaterial> = materials.add(StandardMaterial {
         base_color: Color::rgba(0.45, 0.50, 0.75, 0.28),
         alpha_mode: AlphaMode::Blend,
@@ -395,7 +376,6 @@ pub fn rebuild_archive_cubes(
     let edge_len = bbox_half * 2.0;
     let edge_thick = 0.07;
 
-    // 4 edges along X
     #[allow(deprecated)]
     let x_mesh: Handle<Mesh> = meshes.add(shape::Box::new(edge_len, edge_thick, edge_thick));
     for &(sy, sz) in &[(-1.0_f32, -1.0_f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
@@ -406,7 +386,7 @@ pub fn rebuild_archive_cubes(
             Vec3::new(0.0, sy * bbox_half, sz * bbox_half),
         ));
     }
-    // 4 edges along Y
+
     #[allow(deprecated)]
     let y_mesh: Handle<Mesh> = meshes.add(shape::Box::new(edge_thick, edge_len, edge_thick));
     for &(sx, sz) in &[(-1.0_f32, -1.0_f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
@@ -417,7 +397,7 @@ pub fn rebuild_archive_cubes(
             Vec3::new(sx * bbox_half, 0.0, sz * bbox_half),
         ));
     }
-    // 4 edges along Z
+
     #[allow(deprecated)]
     let z_mesh: Handle<Mesh> = meshes.add(shape::Box::new(edge_thick, edge_thick, edge_len));
     for &(sx, sy) in &[(-1.0_f32, -1.0_f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
@@ -429,13 +409,11 @@ pub fn rebuild_archive_cubes(
         ));
     }
 
-    // ── axis arrows (thin colored elongated boxes) ─────────────────────────
-    // Origin: front-bottom-left corner of the bounding box
+    // ── Axis arrows ────────────────────────────────────────────────────────
     let ax_origin = Vec3::new(-bbox_half, -bbox_half, -bbox_half);
     let ax_len = edge_len * 0.55;
     let ax_thick = 0.18;
 
-    // X = Path Efficiency (red)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -444,7 +422,6 @@ pub fn rebuild_archive_cubes(
         Vec3::new(ax_len, ax_thick, ax_thick),
         Color::rgba(1.0, 0.25, 0.25, 0.90),
     ));
-    // Y = Danger Affinity (green)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -453,7 +430,6 @@ pub fn rebuild_archive_cubes(
         Vec3::new(ax_thick, ax_len, ax_thick),
         Color::rgba(0.25, 1.0, 0.25, 0.90),
     ));
-    // Z = Spatial Spread (blue)
     children.push(spawn_axis_arrow(
         &mut commands,
         &mut meshes,
@@ -517,29 +493,99 @@ fn spawn_axis_arrow(
 }
 
 // ============================================================================
-// ORBIT / MOUSE / KEYBOARD INTERACTION
+// AXIS-LOCK HIGHLIGHT
 // ============================================================================
 
-/// Processes mouse drag, wheel zoom, and keyboard input for the archive cube.
+/// Brighten the active ring, dim the others.
+pub fn update_ring_highlight(
+    orbit: Res<Archive3dOrbit>,
+    mut ring_q: Query<(&AxisRing, &mut Handle<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !orbit.is_changed() {
+        return;
+    }
+
+    for (ring, mat_handle) in ring_q.iter_mut() {
+        let is_active = ring.0 == orbit.drag_axis;
+        if let Some(mat) = materials.get_mut(&*mat_handle) {
+            let (base, alpha) = match ring.0 {
+                DragAxis::X => (Color::rgb(1.0, 0.18, 0.18), if is_active { 1.0 } else { 0.55 }),
+                DragAxis::Y => (Color::rgb(0.18, 1.0, 0.18), if is_active { 1.0 } else { 0.55 }),
+                DragAxis::Z => (Color::rgb(0.18, 0.45, 1.0), if is_active { 1.0 } else { 0.55 }),
+                DragAxis::Free => (Color::WHITE, 0.55),
+            };
+            mat.base_color = base.with_a(alpha);
+            // Glow when active
+            mat.emissive = if is_active {
+                match ring.0 {
+                    DragAxis::X => Color::rgba(0.6, 0.0, 0.0, 0.0),
+                    DragAxis::Y => Color::rgba(0.0, 0.6, 0.0, 0.0),
+                    DragAxis::Z => Color::rgba(0.0, 0.1, 0.6, 0.0),
+                    DragAxis::Free => Color::BLACK,
+                }
+            } else {
+                Color::BLACK
+            };
+        }
+    }
+}
+
+// ============================================================================
+// AXIS-LOCK HOTKEYS
+// ============================================================================
+
+/// X / Y / Z keys lock the drag axis while held.
+/// Releasing the key (when not currently dragging) resets to Free.
+pub fn set_drag_axis(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut orbit: ResMut<Archive3dOrbit>,
+    panel_visibility: Res<PanelVisibility>,
+    inspector_state: Res<BrainInspectorState>,
+) {
+    // Only active when the MAP-Elites tab is open
+    if !panel_visibility.inspector || inspector_state.active_tab != InspectorTab::MapElites {
+        return;
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyX) {
+        orbit.drag_axis = DragAxis::X;
+    } else if keyboard.just_pressed(KeyCode::KeyY) {
+        orbit.drag_axis = DragAxis::Y;
+    } else if keyboard.just_pressed(KeyCode::KeyZ) {
+        orbit.drag_axis = DragAxis::Z;
+    }
+
+    // Reset to free when key is released and mouse is not held
+    let axis_key_released = keyboard.just_released(KeyCode::KeyX)
+        || keyboard.just_released(KeyCode::KeyY)
+        || keyboard.just_released(KeyCode::KeyZ);
+
+    if axis_key_released && !orbit.dragging {
+        orbit.drag_axis = DragAxis::Free;
+    }
+}
+
+// ============================================================================
+// ORBIT INPUT
+// ============================================================================
+
 pub fn update_archive3d_orbit(
     mut orbit: ResMut<Archive3dOrbit>,
     mut root_q: Query<&mut Transform, With<Archive3dRoot>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
     mut mouse_motion: EventReader<MouseMotion>,
     mut mouse_wheel: EventReader<MouseWheel>,
     windows: Query<&Window>,
     panel_visibility: Res<PanelVisibility>,
     inspector_state: Res<BrainInspectorState>,
-    time: Res<Time>,
 ) {
-    // Always drain the event queues.
+    // Always drain events to avoid stale accumulation.
     let mut delta = Vec2::ZERO;
     for ev in mouse_motion.read() {
         delta += ev.delta;
     }
-
-    let mut wheel_delta = 0.0;
+    let mut wheel_delta = 0.0_f32;
     for ev in mouse_wheel.read() {
         wheel_delta += ev.y;
     }
@@ -552,157 +598,74 @@ pub fn update_archive3d_orbit(
         return;
     };
 
-    // Inspector panel: right edge at window.width()-10, width = 480px.
     let panel_x_min = window.width() - 10.0 - 480.0;
     let cursor_in_panel = window
         .cursor_position()
         .map(|p| p.x >= panel_x_min)
         .unwrap_or(false);
 
-    // ── keyboard input for mode toggle and face navigation ──
-    // Toggle mode: 'V' = Toggle view mode (free/locked)
-    if keyboard_input.just_pressed(KeyCode::KeyV) {
-        match orbit.view_mode {
-            ViewMode::FreeRotate => {
-                orbit.view_mode = ViewMode::LockedToFace;
-                orbit.target = orbit.locked_face.to_quaternion();
-                orbit.rotation = orbit.target;
-                orbit.snapping = false;
-                println!(
-                    "[ARCHIVE3D] Mode: Locked to face ({})",
-                    orbit.locked_face.name()
-                );
-            }
-            ViewMode::LockedToFace => {
-                orbit.view_mode = ViewMode::FreeRotate;
-                println!("[ARCHIVE3D] Mode: Free Rotate");
-            }
-        }
+    // ── Zoom ───────────────────────────────────────────────────────────────
+    if wheel_delta != 0.0 && cursor_in_panel {
+        orbit.camera_distance = (orbit.camera_distance
+            - wheel_delta * ZOOM_SENS * orbit.camera_distance)
+            .clamp(CAM_DIST_MIN, CAM_DIST_MAX);
     }
 
-    // Face navigation (only in locked mode): [ and ] keys
-    if orbit.view_mode == ViewMode::LockedToFace {
-        if keyboard_input.just_pressed(KeyCode::BracketRight) {
-            orbit.locked_face = orbit.locked_face.next();
-            orbit.target = orbit.locked_face.to_quaternion();
-            orbit.snapping = true;
-            println!("[ARCHIVE3D] Face: {}", orbit.locked_face.name());
-        }
-        if keyboard_input.just_pressed(KeyCode::BracketLeft) {
-            orbit.locked_face = orbit.locked_face.previous();
-            orbit.target = orbit.locked_face.to_quaternion();
-            orbit.snapping = true;
-            println!("[ARCHIVE3D] Face: {}", orbit.locked_face.name());
-        }
-    }
-
-    // ── mouse wheel zoom (applied via scale of root) ──
-    let current_scale = orbit.camera_distance / 28.0;
-    let target_scale = if wheel_delta != 0.0 && cursor_in_panel {
-        (orbit.camera_distance - wheel_delta * ZOOM_SENS * orbit.camera_distance)
-            .clamp(CAM_DIST_MIN, CAM_DIST_MAX)
-            / 28.0
-    } else {
-        current_scale
-    };
-    orbit.camera_distance = (target_scale * 28.0).clamp(CAM_DIST_MIN, CAM_DIST_MAX);
-
-    // ── drag start / end ──
+    // ── Drag start/end ─────────────────────────────────────────────────────
     if mouse_buttons.just_pressed(MouseButton::Left) && cursor_in_panel {
         orbit.dragging = true;
-        orbit.snapping = false;
     }
-    if mouse_buttons.just_released(MouseButton::Left) && orbit.dragging {
+    if mouse_buttons.just_released(MouseButton::Left) {
         orbit.dragging = false;
-        // Only attempt snap in free-rotate mode
-        if orbit.view_mode == ViewMode::FreeRotate {
-            attempt_snap(&mut orbit);
-        }
+        // Reset axis lock when drag ends
+        orbit.drag_axis = DragAxis::Free;
     }
 
-    // ── apply drag rotation ──
+    // ── Rotation ───────────────────────────────────────────────────────────
     if orbit.dragging && delta.length_squared() > 0.0 {
-        if orbit.view_mode == ViewMode::FreeRotate {
-            // Full free rotation
-            let yaw = Quat::from_rotation_y(-delta.x * DRAG_SENS);
-            let pitch = Quat::from_rotation_x(-delta.y * DRAG_SENS);
-            orbit.target = (yaw * orbit.target * pitch).normalize();
-            orbit.snapping = false;
-        } else {
-            // In locked mode: rotate around Y axis (viewer's vertical)
-            // This orbits around the cube from current viewing angle
-            let yaw = Quat::from_rotation_y(-delta.x * DRAG_SENS * 2.0);
-            orbit.target = (yaw * orbit.target).normalize();
-            orbit.snapping = false;
+        match orbit.drag_axis {
+            DragAxis::Free => {
+                // World-space trackball: yaw (Y) + clamped pitch (X)
+                let yaw_delta = delta.x * DRAG_SENS;
+                let raw_el = orbit.elevation - delta.y * DRAG_SENS;
+                let clamped_el = raw_el.clamp(-MAX_ELEV, MAX_ELEV);
+                let pitch_delta = clamped_el - orbit.elevation;
+                orbit.elevation = clamped_el;
+
+                let yaw = Quat::from_rotation_y(yaw_delta);
+                let pitch = Quat::from_rotation_x(pitch_delta);
+                orbit.rotation = (pitch * yaw * orbit.rotation).normalize();
+            }
+            DragAxis::X => {
+                // Horizontal drag → spin around world X
+                let angle = delta.x * DRAG_SENS;
+                orbit.rotation = (Quat::from_rotation_x(angle) * orbit.rotation).normalize();
+            }
+            DragAxis::Y => {
+                // Horizontal drag → spin around world Y
+                let angle = delta.x * DRAG_SENS;
+                orbit.rotation = (Quat::from_rotation_y(angle) * orbit.rotation).normalize();
+            }
+            DragAxis::Z => {
+                // Horizontal drag → spin around world Z
+                let angle = delta.x * DRAG_SENS;
+                orbit.rotation = (Quat::from_rotation_z(angle) * orbit.rotation).normalize();
+            }
         }
     }
 
-    // ── smooth slerp towards target ──
-    let speed = if orbit.snapping {
-        SNAP_SPEED
-    } else {
-        FREE_SPEED
-    };
-    let alpha = (speed * time.delta_seconds()).min(1.0);
-    orbit.rotation = orbit.rotation.slerp(orbit.target, alpha);
-
-    // Terminate snap when converged.
-    if orbit.snapping && orbit.rotation.dot(orbit.target).abs() > 0.9999 {
-        orbit.rotation = orbit.target;
-        orbit.snapping = false;
-    }
-
-    // ── write to root transform (rotation + scale for zoom) ──
+    // ── Write to root ──────────────────────────────────────────────────────
+    let zoom_scale = orbit.camera_distance / CAM_DIST;
     for mut t in root_q.iter_mut() {
         t.rotation = orbit.rotation;
-        t.scale = Vec3::splat(target_scale);
-    }
-}
-
-/// Checks whether the post-drag orientation is within `SNAP_COS` of any
-/// canonical viewpoint; if so, animates toward it.
-fn attempt_snap(orbit: &mut Archive3dOrbit) {
-    let canonical: [Quat; 10] = [
-        // 6 face-perpendicular views
-        Quat::IDENTITY,
-        Quat::from_rotation_y(PI),
-        Quat::from_rotation_y(FRAC_PI_2),
-        Quat::from_rotation_y(-FRAC_PI_2),
-        Quat::from_rotation_x(-FRAC_PI_2),
-        Quat::from_rotation_x(FRAC_PI_2),
-        // 4 isometric corners
-        Quat::from_euler(EulerRot::YXZ, FRAC_PI_4, -0.6155, 0.0),
-        Quat::from_euler(EulerRot::YXZ, -FRAC_PI_4, -0.6155, 0.0),
-        Quat::from_euler(EulerRot::YXZ, PI + FRAC_PI_4, -0.6155, 0.0),
-        Quat::from_euler(EulerRot::YXZ, PI - FRAC_PI_4, -0.6155, 0.0),
-    ];
-
-    let cur = orbit.target;
-    let best = canonical
-        .iter()
-        .copied()
-        .max_by(|a, b| {
-            cur.dot(*a)
-                .abs()
-                .partial_cmp(&cur.dot(*b).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .unwrap();
-
-    if cur.dot(best).abs() >= SNAP_COS {
-        orbit.target = best;
-        orbit.snapping = true;
+        t.scale = Vec3::splat(zoom_scale);
     }
 }
 
 // ============================================================================
-// ── UI INTEGRATION ──────────────────────────────────────────────────────────
-// Replace the old `spawn_map_elites_tab` in brain_inspector/ui.rs with this.
-// Also add `archive3d_target: Res<crate::brain_inspector::archive3d::Archive3dTarget>`
-// to the `update_inspector_content` system parameters, and forward it below.
+// UI
 // ============================================================================
 
-/// Replacement for `spawn_map_elites_tab` in `brain_inspector/ui.rs`.
 pub fn spawn_map_elites_tab(
     parent: &mut ChildBuilder,
     evo_manager: &crate::plugins::map_elites::evolution::EvolutionManager,
@@ -711,7 +674,7 @@ pub fn spawn_map_elites_tab(
 ) {
     let archive = &evo_manager.archive;
 
-    // ── stats header ──────────────────────────────────────────────────────
+    // Stats header
     parent.spawn(TextBundle::from_section(
         format!(
             "Gen {}  │  Coverage {:.1}%  ({}/{})",
@@ -735,7 +698,7 @@ pub fn spawn_map_elites_tab(
         },
     ));
 
-    // ── axis legend ───────────────────────────────────────────────────────
+    // Axis legend
     parent
         .spawn(NodeBundle {
             style: Style {
@@ -774,24 +737,37 @@ pub fn spawn_map_elites_tab(
             }
         });
 
-    // ── mode indicator ────────────────────────────────────────────────────────
-    let mode_text = match orbit.view_mode {
-        ViewMode::FreeRotate => "[V] Toggle View  |  Drag: rotate  |  Scroll: zoom".to_string(),
-        ViewMode::LockedToFace => format!(
-            "[V] Toggle  |  Drag: orbit  |  [ ]: {}  |  Scroll: zoom",
-            orbit.locked_face.name()
-        ),
+    // Axis lock indicator + controls hint
+    let axis_label = match orbit.drag_axis {
+        DragAxis::Free => "Drag: free rotate  |  Scroll: zoom",
+        DragAxis::X    => "Axis locked: X (red)  |  drag to rotate",
+        DragAxis::Y    => "Axis locked: Y (green)  |  drag to rotate",
+        DragAxis::Z    => "Axis locked: Z (blue)  |  drag to rotate",
+    };
+    let axis_color = match orbit.drag_axis {
+        DragAxis::Free => Color::rgba(0.6, 0.6, 0.6, 0.8),
+        DragAxis::X    => Color::rgba(1.0, 0.4, 0.4, 1.0),
+        DragAxis::Y    => Color::rgba(0.4, 1.0, 0.4, 1.0),
+        DragAxis::Z    => Color::rgba(0.4, 0.6, 1.0, 1.0),
     };
     parent.spawn(TextBundle::from_section(
-        mode_text,
+        axis_label,
         TextStyle {
             font_size: 10.0,
-            color: Color::rgba(0.6, 0.6, 0.6, 0.8),
+            color: axis_color,
+            ..default()
+        },
+    ));
+    parent.spawn(TextBundle::from_section(
+        "Hold [X] [Y] [Z] to lock rotation axis",
+        TextStyle {
+            font_size: 10.0,
+            color: Color::rgba(0.5, 0.5, 0.5, 0.7),
             ..default()
         },
     ));
 
-    // ── 3-D render-target image ───────────────────────────────────────────
+    // 3-D render-target image
     parent.spawn(ImageBundle {
         style: Style {
             width: Val::Px(RT_W as f32),
@@ -803,21 +779,7 @@ pub fn spawn_map_elites_tab(
         ..default()
     });
 
-    // ── hint text ─────────────────────────────────────────────────────────
-    let hint_text = match orbit.view_mode {
-        ViewMode::FreeRotate => "Release near face/corner to snap",
-        ViewMode::LockedToFace => "Drag rotates around face axis",
-    };
-    parent.spawn(TextBundle::from_section(
-        hint_text,
-        TextStyle {
-            font_size: 10.0,
-            color: Color::rgba(0.6, 0.6, 0.6, 0.8),
-            ..default()
-        },
-    ));
-
-    // ── colour scale legend ───────────────────────────────────────────────
+    // Colour scale legend
     parent
         .spawn(NodeBundle {
             style: Style {
@@ -838,7 +800,6 @@ pub fn spawn_map_elites_tab(
                     ..default()
                 },
             ));
-            // Gradient strip (approximated with discrete steps)
             for i in 0..20u8 {
                 let t = i as f32 / 19.0;
                 let alpha = 0.04 + t * 0.88;
@@ -872,6 +833,14 @@ pub struct Archive3dPlugin;
 impl Plugin for Archive3dPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_archive3d)
-            .add_systems(Update, (rebuild_archive_cubes, update_archive3d_orbit));
+            .add_systems(
+                Update,
+                (
+                    rebuild_archive_cubes,
+                    set_drag_axis,
+                    update_archive3d_orbit.after(set_drag_axis),
+                    update_ring_highlight.after(set_drag_axis),
+                ),
+            );
     }
 }

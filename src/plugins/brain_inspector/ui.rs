@@ -179,7 +179,12 @@ fn spawn_placeholder_content(parent: &mut ChildBuilder) {
 #[derive(Component)]
 pub struct InspectorContent;
 
-/// Update the inspector content based on active tab and selected agent
+/// Update the inspector content based on active tab and selected agent.
+///
+/// Trigger conditions:
+/// - `inspector_state` cambia (cambio tab, selezione agente)
+/// - `inspected_agent` cambia (nuovo snake selezionato, morte)
+/// - `global_history` cambia (nuova generazione completata → aggiorna grafo)
 pub fn update_inspector_content(
     mut commands: Commands,
     inspector_state: Res<BrainInspectorState>,
@@ -195,17 +200,24 @@ pub fn update_inspector_content(
     content_query: Query<Entity, With<InspectorContent>>,
     children_query: Query<&Children>,
 ) {
-    // Skip if panel is not visible
+    // Skip se il pannello non è visibile
     if !panel_visibility.inspector {
         return;
     }
 
-    // Only update when state changes
-    if !inspector_state.is_changed() && !inspected_agent.is_changed() {
+    // Ridisegna se cambia qualsiasi risorsa rilevante:
+    // - inspector_state: cambio tab o selezione
+    // - inspected_agent: cambio snake / morte
+    // - global_history: nuova generazione completata (fondamentale per il grafo)
+    let needs_update = inspector_state.is_changed()
+        || inspected_agent.is_changed()
+        || global_history.is_changed();
+
+    if !needs_update {
         return;
     }
 
-    // Clear old content
+    // Clear old content and rebuild
     for content_entity in content_query.iter() {
         if let Ok(children) = children_query.get(content_entity) {
             for &child in children.iter() {
@@ -213,11 +225,12 @@ pub fn update_inspector_content(
             }
         }
 
-        // Spawn new content based on tab
         commands
             .entity(content_entity)
             .with_children(|parent| match inspector_state.active_tab {
-                InspectorTab::Sensors => spawn_sensors_tab(parent, &inspected_agent, &game_state),
+                InspectorTab::Sensors => {
+                    spawn_sensors_tab(parent, &inspected_agent, &game_state)
+                }
                 InspectorTab::MapElites => super::archive3d::spawn_map_elites_tab(
                     parent,
                     &evo_manager,
@@ -443,36 +456,36 @@ fn spawn_sensors_tab(
                         background_color: BackgroundColor(Color::rgba(0.1, 0.1, 0.15, 0.8)),
                         ..default()
                     },))
-                        .with_children(|card| {
-                            // Action name
-                            card.spawn(TextBundle::from_section(
-                                action.to_string(),
-                                TextStyle {
-                                    font_size: 11.0,
-                                    color: action_color,
-                                    ..default()
-                                },
-                            ));
-                            // Value
-                            card.spawn(TextBundle::from_section(
-                                &format!("{:.3}", value),
-                                TextStyle {
-                                    font_size: 14.0,
-                                    color: if is_max { Color::GREEN } else { Color::WHITE },
-                                    ..default()
-                                },
-                            ));
-                            // Progress bar
-                            card.spawn(NodeBundle {
-                                style: Style {
-                                    width: Val::Px(bar_width),
-                                    height: Val::Px(6.0),
-                                    ..default()
-                                },
-                                background_color: BackgroundColor(action_color),
+                    .with_children(|card| {
+                        // Action name
+                        card.spawn(TextBundle::from_section(
+                            action.to_string(),
+                            TextStyle {
+                                font_size: 11.0,
+                                color: action_color,
                                 ..default()
-                            });
+                            },
+                        ));
+                        // Value
+                        card.spawn(TextBundle::from_section(
+                            &format!("{:.3}", value),
+                            TextStyle {
+                                font_size: 14.0,
+                                color: if is_max { Color::GREEN } else { Color::WHITE },
+                                ..default()
+                            },
+                        ));
+                        // Progress bar
+                        card.spawn(NodeBundle {
+                            style: Style {
+                                width: Val::Px(bar_width),
+                                height: Val::Px(6.0),
+                                ..default()
+                            },
+                            background_color: BackgroundColor(action_color),
+                            ..default()
                         });
+                    });
                 }
             });
     } else {
@@ -531,38 +544,34 @@ fn spawn_horizontal_bar(
                 background_color: BackgroundColor(Color::rgba(0.15, 0.15, 0.2, 1.0)),
                 ..default()
             },))
-                .with_children(|track| {
-                    let bar_width = if left_aligned {
-                        Val::Percent(value.clamp(0.0, 1.0) * 100.0)
-                    } else {
-                        // Centered bar: value 0 = center, -1 = left edge, 1 = right edge
-                        let pct = value.clamp(-1.0, 1.0).abs() * 50.0;
-                        Val::Percent(pct)
-                    };
+            .with_children(|track| {
+                let bar_width = if left_aligned {
+                    Val::Percent(value.clamp(0.0, 1.0) * 100.0)
+                } else {
+                    let pct = value.clamp(-1.0, 1.0).abs() * 50.0;
+                    Val::Percent(pct)
+                };
 
-                    // For centered bars: start from center (50%), offset based on sign
-                    // value >= 0: bar extends from center to right
-                    // value < 0: bar extends from center to left
-                    let bar_left = if left_aligned {
-                        Val::Percent(0.0)
-                    } else if value >= 0.0 {
-                        Val::Percent(50.0) // Start at center for positive values
-                    } else {
-                        Val::Percent(50.0 - value.abs() * 50.0) // Offset left for negative
-                    };
+                let bar_left = if left_aligned {
+                    Val::Percent(0.0)
+                } else if value >= 0.0 {
+                    Val::Percent(50.0)
+                } else {
+                    Val::Percent(50.0 - value.abs() * 50.0)
+                };
 
-                    track.spawn((NodeBundle {
-                        style: Style {
-                            position_type: PositionType::Absolute,
-                            left: bar_left,
-                            width: bar_width,
-                            height: Val::Percent(100.0),
-                            ..default()
-                        },
-                        background_color: BackgroundColor(color),
+                track.spawn((NodeBundle {
+                    style: Style {
+                        position_type: PositionType::Absolute,
+                        left: bar_left,
+                        width: bar_width,
+                        height: Val::Percent(100.0),
                         ..default()
-                    },));
-                });
+                    },
+                    background_color: BackgroundColor(color),
+                    ..default()
+                },));
+            });
 
             // Value
             row.spawn(TextBundle::from_section(
@@ -584,19 +593,26 @@ fn spawn_graph_tab(
     parent: &mut ChildBuilder,
     global_history: &crate::snake::GlobalTrainingHistory,
 ) {
+    let all_records: Vec<_> = global_history.all_records().collect();
+
+    // Header con conteggio record per diagnostica
     parent.spawn(TextBundle::from_section(
-        "Fitness History",
+        format!(
+            "Fitness History  ({} history + {} session = {} records)",
+            global_history.history_log.len(),
+            global_history.current_session.len(),
+            all_records.len(),
+        ),
         TextStyle {
-            font_size: 14.0,
+            font_size: 13.0,
             color: Color::WHITE,
             ..default()
         },
     ));
 
-    let all_records: Vec<_> = global_history.all_records().collect();
     if all_records.is_empty() {
         parent.spawn(TextBundle::from_section(
-            "No data yet.",
+            "No data yet — generation records will appear here.",
             TextStyle {
                 font_size: 12.0,
                 color: Color::GRAY,
@@ -878,25 +894,21 @@ fn spawn_stats_tab(
 // ============================================================================
 
 /// Update inspector UI visibility based on state.
-/// Handles panel visibility based on PanelVisibility resource
 pub fn update_inspector_visibility(
     mut commands: Commands,
     inspector_state: Res<BrainInspectorState>,
     panel_visibility: Res<crate::plugins::ui::PanelVisibility>,
     ui_query: Query<Entity, With<BrainInspectorUi>>,
 ) {
-    // Only act when panel_visibility actually changed (avoids work every frame)
     if !panel_visibility.is_changed() {
         return;
     }
 
     let ui_exists = !ui_query.is_empty();
 
-    // Show panel if inspector flag is true and no UI exists
     if panel_visibility.inspector && !ui_exists {
         spawn_inspector_ui(commands, inspector_state);
     } else if !panel_visibility.inspector && ui_exists {
-        // Hide panel
         for entity in ui_query.iter() {
             commands.entity(entity).despawn_recursive();
         }

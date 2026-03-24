@@ -1,6 +1,4 @@
 //! MAP-Elites Snake - Bevy ECS with Evolutionary Algorithm
-//!
-//! A simplified implementation to get things compiling first.
 
 #![recursion_limit = "256"]
 #![allow(clippy::too_many_arguments)]
@@ -52,6 +50,10 @@ use snake::{
     GridDimensions, GridMap, MeshCache, ParallelConfig, Position, RenderConfig, RunDirectory,
     SnakeId, TrainingStats, BASE_STATE_SIZE, BLOCK_SIZE, STATE_SIZE,
 };
+
+/// Colore sfondo — deve corrispondere al ClearColor inserito in main()
+/// Usato anche in ui/mod.rs per il lerp alpha-simulato se necessario.
+pub const BG_COLOR: Color = Color::rgb(0.1, 0.1, 0.1);
 
 /// CLI Arguments
 #[derive(Parser, Debug, Clone, Resource)]
@@ -172,8 +174,9 @@ fn main() {
         .add_plugins(EntityCountDiagnosticsPlugin)
         .add_plugins(SystemInformationDiagnosticsPlugin)
         .add_event::<AppExit>()
-        .insert_resource(ClearColor(Color::rgb(0.02, 0.02, 0.035)))
-        .insert_resource(args) // Insert CLI args as resource
+        // Sfondo quasi-nero con lieve tinta blu-notte
+        .insert_resource(ClearColor(BG_COLOR))
+        .insert_resource(args)
         .insert_resource(hyperparams)
         .add_plugins(FoodSpawnPlugin)
         .add_plugins(plugins::simulation::SimulationPlugin)
@@ -257,20 +260,20 @@ fn setup(
     let run_dir_path = snake::get_or_create_run_dir(args.new_run);
     println!("📂 Run Directory: {}", run_dir_path.display());
 
-    // Store run directory as a resource for other systems (e.g., save on exit)
     commands.insert_resource(RunDirectory(run_dir_path.clone()));
 
     // Create mesh cache and materials
     let mesh_cache = MeshCache {
         segment_mesh: meshes.add(Rectangle::new(BLOCK_SIZE - 2.0, BLOCK_SIZE - 2.0)),
-        food_mesh: meshes.add(Circle::new(BLOCK_SIZE / 2.0)),
-        food_material: materials.add(Color::rgb(1.0, 0.0, 0.0)),
+        food_mesh: meshes.add(Circle::new(BLOCK_SIZE * 0.20)),            // ~4px radius, pellet
+        food_material: materials.add(Color::rgba(1.0, 0.78, 0.10, 0.28)), // oro, molto trasparente
+        food_material_best: materials.add(Color::rgba(1.0, 0.88, 0.25, 0.92)), // oro brillante
     };
 
     // Pre-spawn one entity per grid cell for cell-based rendering
     let cell_count = (grid_width * grid_height) as usize;
     let mut cell_entities = Vec::with_capacity(cell_count);
-    let default_material = materials.add(Color::rgb(0.05, 0.05, 0.05));
+    let default_material = materials.add(Color::rgba(0.05, 0.05, 0.05, 1.0));
     for _ in 0..cell_count {
         let entity = commands
             .spawn(MaterialMesh2dBundle {
@@ -294,30 +297,46 @@ fn setup(
         terrain_dirty: true,
     });
 
-    // Create fixed material palette (512 colors)
+    // ── Material palette con alpha ────────────────────────────────────────────
+    // 4 livelli alpha × 8×8×8 RGB = 2048 entries
+    // Alpha: 255=opaco (testa), 212, 170, 128=50% (coda)
     const PALETTE_STEPS: usize = 8;
-    let mut palette_handles = Vec::new();
-    let mut palette_colors = Vec::new();
-    for r in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
-        for g in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
-            for b in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
-                palette_colors.push([r, g, b]);
-                palette_handles.push(materials.add(Color::rgba(
-                                   r as f32 / 255.0,
-                                   g as f32 / 255.0,
-                                   b as f32 / 255.0,
-                                   a as f32 / 255.0,
-                               )));
+    const ALPHA_LEVELS: [u8; 4] = [255, 212, 170, 96];
+
+    let mut palette_handles: Vec<Handle<ColorMaterial>> = Vec::with_capacity(2048);
+    let mut palette_colors: Vec<[u8; 4]> = Vec::with_capacity(2048);
+
+    for &a in ALPHA_LEVELS.iter() {
+        for r in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
+            for g in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
+                for b in (0..=255u8).step_by(255 / (PALETTE_STEPS - 1)) {
+                    palette_colors.push([r, g, b, a]);
+                    palette_handles.push(materials.add(Color::rgba(
+                        r as f32 / 255.0,
+                        g as f32 / 255.0,
+                        b as f32 / 255.0,
+                        a as f32 / 255.0,
+                    )));
+                }
             }
         }
     }
-    let mut lookup = vec![0usize; 512];
-    for (i, &[r, g, b]) in palette_colors.iter().enumerate() {
+
+    // lookup[ai * 512 + ri*64 + gi*8 + bi] → indice in palette_handles
+    let mut lookup = vec![0usize; 4 * 512];
+    for (i, &[r, g, b, a]) in palette_colors.iter().enumerate() {
+        let ai: usize = match a {
+            212..=255 => 0,
+            170..=211 => 1,
+            128..=169 => 2,
+            _          => 3,
+        };
         let ri = (r as usize * 7 + 127) / 255;
         let gi = (g as usize * 7 + 127) / 255;
         let bi = (b as usize * 7 + 127) / 255;
-        lookup[ri * 64 + gi * 8 + bi] = i;
+        lookup[ai * 512 + ri * 64 + gi * 8 + bi] = i;
     }
+
     commands.insert_resource(MaterialPalette {
         handles: palette_handles,
         colors: palette_colors,
@@ -391,12 +410,8 @@ fn setup(
     );
 
     let mut evo_manager = EvolutionManager::new(hyperparams.clone());
-
-    // 3. Load Archive from Run Directory (Requires update in evolution.rs)
-    // NOTE: You must update EvolutionManager::load_archive to accept a Path/PathBuf
     evo_manager.load_archive(&run_dir_path);
 
-    // 4. MIGRATION FLAG: Reset fitness if requested
     if args.migrate_fitness {
         if !evo_manager.archive.grid.is_empty() {
             println!(
@@ -629,31 +644,21 @@ fn apply_moves_serial(
                     grid_map.is_wall_collision(new_head.x, new_head.y)
                 };
 
-            // BFS-aware timeout: usa la distanza BFS reale invece della dimensione della mappa
             let is_timeout = snake.steps_without_food
                 > config.calculate_timeout_bfs(snake.snake.len(), snake.food_real_distance);
+
             if !is_collision && !is_timeout {
-                // Dense progress signal: calcola PRIMA di incrementare steps
-                // Budget 2x: path perfetto → ratio lineare da 1.0 a 0.5
-                //            path doppio   → ratio arriva a 0.0
-                // Più raggiungibile su terrain senza premiare vagabondaggio
                 let progress_ratio = if snake.food_real_distance > 0 {
                     let par = snake.food_real_distance as f32 * 2.0;
                     ((par - snake.steps_without_food as f32) / par).clamp(0.0, 1.0)
                 } else {
-                    // food_real_distance == 0 solo se la testa è già sul cibo
                     1.0
                 };
                 snake.path_progress_sum += progress_ratio;
-
-                // POI incrementa i contatori
                 snake.steps_without_food += 1;
                 snake.frames_survived += 1;
-
                 snake.visited_cells.insert((new_head.x, new_head.y));
 
-                // Calculate obstacle proximity using raycast sensors (continuous, distance-weighted)
-                // current_17[0..8] contains the 8 raycast obstacle sensors with exponential decay
                 let obstacle_proximity = current_17[0..8].iter().sum::<f32>() / 8.0;
                 snake.obstacle_adjacency_sum += obstacle_proximity;
             }
@@ -664,7 +669,6 @@ fn apply_moves_serial(
                 snake.snake.push_front(new_head);
                 snake.body_set.insert(new_head);
                 if ate_food {
-                    // Calcola efficienza PRIMA di resettare steps_without_food
                     if snake.food_real_distance > 0 && snake.steps_without_food > 0 {
                         let efficiency = (snake.food_real_distance as f32
                             / snake.steps_without_food as f32)
@@ -677,10 +681,7 @@ fn apply_moves_serial(
                         new_high_score = snake.score;
                     }
 
-                    // Calcola la coda (si libererà al prossimo step)
                     let tail = snake.snake.back().copied();
-
-                    // Trova nuovo cibo
                     let zone_center = Some((food_spawn_zone.center.x, food_spawn_zone.center.y));
                     let new_food = gen_seed.food_at_free(
                         snake.score as usize,
@@ -691,7 +692,6 @@ fn apply_moves_serial(
                         food_spawn_zone.radius,
                     );
 
-                    // Calcola distanza BFS reale
                     let real_dist = bfs_distance(
                         new_head,
                         new_food,
@@ -704,9 +704,7 @@ fn apply_moves_serial(
 
                     match real_dist {
                         None => {
-                            // Nessun path verso il cibo → kill immediato
                             snake.is_game_over = true;
-                            // Non aggiornare food, non ha senso
                         }
                         Some(dist) => {
                             snake.food = new_food;
@@ -723,7 +721,6 @@ fn apply_moves_serial(
         }
         game.high_score = new_high_score;
 
-        // Raccogli gli indici degli snake morti PRIMA di processarli
         let dead_snakes: Vec<usize> = game
             .snakes
             .iter()
@@ -732,12 +729,10 @@ fn apply_moves_serial(
             .map(|(i, _)| i)
             .collect();
 
-        // Logica continua: replacement individuale
         if continuous_mode.enabled && !dead_snakes.is_empty() {
             for idx in dead_snakes {
                 let snake = &game.snakes[idx];
 
-                // Calcola fitness per l'individuo morto
                 let mut individual_clone: Option<Individual> = None;
                 if let Some(ind) = evo_manager.get_individual_mut(idx) {
                     ind.fitness = snake.fitness(&grid);
@@ -747,40 +742,30 @@ fn apply_moves_serial(
                     ind.frames_survived = snake.frames_survived;
                     ind.apples_eaten = snake.score;
                     ind.is_alive = false;
-
-                    // Clona per l'archive dopo il borrow
                     individual_clone = Some(ind.clone());
                 }
 
-                // Prova a inserire nell'archive
                 if let Some(ref ind) = individual_clone {
                     if ind.fitness > 0.0 {
                         evo_manager.archive.insert(ind.clone());
                     }
                 }
 
-                // Incrementa contatori
                 continuous_mode.replacement_count += 1;
                 continuous_mode.replacements_since_seed += 1;
                 game_stats.total_games_played += 1;
 
-                // Genera un NUOVO individuo mutato dalla popolazione dell'archive
                 let new_individual = evo_manager.generate_single_individual(idx);
-
-                // Salva il brain nuovo nella risorsa Population
                 let new_brain = Arc::new(new_individual.brain.clone());
                 let archive_color = new_individual.archive_color;
                 let new_fitness = new_individual.fitness;
 
-                // Sostituisci l'individuo nella popolazione dell'EvolutionManager
                 if let Some(ind) = evo_manager.get_individual_mut(idx) {
                     *ind = new_individual;
                 }
 
-                // Aggiorna la Population resource con il nuovo brain
                 population.0[idx] = new_brain;
 
-                // Resetta lo snake con il nuovo individuo
                 let best_fitness = evo_manager.archive.best_fitness.max(1.0);
                 let total_snakes = game.snakes.len();
                 let snake = &mut game.snakes[idx];
@@ -788,15 +773,14 @@ fn apply_moves_serial(
                     &grid,
                     total_snakes,
                     &gen_seed,
-                    new_fitness.max(0.0), // courage
-                    new_fitness.max(0.0), // agility - use fitness as proxy
+                    new_fitness.max(0.0),
+                    new_fitness.max(0.0),
                     new_fitness,
                     best_fitness,
                 );
                 snake.color = archive_color.to_bevy_color();
             }
 
-            // Log di debug ogni N replacement
             if continuous_mode.replacement_count % 50 == 0 {
                 println!(
                     "🔄 Continuous: {:>4} replacements | Coverage: {:.1}% | Gen: {}",
@@ -807,7 +791,6 @@ fn apply_moves_serial(
             }
         }
 
-        // Logica batch originale (solo se NON continuous o se tutti morti in batch mode)
         if !continuous_mode.enabled && game.alive_count() == 0 {
             game_stats.total_games_played += game.snakes.len() as u64;
             end_generation(&mut game, &mut evo_manager, &mut global_history, &grid);
@@ -855,7 +838,6 @@ fn apply_moves_serial(
             }
 
             game.total_iterations += 1;
-            // Continue loop with new snakes - no break needed
         }
     }
 
@@ -881,7 +863,6 @@ fn end_generation(
     }
 
     let gen_high_score = game.snakes.iter().map(|s| s.score).max().unwrap_or(0);
-
     let mut record = evo_manager.end_generation();
     record.generation_high_score = gen_high_score;
 
@@ -891,7 +872,6 @@ fn end_generation(
 
     global_history.push(record.clone());
 
-    // Limit current session records to prevent memory growth
     if global_history.current_session.len() > 10_000 {
         global_history.current_session.drain(0..5_000);
     }

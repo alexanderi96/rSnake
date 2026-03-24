@@ -40,7 +40,7 @@ pub struct HeatmapPanelState {
     pub position: Vec2,
     pub size: Vec2,
     pub needs_redraw: bool,
-    pub last_archive_gen: u32, // Track archive generation changes
+    pub last_archive_gen: u32,
 }
 
 impl Default for HeatmapPanelState {
@@ -48,7 +48,7 @@ impl Default for HeatmapPanelState {
         Self {
             visible: false,
             position: Vec2::new(100.0, 100.0),
-            size: Vec2::new(420.0, 450.0), // Slightly larger for labels
+            size: Vec2::new(420.0, 450.0),
             needs_redraw: true,
             last_archive_gen: 0,
         }
@@ -92,10 +92,10 @@ const STARTUP_GRACE_PERIOD_SECS: f64 = 2.5;
 /// Debounce for window resize events
 #[derive(Resource)]
 pub struct ResizeDebounce {
-    pub pending: Option<(f32, f32)>, // (width, height) waiting
+    pub pending: Option<(f32, f32)>,
     pub last_event_time: std::time::Instant,
-    pub startup_time: std::time::Instant, // when app started
-    pub post_startup_sync_done: bool,     // force one resize after grace period
+    pub startup_time: std::time::Instant,
+    pub post_startup_sync_done: bool,
 }
 
 impl Default for ResizeDebounce {
@@ -150,34 +150,31 @@ pub struct MaterialCache {
     pub cache: HashMap<[u8; 3], Handle<ColorMaterial>>,
 }
 
-/// Fixed material palette to prevent unbounded material allocations
-/// Pre-created at startup - colors are quantized to nearest palette entry
+/// Fixed material palette — 4 alpha levels × 8×8×8 RGB = 2048 entries
+/// Alpha steps: 255 (opaco/testa) → 212 → 170 → 128 (50%/coda)
 #[derive(Resource)]
 pub struct MaterialPalette {
     pub handles: Vec<Handle<ColorMaterial>>,
     #[allow(dead_code)]
-    pub colors: Vec<[u8; 3]>,
-    /// O(1) lookup table: 8×8×8 = 512 entries, index = ri*64 + gi*8 + bi
+    pub colors: Vec<[u8; 4]>,
+    /// lookup[ai * 512 + ri*64 + gi*8 + bi] → palette index
     pub lookup: Vec<usize>,
 }
 
 /// Cell-based render map: one entity per grid cell, pre-spawned.
-/// Each frame only the highest-fitness snake occupying each cell is displayed.
-/// Entity index = y * grid_width + x
 #[derive(Resource)]
 pub struct CellRenderMap {
     /// For each cell: Option<(color, fitness_of_best_snake_here)>
-    /// Indexed by y * grid_width + x. Rebuilt from scratch every frame before rendering.
     pub cells: Vec<Option<(Color, f32)>>,
-    /// Quantized color from previous frame for delta tracking (skip unchanged cells)
-    pub prev_colors: Vec<Option<[u8; 3]>>,
+    /// RGBA color from previous frame for delta tracking
+    pub prev_colors: Vec<Option<[u8; 4]>>,
     /// Pre-spawned Bevy entities — one per grid cell, indexed y*w+x
     pub entities: Vec<Entity>,
     pub grid_width: i32,
     pub grid_height: i32,
-    /// True for exactly 1 frame after entity respawn (Bevy deferred commands not yet applied)
+    /// True for exactly 1 frame after entity respawn
     pub rebuilding: bool,
-    /// True only when terrain changes (new generation or resize) — avoids re-inserting walls every frame
+    /// True only when terrain changes
     pub terrain_dirty: bool,
 }
 
@@ -185,20 +182,20 @@ pub struct CellRenderMap {
 #[allow(dead_code)]
 #[derive(Resource)]
 pub struct PanelVisibility {
-    pub inspector: bool,   // [I] Brain inspector panel
-    pub graph: bool,       // [G] Fitness history graph
-    pub heatmap: bool,     // [B] Map elites heatmap
-    pub leaderboard: bool, // [L] Snake rankings
-    pub keybindings: bool, // [K] Keybindings help
+    pub inspector: bool,
+    pub graph: bool,
+    pub heatmap: bool,
+    pub leaderboard: bool,
+    pub keybindings: bool,
 }
 
 impl Default for PanelVisibility {
     fn default() -> Self {
         Self {
-            inspector: true, // Inspector visible by default
-            graph: true,     // Graph visible by default
+            inspector: true,
+            graph: true,
             heatmap: false,
-            leaderboard: true, // Leaderboard visible by default
+            leaderboard: true,
             keybindings: false,
         }
     }
@@ -218,7 +215,6 @@ impl CellRenderMap {
         }
     }
 
-    /// Get flat index for grid position (x, y), with bounds check
     pub fn cell_index(&self, x: i32, y: i32) -> Option<usize> {
         if x < 0 || x >= self.grid_width || y < 0 || y >= self.grid_height {
             return None;
@@ -257,9 +253,8 @@ impl Plugin for UiPlugin {
         .insert_resource(MaterialCache::default())
         .insert_resource(FoodPool::default())
         .insert_resource(UiUpdateTimer::default())
-        .insert_resource(CellRenderMap::new(0, 0)) // placeholder, re-created in setup
-        .insert_resource(PanelVisibility::default()) // Floating panel visibility
-        // MaterialPalette is created in main.rs setup (needs access to materials asset)
+        .insert_resource(CellRenderMap::new(0, 0))
+        .insert_resource(PanelVisibility::default())
         .add_systems(Update, handle_input)
         .add_systems(Update, handle_continuous_mode_input)
         .add_systems(Update, on_window_resize_collect)
@@ -268,12 +263,13 @@ impl Plugin for UiPlugin {
             on_window_resize_apply.after(on_window_resize_collect),
         )
         .add_systems(Update, render_system.after(on_window_resize_apply))
-        .add_systems(Update, update_stats_ui);
+        .add_systems(Update, update_stats_ui)
+        // Salva su qualsiasi tipo di uscita (Escape, chiusura finestra, Ctrl+C gestito da OS)
+        .add_systems(Last, save_on_exit);
     }
 }
 
 pub fn spawn_stats_ui(mut commands: Commands, _game: Res<GameState>) {
-    // Only FPS + steps in bottom right — everything else is in inspector panel
     commands.spawn((
         TextBundle::from_section(
             "FPS: 0 | Steps: 1 | BATCH",
@@ -302,7 +298,6 @@ pub fn update_stats_ui(
     sim_steps: Res<crate::snake::SimStepsPerFrame>,
     continuous_mode: Res<crate::snake::ContinuousMode>,
 ) {
-    // Limit UI updates to ~10Hz
     ui_timer.0.tick(time.delta());
     if !ui_timer.0.just_finished() {
         return;
@@ -314,7 +309,6 @@ pub fn update_stats_ui(
         } else {
             "BATCH".to_string()
         };
-
         text.sections[0].value = format!(
             "FPS: {:.0} | Steps: {} | {}",
             _stats.fps, sim_steps.0, mode_str
@@ -322,7 +316,44 @@ pub fn update_stats_ui(
     }
 }
 
-// In src/ui.rs
+/// Salva archivio e storia su qualsiasi evento AppExit.
+/// Questo sistema gira nello schedule `Last`, quindi viene eseguito dopo
+/// che handle_input ha emesso AppExit — coprendo Escape, chiusura finestra,
+/// e qualsiasi altro path di uscita.
+pub fn save_on_exit(
+    mut exit_events: EventReader<AppExit>,
+    global_history: Res<GlobalTrainingHistory>,
+    game_stats: Res<GameStats>,
+    app_start_time: Res<AppStartTime>,
+    run_dir: Res<crate::snake::RunDirectory>,
+    evo_manager: Res<EvolutionManager>,
+) {
+    use crate::snake::{new_session_path, save_training_session};
+
+    for _ in exit_events.read() {
+        // 1. Salva l'archivio (genomi)
+        evo_manager.save_archive();
+        println!("💾 Archive saved on exit");
+
+        // 2. Salva la storia generazionale solo se la sessione ha dati
+        if global_history.current_session.is_empty() {
+            println!("ℹ️  No new generation records to save.");
+            return;
+        }
+
+        let session_secs = std::time::Instant::now()
+            .duration_since(app_start_time.0)
+            .as_secs();
+
+        let session_path = new_session_path(&run_dir.0);
+        match save_training_session(&session_path, &global_history, &game_stats, session_secs) {
+            Ok(_) => println!("💾 Session history saved to: {}", session_path.display()),
+            Err(e) => eprintln!("⚠️ Failed to save session history: {}", e),
+        }
+
+        println!("📂 Run directory: {}", run_dir.0.display());
+    }
+}
 
 pub fn handle_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -330,8 +361,6 @@ pub fn handle_input(
     game: Res<GameState>,
     app_start_time: Res<AppStartTime>,
     global_history: Res<GlobalTrainingHistory>,
-    game_stats: Res<GameStats>,
-    evo_manager: ResMut<EvolutionManager>,
     mut window_settings: ResMut<WindowSettings>,
     mut windows: Query<&mut Window>,
     mut collision_settings: ResMut<CollisionSettings>,
@@ -339,15 +368,10 @@ pub fn handle_input(
     mut graph_state: ResMut<GraphPanelState>,
     _heatmap_state: ResMut<HeatmapPanelState>,
     mut pause_state: ResMut<PauseState>,
-    // AGGIUNTA: Recuperiamo la directory della run corrente
-    run_dir: Res<crate::snake::RunDirectory>,
     mut sim_steps: ResMut<crate::snake::SimStepsPerFrame>,
 ) {
-    use crate::snake::{new_session_path, save_training_session}; // Rimosso get_or_create_run_dir non più necessario qui
-    use std::time::Instant;
-
     if keyboard_input.just_pressed(KeyCode::Escape) {
-        let current_session_duration = Instant::now().duration_since(app_start_time.0);
+        let current_session_duration = std::time::Instant::now().duration_since(app_start_time.0);
         let total_training_time =
             std::time::Duration::from_secs(global_history.accumulated_time_secs)
                 + current_session_duration;
@@ -360,32 +384,13 @@ pub fn handle_input(
             current_session_duration.as_secs()
         );
         println!("Total time (runtime): {}s", total_training_time.as_secs());
-
-        // Force save the archive before exit
-        evo_manager.save_archive();
-        println!("💾 Archive saved on exit");
-
-        // Save session data
-        // CORREZIONE 1: Passiamo il path contenuto nella risorsa RunDirectory
-        let session_path = new_session_path(&run_dir.0);
-
-        if let Err(e) = save_training_session(
-            &session_path,
-            &global_history,
-            &game_stats,
-            current_session_duration.as_secs(),
-        ) {
-            eprintln!("⚠️ Error saving session: {}", e);
-        }
-
-        // CORREZIONE 2: Usiamo direttamente il path della risorsa invece di ricalcolarlo
-        println!("Saved to: {}", run_dir.0.display());
+        println!("Session records: {}", global_history.current_session.len());
         println!("====================\n");
 
+        // Il salvataggio effettivo avviene in save_on_exit (schedule Last)
         app_exit_events.send(AppExit);
     }
 
-    // ... (il resto della funzione rimane identico: tasti C, R, G, B, P, F) ...
     if keyboard_input.just_pressed(KeyCode::KeyC) {
         collision_settings.snake_vs_snake = !collision_settings.snake_vs_snake;
         println!(
@@ -412,14 +417,7 @@ pub fn handle_input(
 
     if keyboard_input.just_pressed(KeyCode::KeyP) {
         pause_state.paused = !pause_state.paused;
-        println!(
-            "{}",
-            if pause_state.paused {
-                "PAUSED"
-            } else {
-                "RESUMED"
-            }
-        );
+        println!("{}", if pause_state.paused { "PAUSED" } else { "RESUMED" });
     }
 
     if keyboard_input.just_pressed(KeyCode::KeyF) {
@@ -446,20 +444,17 @@ pub fn handle_input(
     }
 }
 
-/// Task 04: Sistema separato per continuous mode e rigenerazione seed
-/// (handle_input ha troppi parametri per Bevy ECS, quindi usiamo un sistema separato)
 pub fn handle_continuous_mode_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut continuous_mode: ResMut<ContinuousMode>,
     grid: Res<GridDimensions>,
     config: Res<crate::config::Hyperparameters>,
     mut game: ResMut<GameState>,
-    evo_manager: ResMut<EvolutionManager>,
+    evo_manager: Res<EvolutionManager>,
     mut grid_map: ResMut<GridMap>,
     mut gen_seed: ResMut<GenerationSeed>,
     mut cell_map: ResMut<CellRenderMap>,
 ) {
-    // Toggle continuous mode con tasto 'O' (On/Off)
     if keyboard_input.just_pressed(KeyCode::KeyO) {
         continuous_mode.enabled = !continuous_mode.enabled;
         println!(
@@ -469,16 +464,11 @@ pub fn handle_continuous_mode_input(
         );
     }
 
-    // Rigenera seed manualmente con tasto 'N' (N come "New seed")
     if keyboard_input.just_pressed(KeyCode::KeyN) {
-        // Crea nuovo seed
         let new_seed = GenerationSeed::new_for_grid_with_config(&grid, &config);
-
-        // Applica i muri alla mappa
         grid_map.apply_terrain(&new_seed.terrain);
         cell_map.terrain_dirty = true;
 
-        // Resetta tutti gli snake con il nuovo seed
         let individuals = evo_manager.get_population();
         let best_fitness = evo_manager.archive.best_fitness.max(1.0);
         let total_snakes = game.snakes.len();
@@ -496,26 +486,14 @@ pub fn handle_continuous_mode_input(
                 })
                 .unwrap_or((0.0, 0.0, 0.0, 1.0));
 
-            snake.reset_with_seed(
-                &grid,
-                total_snakes,
-                &new_seed,
-                courage,
-                agility,
-                fitness,
-                best,
-            );
+            snake.reset_with_seed(&grid, total_snakes, &new_seed, courage, agility, fitness, best);
             if let Some(ind) = individuals.get(i) {
                 snake.color = ind.archive_color.to_bevy_color();
             }
         }
 
-        // Aggiorna il seed
         *gen_seed = new_seed;
-
-        // Resetta contatore replacements since seed
         continuous_mode.replacements_since_seed = 0;
-
         println!(
             "🔄 NEW SEED: {} replacements since last seed",
             continuous_mode.replacement_count
@@ -529,16 +507,13 @@ pub fn on_window_resize_collect(
     mut debounce: ResMut<ResizeDebounce>,
     windows: Query<&Window>,
 ) {
-    // Discard resize events during startup grace period
     if debounce.startup_time.elapsed().as_secs_f64() < STARTUP_GRACE_PERIOD_SECS {
-        // After grace period ends, do one forced sync if not yet done
         if !debounce.post_startup_sync_done {
             debounce.post_startup_sync_done = true;
             if let Ok(window) = windows.get_single() {
                 debounce.pending = Some((window.width(), window.height()));
                 debounce.last_event_time =
                     std::time::Instant::now() - std::time::Duration::from_millis(600);
-                // already past debounce threshold
             }
         }
         return;
@@ -564,9 +539,8 @@ pub fn on_window_resize_apply(
     evo_manager: Res<EvolutionManager>,
     mut commands: Commands,
 ) {
-    // Ignore all resizes during Wayland/Hyprland startup window placement
     if debounce.startup_time.elapsed().as_secs_f64() < STARTUP_GRACE_PERIOD_SECS {
-        debounce.pending = None; // discard any pending resize
+        debounce.pending = None;
         return;
     }
 
@@ -579,7 +553,6 @@ pub fn on_window_resize_apply(
         return;
     }
 
-    // Apply resize
     debounce.pending = None;
 
     let (new_width, new_height) = crate::snake::calculate_grid_dimensions(w, h);
@@ -587,12 +560,11 @@ pub fn on_window_resize_apply(
     grid.height = new_height;
     *grid_map = GridMap::new(new_width, new_height);
 
-    // Despawn old cell entities and re-create for new grid size
     for &entity in cell_map.entities.iter() {
         commands.entity(entity).despawn();
     }
     let cell_count = (new_width * new_height) as usize;
-    let default_material = materials.add(Color::rgb(0.05, 0.05, 0.05));
+    let default_material = materials.add(Color::rgba(0.02, 0.02, 0.035, 1.0));
     let mut new_entities = Vec::with_capacity(cell_count);
     for _ in 0..cell_count {
         let entity = commands
@@ -611,24 +583,20 @@ pub fn on_window_resize_apply(
     cell_map.prev_colors = vec![None; (new_width * new_height) as usize];
     cell_map.grid_width = new_width;
     cell_map.grid_height = new_height;
-    cell_map.rebuilding = true; // Skip next render frame, entities not yet in World
+    cell_map.rebuilding = true;
     cell_map.terrain_dirty = true;
 
-    // Regenerate seed for new grid, preserving user config if available
     let new_seed = if let Some(ref cfg) = config {
         crate::snake::GenerationSeed::new_for_grid_with_config(&grid, cfg)
     } else {
         crate::snake::GenerationSeed::new_for_grid(&grid)
     };
-    grid_map.apply_terrain(&new_seed.terrain); // apply terrain to resized map
+    grid_map.apply_terrain(&new_seed.terrain);
     let total_snakes = game.snakes.len();
 
-    // Get population for color assignment
     let population = &evo_manager.generation_state.population;
-
     for (idx, snake) in game.snakes.iter_mut().enumerate() {
         snake.reset_with_seed(&grid, total_snakes, &new_seed, 0.0, 0.0, 0.0, 1.0);
-        // Set color from population archive_color (same logic as initial spawn)
         if let Some(ind) = population.get(idx) {
             snake.color = ind.archive_color.to_bevy_color();
         }
@@ -642,16 +610,33 @@ pub fn on_window_resize_apply(
     );
 }
 
-/// Rendering system - cell-based rendering (replaces per-segment entity approach)
+/// Converte la fitness normalizzata [0,1] in un colore RGB.
+///
+/// Gradiente coerente con la visualizzazione 3D dell'archivio:
+///   0.0 → blu scuro  (snake appena nati / fitness bassa)
+///   0.5 → ciano/teal (fitness media)
+///   1.0 → verde lime (top performer)
+///
+/// Usa la stessa formula dei voxel in archive3d.rs (r=0.1, g=t, b=1-t)
+/// più un leggero boost su R per i top performer (t > 0.75) così spiccano.
+#[inline]
+fn fitness_color(t: f32) -> (f32, f32, f32) {
+    let r = (t - 0.75).max(0.0) * 4.0 * 0.9 + 0.1; // ~0.1 finché t < 0.75, poi sale verso 1.0
+    let g = t;
+    let b = 1.0 - t;
+    (r, g, b)
+}
+
+/// Rendering system - cell-based rendering
 pub fn render_system(
     mut commands: Commands,
     game: Res<GameState>,
     grid: Res<GridDimensions>,
-    grid_map: Res<GridMap>, // terrain walls
+    grid_map: Res<GridMap>,
     windows: Query<&Window>,
-    _mesh_cache: Res<MeshCache>,
-    _materials: ResMut<Assets<ColorMaterial>>, // Unused - palette pre-allocates all materials
-    mat_palette: Res<MaterialPalette>,         // Fixed palette - no allocations
+    mesh_cache: Res<MeshCache>,
+    _materials: ResMut<Assets<ColorMaterial>>,
+    mat_palette: Res<MaterialPalette>,
     food_pool: Res<FoodPool>,
     render_config: Res<RenderConfig>,
     mut stats: ResMut<TrainingStats>,
@@ -663,14 +648,12 @@ pub fn render_system(
     #[cfg(feature = "tracy")]
     let _span = tracing::info_span!("render_system").entered();
 
-    // Skip 1 frame after entity rebuild — Bevy deferred commands not yet applied
     if cell_map.rebuilding {
         cell_map.rebuilding = false;
         return;
     }
 
     if !render_config.enabled {
-        // Hide everything when turbo mode is on
         for snake in game.snakes.iter() {
             if let Some(&food_entity) = food_pool.entities.get(snake.id) {
                 commands.entity(food_entity).insert(Visibility::Hidden);
@@ -693,26 +676,17 @@ pub fn render_system(
         return;
     };
 
-    // Usiamo tutta l'altezza della finestra
     let available_height = window.resolution.height();
-
-    // Calcola la dimensione totale in pixel della griglia
     let grid_px_w = cell_map.grid_width as f32 * BLOCK_SIZE;
     let grid_px_h = cell_map.grid_height as f32 * BLOCK_SIZE;
-
-    // Calcola lo spazio rimanente per centrare
     let leftover_x = window.resolution.width() - grid_px_w;
     let leftover_y = available_height - grid_px_h;
-
-    // Centra la griglia dividendo lo spazio rimanente equamente
     let offset_x = -window.resolution.width() / 2.0 + (leftover_x / 2.0) + BLOCK_SIZE / 2.0;
     let offset_y = available_height / 2.0 - (leftover_y / 2.0) - BLOCK_SIZE / 2.0;
 
-    // Inspector mode when panel is visible and an agent is selected
     let is_inspector_view = panel_visibility.inspector && inspected_agent.snake_idx.is_some();
     let selected_snake_id = inspected_agent.snake_idx;
 
-    // In inspector mode: only show food for selected snake, hide all others
     if is_inspector_view {
         for snake in game.snakes.iter() {
             if let Some(&food_entity) = food_pool.entities.get(snake.id) {
@@ -726,12 +700,10 @@ pub fn render_system(
         }
     }
 
-    // === PHASE 0: Render terrain walls (only when terrain changes) ===
-    const WALL_COLOR: Color = Color::rgb(0.14, 0.16, 0.22);     // ardesia blu-scuro
-    // inspector view    // Dimmed wall color for inspector view (semi-transparent effect via darker color)
-    const WALL_COLOR_DIM: Color = Color::rgb(0.05, 0.05, 0.08);
+    // === PHASE 0: Terrain walls ===
+    const WALL_COLOR: Color = Color::rgba(0.14, 0.16, 0.22, 1.0);
+    const WALL_COLOR_DIM: Color = Color::rgba(0.05, 0.05, 0.08, 1.0);
 
-    // Clear dynamic cells (snakes) but preserve terrain via dirty flag
     cell_map.cells.fill(None);
 
     let terrain_wall_color = if is_inspector_view {
@@ -740,75 +712,52 @@ pub fn render_system(
         WALL_COLOR
     };
 
-    if cell_map.terrain_dirty {
-        for y in 0..grid_map.height {
-            for x in 0..grid_map.width {
-                let idx = (y * grid_map.width + x) as usize;
-                if grid_map.terrain[idx] {
-                    if let Some(cidx) = cell_map.cell_index(x, y) {
-                        cell_map.cells[cidx] = Some((terrain_wall_color, f32::INFINITY));
-                    }
-                }
-            }
-        }
-        cell_map.terrain_dirty = false;
-    } else {
-        // Re-insert terrain walls from grid_map (they were cleared by fill(None))
-        for y in 0..grid_map.height {
-            for x in 0..grid_map.width {
-                let idx = (y * grid_map.width + x) as usize;
-                if grid_map.terrain[idx] {
-                    if let Some(cidx) = cell_map.cell_index(x, y) {
-                        cell_map.cells[cidx] = Some((terrain_wall_color, f32::INFINITY));
-                    }
+    for y in 0..grid_map.height {
+        for x in 0..grid_map.width {
+            let idx = (y * grid_map.width + x) as usize;
+            if grid_map.terrain[idx] {
+                if let Some(cidx) = cell_map.cell_index(x, y) {
+                    cell_map.cells[cidx] = Some((terrain_wall_color, f32::INFINITY));
                 }
             }
         }
     }
+    cell_map.terrain_dirty = false;
 
-    // === PHASE 1: Build cell color map ===
-    // For each occupied cell, keep only the color of the highest-fitness snake.
-    // In inspector view: ONLY render selected snake, hide all others completely.
+    // === PHASE 1: Snake con colore live basato sulla fitness attuale ===
+    //
+    // Il colore è calcolato ogni frame da snake.fitness(&grid) / best_fitness:
+    //   blu scuro  (t≈0.0) → fitness bassa, snake appena avviati
+    //   ciano/teal (t≈0.5) → fitness media
+    //   verde lime (t≈1.0) → top performer della generazione corrente
+    //
+    // Questo è coerente col gradiente usato nei voxel 3D dell'archivio,
+    // e rende immediatamente leggibile chi sta performando meglio.
+    let best_fitness = evo_manager.archive.best_fitness.max(1.0);
 
-    // === PHASE 1: Build cell color map ===
     for snake in game.snakes.iter() {
         if snake.is_game_over {
             continue;
         }
-
         if is_inspector_view && selected_snake_id != Some(snake.id) {
             continue;
         }
 
         let snake_fitness = snake.fitness(&grid);
-        let snake_len = snake.snake.len();
 
-        for (seg_idx, pos) in snake.snake.iter().enumerate() {
+        // t ∈ [0,1]: posizione nella scala fitness rispetto al record dell'archivio
+        let t = (snake_fitness / best_fitness).clamp(0.0, 1.0);
+        let (base_r, base_g, base_b) = fitness_color(t);
+
+        for pos in snake.snake.iter() {
             let Some(cidx) = cell_map.cell_index(pos.x, pos.y) else {
                 continue;
             };
 
-            let color = if seg_idx == 0 {
-                // Testa: colore pieno dello snake
-                snake.color
-            } else {
-                // Corpo: gradiente dal colore snake → scuro verso la coda
-                let t = if snake_len > 1 {
-                    seg_idx as f32 / (snake_len - 1) as f32
-                } else {
-                    0.0
-                };
-                // Fade: 100% intensità alla testa, ~12% alla coda
-                let brightness = 1.0 - t * 0.88;
-                Color::rgb(
-                    snake.color.r() * brightness,
-                    snake.color.g() * brightness,
-                    snake.color.b() * brightness,
-                )
-            };
+            let color = Color::rgba(base_r, base_g, base_b, 1.0);
 
             match cell_map.cells[cidx] {
-                Some((_, existing_fitness)) if snake_fitness < existing_fitness => {}
+                Some((_, existing_fitness)) if snake_fitness <= existing_fitness => {}
                 _ => {
                     cell_map.cells[cidx] = Some((color, snake_fitness));
                 }
@@ -816,16 +765,24 @@ pub fn render_system(
         }
     }
 
-    // === PHASE 2: Update cell entities with delta color tracking ===
+    // === PHASE 2: Delta update delle entities ===
     #[inline]
     fn quantize_to_palette_index(color: Color, palette: &MaterialPalette) -> usize {
         let r = (color.r() * 255.0) as usize;
         let g = (color.g() * 255.0) as usize;
         let b = (color.b() * 255.0) as usize;
+        let a = (color.a() * 255.0) as u8;
+
+        let ai: usize = match a {
+            212..=255 => 0,
+            170..=211 => 1,
+            128..=169 => 2,
+            _ => 3,
+        };
         let ri = (r * 7 + 127) / 255;
         let gi = (g * 7 + 127) / 255;
         let bi = (b * 7 + 127) / 255;
-        palette.lookup[ri * 64 + gi * 8 + bi]
+        palette.lookup[ai * 512 + ri * 64 + gi * 8 + bi]
     }
 
     let cell_count = cell_map.cells.len();
@@ -833,7 +790,6 @@ pub fn render_system(
     for idx in 0..cell_count {
         let cell = cell_map.cells[idx];
         let Some((color, _)) = cell else {
-            // Cell now empty: hide only if it was visible last frame
             if cell_map.prev_colors[idx].is_some() {
                 if let Some(&entity) = cell_map.entities.get(idx) {
                     commands.entity(entity).insert(Visibility::Hidden);
@@ -846,9 +802,9 @@ pub fn render_system(
         let r = (color.r() * 255.0) as u8;
         let g = (color.g() * 255.0) as u8;
         let b = (color.b() * 255.0) as u8;
-        let color_key = [r, g, b];
+        let a = (color.a() * 255.0) as u8;
+        let color_key = [r, g, b, a];
 
-        // Emit command ONLY if the color changed from previous frame
         if cell_map.prev_colors[idx] == Some(color_key) {
             continue;
         }
@@ -872,8 +828,14 @@ pub fn render_system(
         cell_map.prev_colors[idx] = Some(color_key);
     }
 
-    // === PHASE 3: Update food entities ===
-    // In inspector view: only show food for the selected snake.
+    // === PHASE 3: Food entities ===
+    let best_alive_id = game
+        .snakes
+        .iter()
+        .filter(|s| !s.is_game_over)
+        .max_by_key(|s| s.score)
+        .map(|s| s.id);
+
     for snake in game.snakes.iter() {
         let Some(&food_entity) = food_pool.entities.get(snake.id) else {
             continue;
@@ -890,11 +852,19 @@ pub fn render_system(
         let food_transform = Transform::from_xyz(
             offset_x + snake.food.x as f32 * BLOCK_SIZE,
             offset_y - snake.food.y as f32 * BLOCK_SIZE,
-            1.0, // z=1.0 renders food above snake cells (z=0.0)
+            1.0,
         );
+
+        let is_best = Some(snake.id) == best_alive_id || is_inspector_view;
+        let food_mat = if is_best {
+            mesh_cache.food_material_best.clone()
+        } else {
+            mesh_cache.food_material.clone()
+        };
+
         commands
             .entity(food_entity)
-            .insert((food_transform, Visibility::Visible));
+            .insert((food_transform, food_mat, Visibility::Visible));
     }
 }
 
@@ -1213,14 +1183,11 @@ pub fn draw_heatmap_in_panel(
         return;
     }
 
-    // UPDATE TRIGGER:
-    // Redraw if forced OR if archive generation has increased
     let archive_gen = evo_manager.archive.generation;
     if !heatmap_state.needs_redraw && archive_gen == heatmap_state.last_archive_gen {
         return;
     }
 
-    // Clear old nodes
     for grid_entity in grid_query.iter() {
         if let Ok(children) = children_query.get(grid_entity) {
             for &child in children.iter() {
@@ -1230,7 +1197,7 @@ pub fn draw_heatmap_in_panel(
     }
 
     heatmap_state.needs_redraw = false;
-    heatmap_state.last_archive_gen = archive_gen; // Sync generation
+    heatmap_state.last_archive_gen = archive_gen;
 
     for grid_entity in grid_query.iter() {
         let margin = 25.0;
@@ -1242,23 +1209,21 @@ pub fn draw_heatmap_in_panel(
 
         commands.entity(grid_entity).with_children(|parent| {
             let max_fitness = evo_manager.archive.best_fitness.max(1.0);
-            // Use central slice (10 for GRID_RESOLUTION=20)
             let slice_z = 10;
 
             for x in 0..crate::plugins::map_elites::GRID_RESOLUTION {
                 for y in 0..crate::plugins::map_elites::GRID_RESOLUTION {
                     let cell_opt = evo_manager.archive.grid.get(&(x, y, slice_z));
 
+                    // Usa fitness_color anche per l'heatmap — colori coerenti ovunque
                     let cell_color = if let Some(ind) = cell_opt {
-                        // Color based on fitness: blue (low) → green (high)
-                        let intensity = (ind.fitness / max_fitness).clamp(0.0, 1.0) as f32;
-                        Color::rgb(0.1, intensity, 1.0 - intensity)
+                        let t = (ind.fitness / max_fitness).clamp(0.0, 1.0);
+                        let (r, g, b) = fitness_color(t);
+                        Color::rgb(r, g, b)
                     } else {
-                        Color::rgb(0.05, 0.05, 0.07) // Empty
+                        Color::rgb(0.05, 0.05, 0.07)
                     };
 
-                    // Y-AXIS CORRECTION:
-                    // Bevy top:0 is at top. To have y=0 at bottom, we do (Res - 1 - y)
                     let display_y = (crate::plugins::map_elites::GRID_RESOLUTION - 1 - y) as f32;
 
                     parent.spawn(NodeBundle {
@@ -1276,7 +1241,6 @@ pub fn draw_heatmap_in_panel(
                 }
             }
 
-            // Axis Labels
             spawn_axis_label(
                 parent,
                 "Path Efficiency →",
@@ -1285,15 +1249,14 @@ pub fn draw_heatmap_in_panel(
             );
             spawn_axis_label(parent, "Danger Affinity ↑", Val::Px(5.0), Val::Px(margin));
 
-            // Stats text
             let filled = evo_manager.archive.filled_cells();
             let total = evo_manager.archive.capacity();
-            let coverage = (filled as f64 / total as f64) * 100.0; // Keep as f64 for decimal precision
+            let coverage = (filled as f64 / total as f64) * 100.0;
 
             spawn_axis_label(
                 parent,
                 &format!(
-                    "Gen:{} | Coverage: {:.2}% ({}/{})", // {:.2} to show 2 decimal places
+                    "Gen:{} | Coverage: {:.2}% ({}/{})",
                     archive_gen, coverage, filled, total
                 ),
                 Val::Px(margin),
@@ -1303,7 +1266,6 @@ pub fn draw_heatmap_in_panel(
     }
 }
 
-// Helper for axis labels
 #[allow(dead_code)]
 fn spawn_axis_label(parent: &mut ChildBuilder, text: &str, left: Val, top: Val) {
     parent.spawn(
@@ -1353,7 +1315,6 @@ pub fn sync_graph_panel_layout(
             style.left = Val::Px(graph_state.position.x);
             style.top = Val::Px(graph_state.position.y);
             style.width = Val::Px(graph_state.size.x);
-
             if graph_state.collapsed {
                 style.height = Val::Px(30.0);
             } else {
@@ -1421,8 +1382,7 @@ pub fn draw_graph_in_panel(
             let bar_width_px = 2.0;
             let max_bars = (graph_width / bar_width_px).floor() as usize;
             let total_records = global_history.all_records().count();
-            let chunk_size = (total_records as f32 / max_bars as f32).ceil() as usize;
-            let chunk_size = chunk_size.max(1);
+            let chunk_size = ((total_records as f32 / max_bars as f32).ceil() as usize).max(1);
 
             struct AggregatedPoint {
                 avg: f32,
@@ -1431,7 +1391,6 @@ pub fn draw_graph_in_panel(
             }
 
             let mut visual_points = Vec::new();
-
             let records: Vec<_> = global_history.all_records().collect();
 
             let global_max = records
@@ -1444,7 +1403,6 @@ pub fn draw_graph_in_panel(
                 if chunk.is_empty() {
                     continue;
                 }
-
                 let max_in_chunk = chunk
                     .iter()
                     .map(|r| r.best_fitness)
@@ -1468,23 +1426,19 @@ pub fn draw_graph_in_panel(
 
             for (i, point) in visual_points.iter().enumerate() {
                 let x_pos = margin_left + (i as f32 * exact_bar_width);
-
                 let get_height = |val: f32| -> f32 {
-                    let ratio = (val / global_max).clamp(0.0, 1.0);
-                    ratio * graph_height
+                    (val / global_max).clamp(0.0, 1.0) * graph_height
                 };
 
                 let h_max = get_height(point.max);
                 let h_avg = get_height(point.avg);
                 let h_min = get_height(point.min);
-
                 let display_width = if exact_bar_width > 2.0 {
                     exact_bar_width - 1.0
                 } else {
                     exact_bar_width
                 };
 
-                // Min bar (orange, at the back)
                 if h_min > 0.0 {
                     parent.spawn(NodeBundle {
                         style: Style {
@@ -1499,7 +1453,6 @@ pub fn draw_graph_in_panel(
                         ..default()
                     });
                 }
-
                 if h_max > 0.0 {
                     parent.spawn(NodeBundle {
                         style: Style {
@@ -1514,7 +1467,6 @@ pub fn draw_graph_in_panel(
                         ..default()
                     });
                 }
-
                 if h_avg > 0.0 {
                     parent.spawn(NodeBundle {
                         style: Style {

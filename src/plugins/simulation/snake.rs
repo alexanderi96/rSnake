@@ -402,7 +402,7 @@ impl SnakeInstance {
     /// Funzione di Fitness con pesi dinamici
     /// Obiettivo: premiare serpenti efficienti E serpenti che fanno zigzag strategico
     /// La fitness è garantita monotona crescente con lo score
-    pub fn fitness(&self, _grid: &GridDimensions) -> f32 {
+    pub fn fitness(&self, grid: &GridDimensions) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
@@ -410,33 +410,26 @@ impl SnakeInstance {
         let frames = self.frames_survived as f32;
         let score = self.score as f32;
 
-        // ── 1. Navigazione ─────────────────────────────────────────────
-        // Attiva sempre, anche a score=0. Guida il serpente verso il cibo.
-        let longevity = 1.0 - (-frames / 80.0).exp();
+        // "episodi" = frame normalizzati per la lunghezza caratteristica della griglia
+        // sqrt(area) è la distanza media attesa tra due punti casuali
+        let grid_len = ((grid.width * grid.height) as f32).sqrt();
+        let episodes = frames / grid_len;
+
+        // ── 1. Navigazione (avg_ratio già [0,1], grid-agnostic)
+        let longevity = 1.0 - (-episodes / 3.0).exp();
         let avg_ratio = (self.path_progress_sum / frames).clamp(0.0, 1.0);
         let nav = avg_ratio * longevity * 300.0;
 
-        // ── 2. Score grezzo ─────────────────────────────────────────────
-        // powf(1.2): super-lineare, garantisce che ogni mela aggiuntiva
-        // valga sempre *più* della precedente. Non satura mai.
+        // ── 2. Score grezzo (grid-agnostic)
         let raw_score = score.powf(1.2) * 250.0;
 
-        // ── 3. Efficienza cumulata ──────────────────────────────────────
-        // path_directness_sum = Σ(eff_i) per ogni mela mangiata.
-        // Nessuna divisione per score → nessun NaN a score=0, nessun if.
-        // Cresce con ogni mela (quantità) e premia traiettorie dirette (qualità).
-        // Con score alto il suo peso relativo diminuisce naturalmente perché
-        // raw_score cresce più velocemente — senza decay esplicito.
+        // ── 3. Efficienza cumulata (grid-agnostic)
         let eff_bonus = self.path_directness_sum * 500.0;
 
-        // ── 4. Sopravvivenza ────────────────────────────────────────────
-        // ln(score+1): cresce senza saturare, vale 0 a score=0 (corretto:
-        // sopravvivere a lungo senza mangiare nulla non è un risultato).
-        let surv = frames.sqrt() * (score + 1.0).ln() * 60.0;
+        // ── 4. Sopravvivenza normalizzata
+        let surv = episodes.sqrt() * (score + 1.0).ln() * 60.0;
 
-        // ── 5. Esplorazione ─────────────────────────────────────────────
-        // Peso basso: tiebreaker per MAP-Elites, non obiettivo primario.
-        // sqrt(score+1): diventa rilevante solo con serpenti di media lunghezza.
+        // ── 5. Esplorazione (spatial_spread già grid-agnostic)
         let expl = self.spatial_spread() * (score + 1.0).sqrt() * 80.0;
 
         nav + raw_score + eff_bonus + surv + expl

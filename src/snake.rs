@@ -98,6 +98,7 @@ pub struct MeshCache {
     pub segment_mesh: Handle<Mesh>,
     pub food_mesh: Handle<Mesh>,
     pub food_material: Handle<ColorMaterial>,
+    pub food_material_best: Handle<ColorMaterial>,
 }
 
 #[derive(Resource)]
