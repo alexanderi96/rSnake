@@ -32,12 +32,12 @@ pub struct BrainMetadata {
     pub source_path: String,
     /// Fitness score if known
     pub fitness: Option<f32>,
-    /// Path efficiency (descriptor 1) if known
-    pub desc_path_efficiency: Option<f32>,
-    /// Danger affinity (descriptor 2) if known
-    pub desc_danger_affinity: Option<f32>,
-    /// Spatial spread (descriptor 3) if known
-    pub desc_spatial_spread: Option<f32>,
+    /// Turn rate (descriptor 1) if known
+    pub desc_turn_rate: Option<f32>,
+    /// Center affinity (descriptor 2) if known
+    pub desc_center_affinity: Option<f32>,
+    /// Coverage (descriptor 3) if known
+    pub desc_coverage: Option<f32>,
     /// Generation if from archive
     pub generation: Option<u32>,
     /// Cell coordinates in archive (x, y, z)
@@ -90,9 +90,9 @@ pub fn load_brain_from_gz(path: &Path) -> Result<(Brain, BrainMetadata), BrainLo
             let metadata = BrainMetadata {
                 source_path: path.to_string_lossy().to_string(),
                 fitness: Some(individual.fitness),
-                desc_path_efficiency: Some(individual.desc_path_efficiency),
-                desc_danger_affinity: Some(individual.desc_danger_affinity),
-                desc_spatial_spread: Some(individual.desc_spatial_spread),
+                desc_turn_rate: Some(individual.desc_turn_rate),
+                desc_center_affinity: Some(individual.desc_center_affinity),
+                desc_coverage: Some(individual.desc_coverage),
                 generation: Some(archive.generation),
                 archive_cell: Some(*cell),
             };
@@ -114,9 +114,9 @@ pub fn load_brain_from_gz(path: &Path) -> Result<(Brain, BrainMetadata), BrainLo
         let metadata = BrainMetadata {
             source_path: path.to_string_lossy().to_string(),
             fitness: Some(individual.fitness),
-            desc_path_efficiency: Some(individual.desc_path_efficiency),
-            desc_danger_affinity: Some(individual.desc_danger_affinity),
-            desc_spatial_spread: Some(individual.desc_spatial_spread),
+            desc_turn_rate: Some(individual.desc_turn_rate),
+            desc_center_affinity: Some(individual.desc_center_affinity),
+            desc_coverage: Some(individual.desc_coverage),
             generation: None,
             archive_cell: None,
         };

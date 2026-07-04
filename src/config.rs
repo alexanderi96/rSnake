@@ -16,6 +16,9 @@ fn default_terrain_smooth_passes() -> u32 {
 fn default_terrain_spawn_clearance() -> i32 {
     5
 }
+fn default_snake_color_from_parent() -> bool {
+    true
+}
 
 /// MAP-Elites Hyperparameters — caricabili da config.toml o config.json
 #[derive(Debug, Clone, Serialize, Deserialize, Resource)]
@@ -51,6 +54,11 @@ pub struct Hyperparameters {
     /// Raggio della zona libera attorno allo spawn (celle)
     #[serde(default = "default_terrain_spawn_clearance")]
     pub terrain_spawn_clearance: i32,
+
+    /// Colore dello snake: true = ereditato/influenzato dal genitore,
+    /// false = gradiente dal punteggio (fitness) attuale
+    #[serde(default = "default_snake_color_from_parent")]
+    pub snake_color_from_parent: bool,
 }
 
 impl Default for Hyperparameters {
@@ -62,12 +70,13 @@ impl Default for Hyperparameters {
             crossover_rate: 0.3,
             base_steps_without_food: 60,
             steps_per_segment: 8,
-            grid_resolution: 20,
+            grid_resolution: 33,
             auto_save_interval: 50,
             terrain_fill_rate: default_terrain_fill_rate(),
             terrain_blob_scale: default_terrain_blob_scale(),
             terrain_smooth_passes: default_terrain_smooth_passes(),
             terrain_spawn_clearance: default_terrain_spawn_clearance(),
+            snake_color_from_parent: default_snake_color_from_parent(),
         }
     }
 }
@@ -165,8 +174,7 @@ mod tests {
     #[test]
     fn test_timeout() {
         let h = Hyperparameters::default();
-        // Griglia fittizia 20x20 per il test.
-        // Base (60) + Margine Mappa (20 + 20) + Segmenti (5 * 8) = 140
-        assert_eq!(h.calculate_timeout(5, 20, 20), 140);
+        // max(dist*3, base) + len*steps = max(60, 60) + 5*8 = 100
+        assert_eq!(h.calculate_timeout_bfs(5, 20), 100);
     }
 }

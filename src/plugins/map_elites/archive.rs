@@ -19,7 +19,22 @@ thread_local! {
 }
 
 /// Number of bins for each behavioral descriptor dimension
-pub const GRID_RESOLUTION: usize = 20;
+pub const GRID_RESOLUTION: usize = 33;
+
+/// Colore mostrato allo spawn: gradiente fitness (blu→verde) del GENITORE,
+/// congelato alla nascita. Con snake_color_from_parent=false il render usa
+/// invece il gradiente live della fitness corrente (vedi ui::render_system).
+fn display_color(
+    parent_fitness: f32,
+    best_fitness: f32,
+) -> crate::plugins::map_elites::individual::GenomeColor {
+    let normalized = (parent_fitness / best_fitness.max(1.0)).clamp(0.0, 1.0);
+    crate::plugins::map_elites::individual::GenomeColor {
+        r: 0.1,
+        g: normalized,
+        b: 1.0 - normalized,
+    }
+}
 
 /// Custom serializer for HashMap with (usize, usize, usize) keys
 /// Converts tuple keys to "x,y,z" string format
@@ -94,15 +109,15 @@ pub struct MapElitesArchive {
 }
 
 fn default_descriptor_1() -> String {
-    "path_efficiency".to_string()
+    "turn_rate".to_string()
 }
 
 fn default_descriptor_2() -> String {
-    "danger_affinity".to_string()
+    "center_affinity".to_string()
 }
 
 fn default_descriptor_3() -> String {
-    "spatial_spread".to_string()
+    "coverage".to_string()
 }
 
 impl Default for MapElitesArchive {
@@ -131,16 +146,17 @@ impl MapElitesArchive {
     /// Value should be in [0.0, 1.0]
     fn discretize(&self, value: f32) -> usize {
         let clamped = value.clamp(0.0, 1.0);
-        let bin = (clamped * (self.resolution - 1) as f32).round() as usize;
+        // floor: ogni bin copre 1/resolution del range (round dimezzava i bin di bordo)
+        let bin = (clamped * self.resolution as f32) as usize;
         bin.min(self.resolution - 1)
     }
 
     /// Get the grid cell coordinates for an individual
     pub fn get_cell(&self, individual: &Individual) -> (usize, usize, usize) {
         (
-            self.discretize(individual.desc_path_efficiency),
-            self.discretize(individual.desc_danger_affinity),
-            self.discretize(individual.desc_spatial_spread),
+            self.discretize(individual.desc_turn_rate),
+            self.discretize(individual.desc_center_affinity),
+            self.discretize(individual.desc_coverage),
         )
     }
 
@@ -208,26 +224,9 @@ impl MapElitesArchive {
         // Collect elites with their cell coordinates for archive_color calculation
         let elites: Vec<(&(usize, usize, usize), &Individual)> = self.grid.iter().collect();
 
-        // Build fitness-weighted index using sqrt to preserve diversity
-        let weights: Vec<f32> = elites
-            .iter()
-            .map(|(_, ind)| ind.fitness.max(1.0).powf(0.5))
-            .collect();
-        let total_weight: f32 = weights.iter().sum();
-        let normalized_weights: Vec<f32> = weights.iter().map(|w| w / total_weight).collect();
-
-        // Weighted selection closure
-        let weighted_select = |rng: &mut SmallRng| -> usize {
-            let r: f32 = rng.gen();
-            let mut cumulative = 0.0;
-            for (i, &w) in normalized_weights.iter().enumerate() {
-                cumulative += w;
-                if r <= cumulative {
-                    return i;
-                }
-            }
-            elites.len() - 1
-        };
+        // MAP-Elites canonico: selezione uniforme sulle nicchie occupate.
+        // Protegge gli elite mediocri-ma-diversi, che sono il motore dell'esplorazione.
+        let weighted_select = |rng: &mut SmallRng| -> usize { rng.gen_range(0..elites.len()) };
 
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f32 = 0.05;
@@ -245,13 +244,8 @@ impl MapElitesArchive {
                 // Mutate color with small jitter
                 let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
 
-                // Calculate archive_color from parent cell fitness
-                let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
-                let archive_color = crate::plugins::map_elites::individual::GenomeColor {
-                    r: 0.1,
-                    g: normalized,
-                    b: 1.0 - normalized,
-                };
+                // Displayed color: inherited from parent, or fitness gradient
+                let archive_color = display_color(parent.fitness, self.best_fitness);
 
                 let mut individual = Individual::from_genome_with_archive_color(
                     id,
@@ -288,26 +282,9 @@ impl MapElitesArchive {
         // Collect elites with their cell coordinates for archive_color calculation
         let elites: Vec<(&(usize, usize, usize), &Individual)> = self.grid.iter().collect();
 
-        // Build fitness-weighted index using sqrt to preserve diversity
-        let weights: Vec<f32> = elites
-            .iter()
-            .map(|(_, ind)| ind.fitness.max(1.0).powf(0.5))
-            .collect();
-        let total_weight: f32 = weights.iter().sum();
-        let normalized_weights: Vec<f32> = weights.iter().map(|w| w / total_weight).collect();
-
-        // Weighted selection closure
-        let weighted_select = |rng: &mut SmallRng| -> usize {
-            let r: f32 = rng.gen();
-            let mut cumulative = 0.0;
-            for (i, &w) in normalized_weights.iter().enumerate() {
-                cumulative += w;
-                if r <= cumulative {
-                    return i;
-                }
-            }
-            elites.len() - 1
-        };
+        // MAP-Elites canonico: selezione uniforme sulle nicchie occupate.
+        // Protegge gli elite mediocri-ma-diversi, che sono il motore dell'esplorazione.
+        let weighted_select = |rng: &mut SmallRng| -> usize { rng.gen_range(0..elites.len()) };
 
         // Color mutation strength (smaller than brain mutation)
         const COLOR_MUTATION_STRENGTH: f32 = 0.05;
@@ -331,13 +308,8 @@ impl MapElitesArchive {
                     let child_color = parent1.color.lerp(&parent2.color, blend_factor);
                     let mutated_color = child_color.mutate(COLOR_MUTATION_STRENGTH);
 
-                    // Archive color from parent1's cell fitness
-                    let normalized = (parent1.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
-                    let archive_color = crate::plugins::map_elites::individual::GenomeColor {
-                        r: 0.1,
-                        g: normalized,
-                        b: 1.0 - normalized,
-                    };
+                    // Displayed color: inherited from parents, or fitness gradient
+                    let archive_color = display_color(parent1.fitness.max(parent2.fitness), self.best_fitness);
 
                     let mut ind = Individual::from_genome_with_archive_color(
                         id,
@@ -356,13 +328,8 @@ impl MapElitesArchive {
                     // Mutate color with small jitter
                     let mutated_color = parent.color.mutate(COLOR_MUTATION_STRENGTH);
 
-                    // Archive color from parent's cell fitness
-                    let normalized = (parent.fitness / self.best_fitness.max(1.0)).clamp(0.0, 1.0);
-                    let archive_color = crate::plugins::map_elites::individual::GenomeColor {
-                        r: 0.1,
-                        g: normalized,
-                        b: 1.0 - normalized,
-                    };
+                    // Displayed color: inherited from parent, or fitness gradient
+                    let archive_color = display_color(parent.fitness, self.best_fitness);
 
                     let mut ind = Individual::from_genome_with_archive_color(
                         id,
@@ -487,8 +454,8 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual = Individual::new_random(0);
-        individual.desc_path_efficiency = 0.5;
-        individual.desc_spatial_spread = 0.5;
+        individual.desc_turn_rate = 0.5;
+        individual.desc_coverage = 0.5;
         individual.fitness = 100.0;
 
         assert!(archive.insert(individual));
@@ -500,15 +467,15 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.desc_path_efficiency = 0.5;
-        individual1.desc_spatial_spread = 0.5;
+        individual1.desc_turn_rate = 0.5;
+        individual1.desc_coverage = 0.5;
         individual1.fitness = 100.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.desc_path_efficiency = 0.5;
-        individual2.desc_spatial_spread = 0.5;
+        individual2.desc_turn_rate = 0.5;
+        individual2.desc_coverage = 0.5;
         individual2.fitness = 200.0;
 
         assert!(archive.insert(individual2));
@@ -521,15 +488,15 @@ mod tests {
         let mut archive = MapElitesArchive::new(10);
 
         let mut individual1 = Individual::new_random(0);
-        individual1.desc_path_efficiency = 0.5;
-        individual1.desc_spatial_spread = 0.5;
+        individual1.desc_turn_rate = 0.5;
+        individual1.desc_coverage = 0.5;
         individual1.fitness = 200.0;
 
         assert!(archive.insert(individual1));
 
         let mut individual2 = Individual::new_random(1);
-        individual2.desc_path_efficiency = 0.5;
-        individual2.desc_spatial_spread = 0.5;
+        individual2.desc_turn_rate = 0.5;
+        individual2.desc_coverage = 0.5;
         individual2.fitness = 100.0;
 
         assert!(!archive.insert(individual2));
@@ -543,8 +510,8 @@ mod tests {
         // Add some elites
         for i in 0..5 {
             let mut individual = Individual::new_random(i);
-            individual.desc_path_efficiency = i as f32 / 10.0;
-            individual.desc_spatial_spread = i as f32 / 10.0;
+            individual.desc_turn_rate = i as f32 / 10.0;
+            individual.desc_coverage = i as f32 / 10.0;
             individual.fitness = (i * 100) as f32;
             archive.insert(individual);
         }

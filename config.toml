@@ -25,9 +25,15 @@ steps_per_segment       = 8    # frame extra per ogni segmento di corpo
 
 # ── Archivio MAP-Elites ────────────────────────────────────────────────────────
 
-# 20×20 = 400 nicchie. Aumenta a 30 se population_size è alto (più diversità).
-grid_resolution    = 20
+# 16×16×16 = 4096 nicchie (archivio 3D, assi: turn_rate, center_affinity, coverage).
+# Con ~2048 valutazioni/generazione una griglia piccola si illumina molto più in
+# fretta di 33³ (35937 nicchie, quasi tutte destinate a restare vuote).
+grid_resolution    = 16
 auto_save_interval = 50
+
+# Colore dello snake: true = ereditato/influenzato dal genitore (default),
+# false = gradiente dal punteggio (fitness) attuale.
+snake_color_from_parent = true
 
 # ── Terrain (cluster noise) ────────────────────────────────────────────────────
 # Generato una volta per generazione via fBm value noise.

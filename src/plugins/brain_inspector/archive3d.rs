@@ -513,9 +513,9 @@ pub fn spawn_map_elites_tab(
         })
         .with_children(|row| {
             for (color, label) in [
-                (Color::rgb(1.0, 0.25, 0.25), "X = Path Efficiency"),
-                (Color::rgb(0.25, 1.0, 0.25), "Y = Danger Affinity"),
-                (Color::rgb(0.30, 0.55, 1.0), "Z = Spatial Spread"),
+                (Color::rgb(1.0, 0.25, 0.25), "X = Turn Rate"),
+                (Color::rgb(0.25, 1.0, 0.25), "Y = Center Affinity"),
+                (Color::rgb(0.30, 0.55, 1.0), "Z = Coverage"),
             ] {
                 row.spawn(NodeBundle {
                     style: Style {

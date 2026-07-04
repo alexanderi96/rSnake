@@ -440,8 +440,8 @@ fn setup(
         .iter()
         .map(|i| {
             (
-                i.desc_path_efficiency,
-                i.desc_danger_affinity,
+                i.desc_turn_rate,
+                i.desc_center_affinity,
                 i.fitness,
                 best_fitness,
             )
@@ -659,8 +659,14 @@ fn apply_moves_serial(
                 snake.frames_survived += 1;
                 snake.visited_cells.insert((new_head.x, new_head.y));
 
-                let obstacle_proximity = current_17[0..8].iter().sum::<f32>() / 8.0;
-                snake.obstacle_adjacency_sum += obstacle_proximity;
+                if !matches!(action, Action::Straight) {
+                    snake.turn_count += 1;
+                }
+                let cx = (grid.width - 1) as f32 * 0.5;
+                let cy = (grid.height - 1) as f32 * 0.5;
+                let dx = (new_head.x as f32 - cx).abs() / cx.max(1.0);
+                let dy = (new_head.y as f32 - cy).abs() / cy.max(1.0);
+                snake.center_dist_sum += dx.max(dy);
             }
 
             if is_collision || is_timeout {
@@ -736,9 +742,9 @@ fn apply_moves_serial(
                 let mut individual_clone: Option<Individual> = None;
                 if let Some(ind) = evo_manager.get_individual_mut(idx) {
                     ind.fitness = snake.fitness(&grid);
-                    ind.desc_path_efficiency = snake.path_efficiency();
-                    ind.desc_danger_affinity = snake.danger_affinity();
-                    ind.desc_spatial_spread = snake.spatial_spread();
+                    ind.desc_turn_rate = snake.turn_rate();
+                    ind.desc_center_affinity = snake.center_affinity();
+                    ind.desc_coverage = snake.coverage(&grid);
                     ind.frames_survived = snake.frames_survived;
                     ind.apples_eaten = snake.score;
                     ind.is_alive = false;
@@ -809,8 +815,8 @@ fn apply_moves_serial(
                     .get(i)
                     .map(|ind| {
                         (
-                            ind.desc_path_efficiency,
-                            ind.desc_danger_affinity,
+                            ind.desc_turn_rate,
+                            ind.desc_center_affinity,
                             ind.fitness,
                             best_fitness,
                         )
@@ -853,9 +859,9 @@ fn end_generation(
     for (i, snake) in game.snakes.iter().enumerate() {
         if let Some(ind) = evo_manager.get_individual_mut(i) {
             ind.fitness = snake.fitness(grid);
-            ind.desc_path_efficiency = snake.path_efficiency();
-            ind.desc_danger_affinity = snake.danger_affinity();
-            ind.desc_spatial_spread = snake.spatial_spread();
+            ind.desc_turn_rate = snake.turn_rate();
+            ind.desc_center_affinity = snake.center_affinity();
+            ind.desc_coverage = snake.coverage(grid);
             ind.frames_survived = snake.frames_survived;
             ind.apples_eaten = snake.score;
             ind.is_alive = false;

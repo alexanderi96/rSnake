@@ -478,8 +478,8 @@ pub fn handle_continuous_mode_input(
                 .get(i)
                 .map(|ind| {
                     (
-                        ind.desc_path_efficiency,
-                        ind.desc_danger_affinity,
+                        ind.desc_turn_rate,
+                        ind.desc_center_affinity,
                         ind.fitness,
                         best_fitness,
                     )
@@ -642,6 +642,7 @@ pub fn render_system(
     mut stats: ResMut<TrainingStats>,
     mut cell_map: ResMut<CellRenderMap>,
     evo_manager: Res<EvolutionManager>,
+    hyperparams: Res<crate::config::Hyperparameters>,
     panel_visibility: Res<PanelVisibility>,
     inspected_agent: Res<crate::plugins::brain_inspector::InspectedAgent>,
 ) {
@@ -724,16 +725,14 @@ pub fn render_system(
     }
     cell_map.terrain_dirty = false;
 
-    // === PHASE 1: Snake con colore live basato sulla fitness attuale ===
+    // === PHASE 1: Colore degli snake ===
     //
-    // Il colore è calcolato ogni frame da snake.fitness(&grid) / best_fitness:
-    //   blu scuro  (t≈0.0) → fitness bassa, snake appena avviati
-    //   ciano/teal (t≈0.5) → fitness media
-    //   verde lime (t≈1.0) → top performer della generazione corrente
-    //
-    // Questo è coerente col gradiente usato nei voxel 3D dell'archivio,
-    // e rende immediatamente leggibile chi sta performando meglio.
+    // snake_color_from_parent = true  → snake.color (ereditato dal genitore,
+    //   impostato allo spawn da archive_color)
+    // snake_color_from_parent = false → gradiente live dalla fitness attuale:
+    //   blu scuro (t≈0) → ciano (t≈0.5) → verde lime (t≈1)
     let best_fitness = evo_manager.archive.best_fitness.max(1.0);
+    let color_from_parent = hyperparams.snake_color_from_parent;
 
     for snake in game.snakes.iter() {
         if snake.is_game_over {
@@ -745,16 +744,21 @@ pub fn render_system(
 
         let snake_fitness = snake.fitness(&grid);
 
-        // t ∈ [0,1]: posizione nella scala fitness rispetto al record dell'archivio
-        let t = (snake_fitness / best_fitness).clamp(0.0, 1.0);
-        let (base_r, base_g, base_b) = fitness_color(t);
+        let base_color = if color_from_parent {
+            snake.color
+        } else {
+            // t ∈ [0,1]: posizione nella scala fitness rispetto al record dell'archivio
+            let t = (snake_fitness / best_fitness).clamp(0.0, 1.0);
+            let (r, g, b) = fitness_color(t);
+            Color::rgba(r, g, b, 1.0)
+        };
 
         for pos in snake.snake.iter() {
             let Some(cidx) = cell_map.cell_index(pos.x, pos.y) else {
                 continue;
             };
 
-            let color = Color::rgba(base_r, base_g, base_b, 1.0);
+            let color = base_color;
 
             match cell_map.cells[cidx] {
                 Some((_, existing_fitness)) if snake_fitness <= existing_fitness => {}
@@ -1077,7 +1081,7 @@ fn spawn_heatmap_panel_internal(mut commands: Commands, heatmap_state: &HeatmapP
                 },))
                 .with_children(|header| {
                     header.spawn(TextBundle::from_section(
-                        "MAP-Elites Heatmap (Path Efficiency vs Danger Affinity)",
+                        "MAP-Elites Heatmap (Turn Rate vs Center Affinity)",
                         TextStyle {
                             font_size: 16.0,
                             color: Color::WHITE,
@@ -1243,11 +1247,11 @@ pub fn draw_heatmap_in_panel(
 
             spawn_axis_label(
                 parent,
-                "Path Efficiency →",
+                "Turn Rate →",
                 Val::Px(margin),
                 Val::Px(grid_height + margin + 5.0),
             );
-            spawn_axis_label(parent, "Danger Affinity ↑", Val::Px(5.0), Val::Px(margin));
+            spawn_axis_label(parent, "Center Affinity ↑", Val::Px(5.0), Val::Px(margin));
 
             let filled = evo_manager.archive.filled_cells();
             let total = evo_manager.archive.capacity();

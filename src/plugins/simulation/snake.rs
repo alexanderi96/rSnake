@@ -40,7 +40,8 @@ pub struct SnakeInstance {
     pub visited_cells: std::collections::HashSet<(i32, i32)>,
     pub path_directness_sum: f32,
     pub food_real_distance: u32,
-    pub obstacle_adjacency_sum: f32,
+    pub turn_count: u32,
+    pub center_dist_sum: f32, // somma per-frame della distanza Chebyshev normalizzata dal centro
     pub path_progress_sum: f32, // accumula progress ratio per-frame
 }
 
@@ -289,7 +290,8 @@ impl SnakeInstance {
             visited_cells: std::collections::HashSet::with_capacity(64),
             path_directness_sum: 0.0,
             food_real_distance,
-            obstacle_adjacency_sum: 0.0,
+            turn_count: 0,
+            center_dist_sum: 0.0,
             path_progress_sum: 0.0,
         }
     }
@@ -362,41 +364,35 @@ impl SnakeInstance {
             }
         }
 
-        self.obstacle_adjacency_sum = 0.0;
-        self.path_progress_sum = 0.0;
+        self.turn_count = 0;
+        self.center_dist_sum = 0.0;
     }
 
-    /// D1: how directly the snake reaches food [0,1]
-    /// score > 0: average BFS-efficiency per apple eaten
-    /// score = 0: average per-frame progress toward current food (fallback)
-    pub fn path_efficiency(&self) -> f32 {
-        if self.score > 0 {
-            (self.path_directness_sum / self.score as f32).clamp(0.0, 1.0)
-        } else if self.frames_survived > 0 {
-            (self.path_progress_sum / self.frames_survived as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        }
-    }
-
-    /// D2: mean proximity to walls and own body per frame [0,1]
-    /// Uses the raycast obstacle sensors (current_17[0..8]) accumulated per frame.
-    /// 0.0 = always in open space | 1.0 = always surrounded by obstacles
-    pub fn danger_affinity(&self) -> f32 {
+    /// D1: fraction of frames spent turning [0,1]
+    /// 0.0 = always straight | 1.0 = turns every frame
+    /// Fitness-independent, full range reachable from generation 0.
+    pub fn turn_rate(&self) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
-        (self.obstacle_adjacency_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+        (self.turn_count as f32 / self.frames_survived as f32).clamp(0.0, 1.0)
     }
 
-    /// D3: unique cells visited per frame [0,1]
-    /// Max theoretical = 1.0 (snake always moves to a new cell).
-    /// Low = circles in a small area | High = explores broadly
-    pub fn spatial_spread(&self) -> f32 {
+    /// D2: mean normalized Chebyshev distance of the head from board center [0,1]
+    /// 0.0 = lives at the center | 1.0 = hugs the perimeter
+    pub fn center_affinity(&self) -> f32 {
         if self.frames_survived == 0 {
             return 0.0;
         }
-        (self.visited_cells.len() as f32 / self.frames_survived as f32).clamp(0.0, 1.0)
+        (self.center_dist_sum / self.frames_survived as f32).clamp(0.0, 1.0)
+    }
+
+    /// D3: unique cells visited / board area, sqrt-scaled [0,1]
+    /// sqrt spreads the low end: short-lived snakes cover little area,
+    /// without it most individuals would collapse into the first bins.
+    pub fn coverage(&self, grid: &GridDimensions) -> f32 {
+        let area = (grid.width * grid.height) as f32;
+        (self.visited_cells.len() as f32 / area).sqrt().clamp(0.0, 1.0)
     }
 
     /// Funzione di Fitness con pesi dinamici
@@ -429,10 +425,9 @@ impl SnakeInstance {
         // ── 4. Sopravvivenza normalizzata
         let surv = episodes.sqrt() * (score + 1.0).ln() * 60.0;
 
-        // ── 5. Esplorazione (spatial_spread già grid-agnostic)
-        let expl = self.spatial_spread() * (score + 1.0).sqrt() * 80.0;
-
-        nav + raw_score + eff_bonus + surv + expl
+        // Niente termine di esplorazione: la copertura è un descrittore MAP-Elites,
+        // metterla anche nella fitness renderebbe l'asse un gradiente di fitness.
+        nav + raw_score + eff_bonus + surv
     }
 }
 

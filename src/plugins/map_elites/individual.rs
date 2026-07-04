@@ -285,14 +285,14 @@ pub struct Individual {
     pub color: GenomeColor,
     /// Archive color (from parent cell fitness: blue→green gradient)
     pub archive_color: GenomeColor,
-    /// Fitness score (apples * 1000 + frames)
+    /// Fitness score (see SnakeInstance::fitness)
     pub fitness: f32,
-    /// Behavioral descriptor 1: path efficiency — how directly the snake reaches food [0,1]
-    pub desc_path_efficiency: f32,
-    /// Behavioral descriptor 2: danger affinity — proximity to walls and own body [0,1]
-    pub desc_danger_affinity: f32,
-    /// Behavioral descriptor 3: spatial spread — unique cells per frame [0,1]
-    pub desc_spatial_spread: f32,
+    /// Behavioral descriptor 1: turn rate — fraction of frames spent turning [0,1]
+    pub desc_turn_rate: f32,
+    /// Behavioral descriptor 2: center affinity — mean distance from board center [0,1]
+    pub desc_center_affinity: f32,
+    /// Behavioral descriptor 3: coverage — unique cells / board area, sqrt-scaled [0,1]
+    pub desc_coverage: f32,
     /// Frames survived
     pub frames_survived: u32,
     /// Apples eaten
@@ -308,11 +308,16 @@ impl Individual {
             id,
             brain: Brain::new_random(),
             color: GenomeColor::random(),
-            archive_color: GenomeColor::default(),
+            // Nessun genitore: gradiente a fitness zero (blu)
+            archive_color: GenomeColor {
+                r: 0.1,
+                g: 0.0,
+                b: 1.0,
+            },
             fitness: 0.0,
-            desc_path_efficiency: 0.0,
-            desc_danger_affinity: 0.0,
-            desc_spatial_spread: 0.0,
+            desc_turn_rate: 0.0,
+            desc_center_affinity: 0.0,
+            desc_coverage: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -333,9 +338,9 @@ impl Individual {
             color,
             archive_color,
             fitness: 0.0,
-            desc_path_efficiency: 0.0,
-            desc_danger_affinity: 0.0,
-            desc_spatial_spread: 0.0,
+            desc_turn_rate: 0.0,
+            desc_center_affinity: 0.0,
+            desc_coverage: 0.0,
             frames_survived: 0,
             apples_eaten: 0,
             is_alive: true,
@@ -345,9 +350,9 @@ impl Individual {
     /// Reset for a new evaluation
     pub fn reset(&mut self) {
         self.fitness = 0.0;
-        self.desc_path_efficiency = 0.0;
-        self.desc_danger_affinity = 0.0;
-        self.desc_spatial_spread = 0.0;
+        self.desc_turn_rate = 0.0;
+        self.desc_center_affinity = 0.0;
+        self.desc_coverage = 0.0;
         self.frames_survived = 0;
         self.apples_eaten = 0;
         self.is_alive = true;
