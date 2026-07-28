@@ -8,7 +8,7 @@ No gradient descent, no ML framework — the networks are flat `f32` genomes eva
 
 MAP-Elites is a quality-diversity algorithm: instead of converging on one best solution, it keeps a grid of elites, one per behavioral niche. Two snakes with the same score but different playstyles both survive. The result is an archive you can browse — "the best snake that hugs walls", "the best snake that spins in place" — rather than a single champion whose strategy you can't inspect.
 
-The archive is a 33³ grid over three behavioral descriptors:
+The archive is a cubic grid (`grid_resolution` per side, 16 in the shipped config) over three behavioral descriptors:
 
 | Descriptor | Meaning |
 |---|---|
@@ -83,6 +83,4 @@ cargo run --release -- -c config.toml        # load hyperparameters
 
 Every hyperparameter in the config file can be overridden on the command line (`--population-size`, `--mutation-rate`, `--terrain-fill-rate`, …).
 
-See [PROFILING.md](PROFILING.md) for the profiling workflow.
-
-> `config.example.toml` still lists DQN parameters (`learning_rate`, `gamma`, `batch_size`) from an earlier gradient-based version. They're ignored — the live parameters are the ones in `src/config.rs`.
+`config.example.toml` documents every parameter with its default. See [PROFILING.md](PROFILING.md) for the profiling workflow.

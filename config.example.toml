@@ -1,21 +1,49 @@
-# Hyperparameters per Snake DQN Training
-# Questo file può essere caricato con: cargo run -- --config config.toml
+# MAP-Elites Snake — example configuration
+# Run with: cargo run --release -- --config config.toml
+# Every value here can also be overridden from the CLI (--population-size, ...).
 
-# DQN / Rete
-learning_rate = 0.0001      # 1e-4
-gamma = 0.99
-batch_size = 256
-memory_size = 100000
+# ── Evolution ──────────────────────────────────────────────────────────────────
 
-# Update Frequencies
-target_update_freq = 5000
-train_interval = 64
+# Snakes evaluated per generation. Above a few thousand the returns drop off:
+# the chance of beating the current elite doesn't grow linearly with population.
+population_size = 2048
 
-# Reward System
-reward_food = 10.0
-reward_death = -10.0
-reward_step = -0.01
+mutation_rate     = 0.05   # P(mutation) per gene
+mutation_strength = 0.3    # magnitude of the mutation
+crossover_rate    = 0.3    # P(crossover between two elites)
 
-# Timeout (morte per inedia)
-base_steps_without_food = 100
-steps_per_segment = 10
+# ── Timeout (starvation) ───────────────────────────────────────────────────────
+# Per-episode budget: max(bfs_distance_to_food * 3, base_steps_without_food)
+#                     + length * steps_per_segment
+# BFS-aware, so a snake that has to walk around terrain isn't punished for it.
+
+base_steps_without_food = 60   # frames after spawn or after eating
+steps_per_segment       = 8    # extra frames per body segment
+
+# ── MAP-Elites archive ─────────────────────────────────────────────────────────
+# 3D grid, axes: turn_rate, center_affinity, coverage.
+# 16³ = 4096 niches fills in far faster than 33³ = 35937, most of which would
+# stay empty at a few thousand evaluations per generation.
+grid_resolution    = 16
+auto_save_interval = 50        # generations between archive saves
+
+# Snake color: true = inherited from the parent (lineages stay visually
+# traceable), false = gradient from the individual's current fitness.
+snake_color_from_parent = true
+
+# ── Terrain (cluster noise) ────────────────────────────────────────────────────
+# Regenerated once per generation with thresholded fBm value noise.
+# Organic clusters only — no mazes, rooms or barriers.
+
+# Fraction of cells turned into walls.
+# 0.0 = empty board | 0.20 = open | 0.35 = balanced | 0.55 = dense
+terrain_fill_rate = 0.35
+
+# Cluster size: 2.0 = large islands | 4.0 = medium | 7.0 = many small obstacles
+terrain_blob_scale = 4.0
+
+# Cellular-automata smoothing passes: 0 = raw edges, 1 = recommended, 3 = smooth
+terrain_smooth_passes = 1
+
+# Radius (in cells) of the guaranteed clear area around the spawn
+terrain_spawn_clearance = 5
